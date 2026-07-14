@@ -1,5 +1,5 @@
-const CACHE_NAME = 'pet-crm-cache-v1';
-const APP_SHELL = ['./crm-cities.html', './manifest.json', './icon.svg'];
+const CACHE_NAME = 'pet-crm-cache-v2';
+const APP_SHELL = ['./crm-cities.html', './manifest.json', './icon.svg', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
