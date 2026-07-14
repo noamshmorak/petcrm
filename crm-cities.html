@@ -3224,6 +3224,21 @@ function applyTwoOpt(depotCoords, orderedStopObjs, coordsByOrder){
   const refined = twoOptImprove(loop);
   return refined.slice(1, -1).map(item=>item.order);
 }
+function tourStraightLineMeters(depotCoords, orderedStopObjs, coordsByOrder){
+  let total = 0, prev = depotCoords;
+  for(const o of orderedStopObjs){ total += haversineMeters(prev, coordsByOrder.get(o)); prev = coordsByOrder.get(o); }
+  total += haversineMeters(prev, depotCoords);
+  return total;
+}
+// A provider occasionally reports a technically-valid permutation (every stop exactly once) but
+// a nonsensical road distance for it - seen live: TomTom once returned 450km/18h for 9 stops that
+// are all within one small city. validPermutation can't catch this (the indices are fine), so
+// sanity-check the reported distance against straight-line distance for the same order. Real
+// roads are rarely more than ~3-4x straight-line in dense areas; anything past that is untrustworthy.
+function isPlausibleRoadDistance(roadMeters, straightMeters){
+  if(roadMeters == null) return true;
+  return roadMeters <= straightMeters * 4 + 5000;
+}
 
 // Computes the fastest visiting order (starting and ending at the depot), taking real-time
 // traffic into account, via TomTom's free-tier Calculate Route API (computeBestOrder=true +
@@ -3267,14 +3282,20 @@ async function optimizeRouteOrder(depotObj, city, stops){
         const stopEntries = rawEntries.map(e=>({ order: geocoded[e.providedIndex].order, tripPos: e.tripPos }));
         stopEntries.sort((a,b)=>a.tripPos - b.tripPos);
         const summary = route.summary || {};
-        return {
-          ordered: applyTwoOpt(depotCoords, stopEntries.map(e=>e.order), coordsByOrder),
-          failed,
-          distanceKm: summary.lengthInMeters!=null ? Math.round(summary.lengthInMeters/1000*10)/10 : null,
-          durationMin: summary.travelTimeInSeconds!=null ? Math.round(summary.travelTimeInSeconds/60) : null,
-          trafficDelayMin: summary.trafficDelayInSeconds!=null ? Math.round(summary.trafficDelayInSeconds/60) : null,
-          hasTraffic: true
-        };
+        const orderedStops = stopEntries.map(e=>e.order);
+        const straightMeters = tourStraightLineMeters(depotCoords, orderedStops, coordsByOrder);
+        if(isPlausibleRoadDistance(summary.lengthInMeters, straightMeters)){
+          return {
+            ordered: applyTwoOpt(depotCoords, orderedStops, coordsByOrder),
+            failed,
+            distanceKm: summary.lengthInMeters!=null ? Math.round(summary.lengthInMeters/1000*10)/10 : null,
+            durationMin: summary.travelTimeInSeconds!=null ? Math.round(summary.travelTimeInSeconds/60) : null,
+            trafficDelayMin: summary.trafficDelayInSeconds!=null ? Math.round(summary.trafficDelayInSeconds/60) : null,
+            hasTraffic: true
+          };
+        }
+        // TomTom's distance is wildly implausible for this order (seen live: 450km for a single-city
+        // round) - don't trust it even though the indices were technically valid. Fall through to OSRM.
       }
       // TomTom's indices didn't form a clean permutation - don't trust this result, fall through to OSRM.
     }
@@ -3292,13 +3313,18 @@ async function optimizeRouteOrder(depotObj, city, stops){
       if(validPermutation(rawEntries, geocoded.length)){
         rawEntries.sort((a,b)=>a.tripPos - b.tripPos);
         const trip = data.trips[0];
-        return {
-          ordered: applyTwoOpt(depotCoords, rawEntries.map(e=>e.order), coordsByOrder),
-          failed,
-          distanceKm: trip ? Math.round(trip.distance/1000*10)/10 : null,
-          durationMin: trip ? Math.round(trip.duration/60) : null,
-          hasTraffic: false
-        };
+        const orderedStops = rawEntries.map(e=>e.order);
+        const straightMeters = tourStraightLineMeters(depotCoords, orderedStops, coordsByOrder);
+        if(isPlausibleRoadDistance(trip && trip.distance, straightMeters)){
+          return {
+            ordered: applyTwoOpt(depotCoords, orderedStops, coordsByOrder),
+            failed,
+            distanceKm: trip ? Math.round(trip.distance/1000*10)/10 : null,
+            durationMin: trip ? Math.round(trip.duration/60) : null,
+            hasTraffic: false
+          };
+        }
+        // OSRM's distance is implausible for this order too - don't trust it, fall through to local-only refinement.
       }
     }
   }catch(e){ /* fall through to local-only refinement below */ }
