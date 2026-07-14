@@ -605,7 +605,7 @@ const PRICE_MAP = {
   'קוואקר כולל כלוב': 400,
   'ארנב כולל כלוב נסורת ואוכל': 270,
   'שרקן כולל כלוב נסורת ואוכל': 250,
-  '2 אוגרים כולל כלוב': null,
+  '2 אוגרים כולל כלוב': 160,
   '2 תוכונים לא מותאמים לאילוף כולל כלוב': 200,
   '2 ארנבות כולל כלוב מוגדל': 530,
   '2 שרקנים כולל כלוב מוגדל': 450
@@ -712,8 +712,11 @@ const ANIMAL_SPECIES_MAP = {
 const ANIMAL_SPECIES_LIST = ['תוכון','קוקטייל','קוואקר','ארנב','שרקן','אוגר'];
 const NO_CAGE_DISCOUNT_MAP = {
   'קוואקר כולל כלוב': 50,
-  'קוקטייל כולל כלוב': 70,
-  'תוכון מותאם לאילוף כולל כלוב': 40
+  'קוקטייל כולל כלוב': 80,               // 350-80=270, updated per מחירון "חסד לישראל" (was 70, i.e. 280)
+  'תוכון מותאם לאילוף כולל כלוב': 40,
+  'ארנב כולל כלוב נסורת ואוכל': 70,      // 270-70=200, per מחירון "חסד לישראל"
+  'שרקן כולל כלוב נסורת ואוכל': 70,      // 250-70=180, per מחירון "חסד לישראל"
+  '2 אוגרים כולל כלוב': 80               // 160-80=80 (= 2x40, per מחירון "חסד לישראל")
 };
 const CAGE_TYPES_LIST = ['כלוב תוכון','כלוב קוקטייל','כלוב קוואקר','כלוב ארנב','כלוב ארנב מוגדל','כלוב שרקן','כלוב שרקן מוגדל','כלוב אוגרים'];
 const ANIMAL_STOCK_ALERT_THRESHOLD = 10;
@@ -778,10 +781,10 @@ function escAttr(str){
 const ANIMAL_INFO = {
   'תוכון מותאם לאילוף כולל כלוב': "התוכון מגיע אליכם מותאם לאילוף עם דף הדרכה שנרשם על ידי מאלף מקצועי, שמלמד אתכם איך לאלף אותו מא' ועד ת'. לתוכי יש יכולת אחרי אילוף לעלות מאצבע לאצבע ולעלות על הכתף. בתוכי הזה מומלץ לקחת 2 כדי שיהיה לו חברה.",
   '2 תוכונים מותאמים לאילוף כולל כלוב': "התוכון מגיע אליכם מותאם לאילוף עם דף הדרכה שנרשם על ידי מאלף מקצועי, שמלמד אתכם איך לאלף אותו מא' ועד ת'. לתוכי יש יכולת אחרי אילוף לעלות מאצבע לאצבע ולעלות על הכתף. בתוכי הזה מומלץ לקחת 2 כדי שיהיה לו חברה.",
-  'קוואקר כולל כלוב': "הקוואקר מגיע אליכם מותאם לאילוף עם דף הדרכה שנרשם על ידי מאלף מקצועי, שמלמד אתכם איך לאלף אותו מא' ועד ת'. אחרי אילוף יש לו יכולת לדבר (לא כל התוכים האלו יוצאים מדברים אבל הרוב כן). אפשר לאלף אותו שתגידו \"בוא אלי\" והוא יבוא. יש כאלה שמאלפים אותו לשים כסף בקופת צדקה.",
+  'קוואקר כולל כלוב': "הקוואקר מגיע אליכם מותאם לאילוף עם דף הדרכה שנרשם על ידי מאלף מקצועי, שמלמד אתכם איך לאלף אותו מא' ועד ת'. אחרי אילוף יש לו יכולת לדבר (לא כל התוכים האלו יוצאים מדברים אבל הרוב כן). אפשר לאלף אותו שתגידו \"בוא אלי\" והוא יבוא. יש כאלה שמאלפים אותו לשים כסף בקופת צדקה. מידות הכלוב: 49×33 ס\"מ.",
   'קוקטייל כולל כלוב': "הקוקטייל מגיע אליכם מותאם לאילוף עם דף הדרכה שנרשם על ידי מאלף מקצועי, שמלמד אתכם איך לאלף אותו מא' ועד ת'. אחרי אילוף הוא יכול לעלות מאצבע לאצבע, לשבת על הכתף ולחקות מנגינות.",
-  'ארנב כולל כלוב נסורת ואוכל': "ארנב ננסי מגיע במשקל בוגר של בין 1.8 ל-2.5 קילו. הוא מגיע אליכם כגור בן חודש וחצי עד 4 חודשים, במשקל של כמה מאות גרמים בלבד, ויגיע למשקלו הבוגר (1.8-2.5 ק\"ג) בסביבות גיל חצי שנה. עד גיל חצי שנה יש להאכיל אותו אך ורק במזון היבש, ולא ירקות וכדומה. מגיל 6 חודשים אפשר להתחיל לשלב לו גם את זה.",
-  '2 ארנבות כולל כלוב מוגדל': "ארנב ננסי מגיע במשקל בוגר של בין 1.8 ל-2.5 קילו. הוא מגיע אליכם כגור בן חודש וחצי עד 4 חודשים, במשקל של כמה מאות גרמים בלבד, ויגיע למשקלו הבוגר (1.8-2.5 ק\"ג) בסביבות גיל חצי שנה. עד גיל חצי שנה יש להאכיל אותו אך ורק במזון היבש, ולא ירקות וכדומה. מגיל 6 חודשים אפשר להתחיל לשלב לו גם את זה."
+  'ארנב כולל כלוב נסורת ואוכל': "ארנב ננסי מגיע במשקל בוגר של בין 1.8 ל-2.5 קילו. הוא מגיע אליכם כגור בן חודש וחצי עד 4 חודשים, במשקל של כמה מאות גרמים בלבד, ויגיע למשקלו הבוגר (1.8-2.5 ק\"ג) בסביבות גיל חצי שנה. עד גיל חצי שנה יש להאכיל אותו אך ורק במזון היבש, ולא ירקות וכדומה. מגיל 6 חודשים אפשר להתחיל לשלב לו גם את זה. מידות הכלוב: 60×36 ס\"מ, גובה 31 ס\"מ. כדאי להמליץ ללקוח לשדרג את הכלוב לפחות רמה אחת מעל הגודל הבסיסי, גם כשמדובר בארנב יחיד: הכלוב הבסיסי מספיק כדי שהארנב יחיה בו בנוחות, בעיקר אם מוציאים אותו לרוץ בחוץ ולא משאירים אותו כל היום סגור. אם הוא נמצא רוב שעות היום בתוך הכלוב, מומלץ להגדיל אותו. אם הלקוח שואל אם כלוב בגודל הבסיסי הוא צער בעלי חיים - התשובה היא לא, זה עונה על המינימום הנדרש, אך עדיין כדאי לשדרג לכלוב גדול יותר לנוחות מירבית של הארנב.",
+  '2 ארנבות כולל כלוב מוגדל': "ארנב ננסי מגיע במשקל בוגר של בין 1.8 ל-2.5 קילו. הוא מגיע אליכם כגור בן חודש וחצי עד 4 חודשים, במשקל של כמה מאות גרמים בלבד, ויגיע למשקלו הבוגר (1.8-2.5 ק\"ג) בסביבות גיל חצי שנה. עד גיל חצי שנה יש להאכיל אותו אך ורק במזון היבש, ולא ירקות וכדומה. מגיל 6 חודשים אפשר להתחיל לשלב לו גם את זה. מידות הכלוב המוגדל: 68×44 ס\"מ, גובה 35 ס\"מ. כדאי להמליץ ללקוח לשדרג לכלוב גדול עוד יותר אם אפשר: הכלוב המוגדל מספיק כדי שהארנבות יחיו בו בנוחות, בעיקר אם מוציאים אותן לרוץ בחוץ ולא משאירים אותן כל היום סגורות. אם הן נמצאות רוב שעות היום בתוך הכלוב, מומלץ להגדיל אותו עוד. אם הלקוח שואל אם הכלוב המוגדל הוא צער בעלי חיים - התשובה היא לא, זה עונה על המינימום הנדרש, אך עדיין כדאי לשדרג לכלוב גדול יותר לנוחות מירבית."
 };
 
 const MOBILE_PREFIXES = ['050','051','052','053','054','055','056','057','058','059'];
@@ -994,7 +997,7 @@ function closeShipModal(confirmed){
 }
 
 /* ---------- animal rows ---------- */
-function createAnimalRowHtml(id, type, qty, color, color2){
+function createAnimalRowHtml(id, type, qty, color, color2, noCage){
   const opts = ANIMAL_OPTIONS.map(a=>{
     const price = PRICE_MAP[a];
     const priceLabel = price==null ? '(מחיר לא הוגדר)' : `— ${price} ₪`;
@@ -1011,6 +1014,12 @@ function createAnimalRowHtml(id, type, qty, color, color2){
     <select class="animalColorSelect" style="display:none;"></select>
     <div style="font-size:11.5px;color:var(--muted);display:none;margin-top:6px;" class="colorLabel2">צבע ארנב 2</div>
     <select class="animalColorSelect2" style="display:none;margin-top:2px;"></select>
+    <div class="animalNoCageWrap" style="display:none;background:var(--new-badge-light);border-radius:10px;padding:8px 10px;margin-top:6px;">
+      <label style="display:flex;align-items:center;gap:6px;">
+        <input type="checkbox" class="animalNoCageCheckbox" style="width:auto;margin-bottom:0;" ${noCage?'checked':''}> ללא כלוב (הנחה)
+      </label>
+      <div class="animalNoCageNote" style="font-size:12px;color:var(--muted);"></div>
+    </div>
     <div class="row-price"></div>
   </div>`;
 }
@@ -1061,18 +1070,32 @@ function updateRowPriceDisplay(rowEl){
   const color2 = colorSel2.style.display!=='none' ? (colorSel2.value||'') : '';
   const base = PRICE_MAP[type];
   const surcharge = (getColorSurcharge(color) + getColorSurcharge(color2)) * qty;
+
+  const noCageWrap = rowEl.querySelector('.animalNoCageWrap');
+  const noCageCb = rowEl.querySelector('.animalNoCageCheckbox');
+  const discount = NO_CAGE_DISCOUNT_MAP[type];
+  if(discount!=null){
+    noCageWrap.style.display = 'block';
+    rowEl.querySelector('.animalNoCageNote').textContent = `הנחה של ${discount} ₪ ליחידה כשלוקחים ללא כלוב`;
+  }else{
+    noCageWrap.style.display = 'none';
+    noCageCb.checked = false;
+  }
+  const noCage = discount!=null && noCageCb.checked;
+
   const priceEl = rowEl.querySelector('.row-price');
   if(base==null){
     priceEl.textContent = 'מחיר לא הוגדר לפריט זה';
   }else{
-    const linePrice = base*qty + surcharge;
-    priceEl.textContent = `מחיר לשורה: ${linePrice} ₪${surcharge>0?' (כולל תוספת צבע)':''}`;
+    const unitPrice = noCage ? (base - discount) : base;
+    const linePrice = unitPrice*qty + surcharge;
+    priceEl.textContent = `מחיר לשורה: ${linePrice} ₪${surcharge>0?' (כולל תוספת צבע)':''}${noCage?' (ללא כלוב)':''}`;
   }
 }
-function addAnimalRow(type, qty, color, color2){
+function addAnimalRow(type, qty, color, color2, noCage){
   animalRowCounter++;
   const id = 'row'+animalRowCounter;
-  document.getElementById('animalRows').insertAdjacentHTML('beforeend', createAnimalRowHtml(id, type||ANIMAL_OPTIONS[0], qty||1, color, color2));
+  document.getElementById('animalRows').insertAdjacentHTML('beforeend', createAnimalRowHtml(id, type||ANIMAL_OPTIONS[0], qty||1, color, color2, noCage));
   const rowEl = document.querySelector('.animal-item[data-row-id="'+id+'"]');
   refreshRowColorOptions(rowEl, color, color2);
   updateRowPriceDisplay(rowEl);
@@ -1108,7 +1131,12 @@ function collectAnimalRows(){
     const colorSel2 = r.querySelector('.animalColorSelect2');
     const color = (colorSel.style.display!=='none' && colorSel.value) ? colorSel.value : '';
     const color2 = (colorSel2.style.display!=='none' && colorSel2.value) ? colorSel2.value : '';
-    list.push({type, quantity:qty, color, color2});
+    const noCageWrap = r.querySelector('.animalNoCageWrap');
+    const noCageCb = r.querySelector('.animalNoCageCheckbox');
+    const noCage = !!(noCageWrap && noCageWrap.style.display!=='none' && noCageCb && noCageCb.checked);
+    const row = {type, quantity:qty, color, color2};
+    if(noCage) row.noCage = true;
+    list.push(row);
   });
   return list;
 }
@@ -1142,7 +1170,7 @@ function formatAnimals(animals, pairFlags, cageSharing){
 // keep full per-unit pricing even when cage-sharing is chosen for logistics.
 const CAGE_SHARE_SECOND_PRICE = {
   'תוכון מותאם לאילוף כולל כלוב': 80,   // 160 + 80 = 240, same as the "2 תוכונים" bundle price
-  'קוקטייל כולל כלוב': 270,             // 2nd קוקטייל בכלוב משותף
+  'קוקטייל כולל כלוב': 250,             // 2nd קוקטייל בכלוב משותף - updated per מחירון "חסד לישראל" (was 270)
   'קוואקר כולל כלוב': 350               // 400 - 50 = 350 for the 2nd קוואקר בכלוב משותף
 };
 function computeOrderPrice(animalRows, foodRows, cageSharing){
@@ -1153,8 +1181,17 @@ function computeOrderPrice(animalRows, foodRows, cageSharing){
   });
   // base price per type, aggregated across rows so cage-sharing pairs are priced correctly
   // even if the same type is split across multiple rows (different colors etc.)
+  // "no cage" rows are tracked separately - they get a per-unit discount instead and
+  // never participate in cage-sharing pair pricing (there's no cage to share).
   const qtyByType = {};
-  animalRows.forEach(a=>{ qtyByType[a.type] = (qtyByType[a.type]||0) + a.quantity; });
+  const noCageQtyByType = {};
+  animalRows.forEach(a=>{
+    if(a.noCage && NO_CAGE_DISCOUNT_MAP[a.type]!=null){
+      noCageQtyByType[a.type] = (noCageQtyByType[a.type]||0) + a.quantity;
+    }else{
+      qtyByType[a.type] = (qtyByType[a.type]||0) + a.quantity;
+    }
+  });
   Object.entries(qtyByType).forEach(([type, qty])=>{
     const base = PRICE_MAP[type];
     if(base==null) return;
@@ -1167,6 +1204,12 @@ function computeOrderPrice(animalRows, foodRows, cageSharing){
     }else{
       total += base*qty;
     }
+  });
+  Object.entries(noCageQtyByType).forEach(([type, qty])=>{
+    const base = PRICE_MAP[type];
+    if(base==null) return;
+    const discount = NO_CAGE_DISCOUNT_MAP[type] || 0;
+    total += (base - discount) * qty;
   });
   (foodRows||[]).forEach(f=>{
     const base = FOOD_PRICE_MAP[f.type];
@@ -1640,7 +1683,7 @@ function startEdit(id){
   document.getElementById('fDate').value = o.date;
   document.getElementById('animalRows').innerHTML='';
   animalRowCounter = 0;
-  (o.animals && o.animals.length ? o.animals : [{type:ANIMAL_OPTIONS[0],quantity:1,color:''}]).forEach(a=>addAnimalRow(a.type, a.quantity, a.color, a.color2));
+  (o.animals && o.animals.length ? o.animals : [{type:ANIMAL_OPTIONS[0],quantity:1,color:''}]).forEach(a=>addAnimalRow(a.type, a.quantity, a.color, a.color2, a.noCage));
   document.getElementById('foodRows').innerHTML='';
   foodRowCounter = 0;
   (o.foodItems||[]).forEach(f=>addFoodRow(f.type, f.quantity));
