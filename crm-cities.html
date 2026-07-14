@@ -3080,7 +3080,31 @@ function saveDepotFromAdmin(){
   showToast('נקודת המוצא נשמרה');
 }
 
-const ROUTE_MAX_STOPS = 9; // Google Maps' consumer directions UI reliably supports about this many stops
+const MAPS_LINK_CHUNK_SIZE = 9; // Google Maps' consumer directions UI reliably supports about this many stops per link
+// Splits an already-optimized stop sequence into consecutive chunks of MAPS_LINK_CHUNK_SIZE, one
+// Google Maps link per chunk. Each link's origin is exactly where the previous link's destination
+// was, so opening them in order retraces the full optimized route with nothing skipped or
+// reshuffled - the split only exists because Google's own link can't display more stops at once.
+function buildMapsLinks(depotAddress, stopsForLink){
+  const chunks = [];
+  for(let i=0; i<stopsForLink.length; i+=MAPS_LINK_CHUNK_SIZE) chunks.push(stopsForLink.slice(i, i+MAPS_LINK_CHUNK_SIZE));
+  const links = [];
+  let originAddress = depotAddress;
+  for(let idx=0; idx<chunks.length; idx++){
+    const chunk = chunks[idx];
+    const isLast = idx === chunks.length-1;
+    const destinationAddress = isLast ? depotAddress : chunk[chunk.length-1]._fullAddress;
+    const waypointStops = isLast ? chunk : chunk.slice(0, -1);
+    const url = 'https://www.google.com/maps/dir/?api=1'
+      + '&origin=' + encodeURIComponent(originAddress)
+      + '&destination=' + encodeURIComponent(destinationAddress)
+      + (waypointStops.length ? '&waypoints=' + waypointStops.map(o=>encodeURIComponent(o._fullAddress)).join('|') : '')
+      + '&travelmode=driving';
+    links.push({ url, chunk });
+    originAddress = destinationAddress;
+  }
+  return links;
+}
 function sleep(ms){ return new Promise(resolve=>setTimeout(resolve, ms)); }
 
 // Free, no-signup geocoding via OpenStreetMap's Nominatim, used only to compute visiting
@@ -3314,20 +3338,23 @@ async function openRouteModal(city, round){
     return;
   }
 
+  // Optimize across ALL stops first (not just the first 9) - the ideal visiting order must be
+  // computed over the whole round, otherwise cutting stops before optimizing could arbitrarily
+  // split up stops that actually belong together in the best route. The 9-stop cap only applies
+  // afterwards, when chunking the already-optimal sequence into separate Google Maps links (a
+  // limitation of Google's own consumer link, not of our route calculation).
   const fullAddress = (o)=> o.address + (o.address.includes(city) ? '' : ', '+city);
-  const candidateStops = orders.slice(0, ROUTE_MAX_STOPS);
-  const overflow = orders.length - candidateStops.length;
-  candidateStops.forEach(o=>{ o._fullAddress = fullAddress(o); });
+  orders.forEach(o=>{ o._fullAddress = fullAddress(o); });
 
   content.innerHTML = `<div style="text-align:center;color:var(--muted);padding:16px 0;">🧭 מחשב מסלול אידיאלי...</div>`;
 
-  const result = await optimizeRouteOrder(depot, city, candidateStops);
+  const result = await optimizeRouteOrder(depot, city, orders);
 
   // Only trust the returned order if optimization actually succeeded - any error case (bad
   // depot geocode, no stops geocoded, network/service failure) falls back to entry order AND
   // must show a visible warning, never silently claim an "optimized" route it didn't compute.
   const optimizationOk = !!(result && result.ordered && result.ordered.length && !result.error);
-  const stopsForLink = optimizationOk ? result.ordered : candidateStops;
+  const stopsForLink = optimizationOk ? result.ordered : orders;
   const geocodeFailed = (result && result.failed) ? result.failed : [];
   const optimizationFailed = !optimizationOk;
 
@@ -3340,7 +3367,6 @@ async function openRouteModal(city, round){
     </div>
   `).join('');
   const warnHtml = noAddress.length ? `<div style="color:var(--danger);font-size:12.5px;margin-top:8px;">⚠️ ${noAddress.length} הזמנות בעיר זו בלי כתובת רשומה, לא נכללות: ${noAddress.map(o=>o.customer).join(', ')}</div>` : '';
-  const overflowHtml = overflow>0 ? `<div style="color:var(--danger);font-size:12.5px;margin-top:6px;">⚠️ יש ${orders.length} תחנות - קישור אחד תומך עד כ-${ROUTE_MAX_STOPS}, אז ${overflow} הזמנות אחרונות לא נכללו (אפשר לפצל לכמה סבבי משלוח).</div>` : '';
   const geocodeFailedHtml = geocodeFailed.length ? `<div style="color:var(--danger);font-size:12.5px;margin-top:6px;">⚠️ לא הצלחנו לאתר מיקום מדויק עבור: ${geocodeFailed.map(o=>`${o.customer} (${o.address})`).join(', ')} - הן נכללות בקישור אבל לא בסדר המחושב, כדאי לבדוק ידנית.</div>` : '';
   const errorMessages = {
     depot: 'לא הצלחנו לאתר את נקודת המוצא במפה - בדוק/י שהעיר והרחוב שהוגדרו באזור מנהל נכונים.',
@@ -3356,11 +3382,15 @@ async function openRouteModal(city, round){
   const statsHtml = (!optimizationFailed && result && result.distanceKm!=null) ? `<div style="font-size:12.5px;color:var(--muted);margin-top:4px;">מרחק כולל משוער: כ-${result.distanceKm} ק"מ · זמן נסיעה משוער: כ-${result.durationMin} דק'${trafficNote} (לא כולל עצירות)</div>` : '';
   const localOnlyHtml = (optimizationOk && localOnly) ? `<div style="color:var(--danger);font-size:12.5px;margin-top:6px;">⚠️ שירותי הניתוב לא היו זמינים כרגע - הסדר למטה מחושב לפי מרחק אווירי בין הכתובות (עדיין סדר משופר, אבל לא מבוסס כבישים/פקקים בפועל).</div>` : '';
 
-  const mapsUrl = 'https://www.google.com/maps/dir/?api=1'
-    + '&origin=' + encodeURIComponent(depotAddress)
-    + '&destination=' + encodeURIComponent(depotAddress) // round-trip: courier returns to the depot
-    + '&waypoints=' + stopsForLink.map(o=>encodeURIComponent(o._fullAddress)).join('|')
-    + '&travelmode=driving';
+  // The optimized order above already covers ALL stops. Google's own consumer directions link
+  // caps out around 9 stops though, so if there are more than that, split the (already-optimal)
+  // sequence into consecutive chunks - each link continues from exactly where the previous one
+  // ended, so the full route stays intact, just spread across a few links to open in order.
+  const mapsLinks = buildMapsLinks(depotAddress, stopsForLink);
+  const linksHtml = mapsLinks.length===1
+    ? `<a href="${mapsLinks[0].url}" target="_blank" class="btn-primary" style="display:block;text-align:center;margin-top:12px;text-decoration:none;">🧭 פתח מסלול בגוגל מפות</a>`
+    : `<div style="font-size:12.5px;color:var(--muted);margin-top:8px;">המסלול מפוצל ל-${mapsLinks.length} קישורים (מגבלת גוגל מפות לקישור בודד) - לפתוח לפי הסדר:</div>` +
+      mapsLinks.map((l,i)=>`<a href="${l.url}" target="_blank" class="btn-primary" style="display:block;text-align:center;margin-top:8px;text-decoration:none;">🧭 חלק ${i+1}/${mapsLinks.length} (תחנות ${i*MAPS_LINK_CHUNK_SIZE+1}-${i*MAPS_LINK_CHUNK_SIZE+l.chunk.length})</a>`).join('');
 
   content.innerHTML = `
     <div class="total-price-box" style="text-align:right;margin-bottom:10px;">
@@ -3372,9 +3402,8 @@ async function openRouteModal(city, round){
     ${localOnlyHtml}
     ${stopsHtml}
     ${warnHtml}
-    ${overflowHtml}
     ${geocodeFailedHtml}
-    <a href="${mapsUrl}" target="_blank" class="btn-primary" style="display:block;text-align:center;margin-top:12px;text-decoration:none;">🧭 פתח מסלול בגוגל מפות</a>
+    ${linksHtml}
   `;
 }
 function closeRouteModal(){ document.getElementById('routeModal').classList.remove('open'); }
