@@ -2972,12 +2972,16 @@ function debounce(fn, ms){
   return (...args)=>{ clearTimeout(t); t = setTimeout(()=>fn(...args), ms); };
 }
 // The official registry sometimes abbreviates the street "type" word (e.g. "שד קוגל" instead of
-// "שדרות קוגל"), which breaks plain substring matching against what a person naturally types.
-// Stripping a known type-word prefix (full or abbreviated) from both sides before comparing lets
-// "שדרות קוגל" match a record stored as "שד קוגל", and vice versa.
+// "שדרות קוגל") or a person's title in a street named after them (e.g. "פרופ' שור" instead of
+// "פרופסור שור"), which breaks plain substring matching against what a person naturally types -
+// and separately, OpenStreetMap/Nominatim (used for geocoding) usually has the FULL word, so an
+// abbreviated official name can fail to geocode entirely even though the street genuinely exists
+// (confirmed live: "פרופ' שור" - zero geocoding results; "פרופסור שור" - matches immediately).
+// Stripping/expanding a known prefix (full or abbreviated) lets both sides match either way.
 const STREET_TYPE_PREFIXES = [
   ['שדרות','שד'], ['רחוב','רח'], ['דרך','דר'], ['שכונת','שכ'],
-  ['סמטת','סמ'], ['כיכר','כי'], ['מבוא','מב'], ['חצר','חצ']
+  ['סמטת','סמ'], ['כיכר','כי'], ['מבוא','מב'], ['חצר','חצ'],
+  ['פרופסור',"פרופ'"], ['דוקטור','ד"ר'], ['גברת',"גב'"]
 ];
 function coreStreetName(name){
   const n = (name||'').trim();
