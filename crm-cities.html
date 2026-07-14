@@ -3245,6 +3245,127 @@ function isPlausibleRoadDistance(roadMeters, straightMeters){
   return roadMeters <= straightMeters * 4 + 5000;
 }
 
+// Fetches a real road-network distance+duration matrix between all given points (depot + stops)
+// via OSRM's free Table API (no key needed). This is what genuine route optimization needs -
+// straight-line distance can't tell that two "close" points are actually separated by a highway
+// with no direct crossing, or that a "far" point is actually just around the corner via a back
+// road. index 0 in the returned matrix is always the depot.
+async function fetchRoadMatrix(coordsList){
+  try{
+    const coordsStr = coordsList.map(c=>`${c.lon},${c.lat}`).join(';');
+    const url = `https://router.project-osrm.org/table/v1/driving/${coordsStr}?annotations=distance,duration`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if(data.code !== 'Ok' || !Array.isArray(data.distances)) return null;
+    const n = coordsList.length;
+    if(data.distances.length !== n || data.distances.some(row=>!Array.isArray(row) || row.length!==n)) return null;
+    for(const row of data.distances){ if(row.some(v=>v==null)) return null; } // OSRM couldn't route between some pair
+    return { distances: data.distances, durations: data.durations || null };
+  }catch(e){ return null; }
+}
+
+// Exact Held-Karp TSP solve over a real road-distance matrix. Index 0 is always the depot (fixed
+// start/end); returns the optimal visiting order of matrix indices 1..n-1. This guarantees the
+// true best route, not just an improved one - but the DP is O(2^n * n^2), so it's only used for
+// small rounds (n <= 13, i.e. up to 12 stops). Beyond that, refineWithMatrix takes over.
+function heldKarpExact(distances){
+  const n = distances.length;
+  const m = n - 1;
+  if(m <= 0) return [];
+  const FULL = (1<<m) - 1;
+  const dp = Array.from({length:1<<m}, ()=>new Array(m).fill(Infinity));
+  const parent = Array.from({length:1<<m}, ()=>new Array(m).fill(-1));
+  for(let i=0;i<m;i++){ dp[1<<i][i] = distances[0][i+1]; }
+  for(let mask=1; mask<=FULL; mask++){
+    for(let last=0; last<m; last++){
+      if(!(mask & (1<<last))) continue;
+      const cur = dp[mask][last];
+      if(!Number.isFinite(cur)) continue;
+      for(let next=0; next<m; next++){
+        if(mask & (1<<next)) continue;
+        const nmask = mask | (1<<next);
+        const cand = cur + distances[last+1][next+1];
+        if(cand < dp[nmask][next]){ dp[nmask][next] = cand; parent[nmask][next] = last; }
+      }
+    }
+  }
+  let bestLast = -1, bestCost = Infinity;
+  for(let last=0; last<m; last++){
+    const cost = dp[FULL][last] + distances[last+1][0];
+    if(cost < bestCost){ bestCost = cost; bestLast = last; }
+  }
+  if(bestLast === -1) return null;
+  const seq = [];
+  let mask = FULL, last = bestLast;
+  while(last !== -1){
+    seq.push(last);
+    const p = parent[mask][last];
+    mask ^= (1<<last);
+    last = p;
+  }
+  seq.reverse();
+  return seq.map(i=>i+1);
+}
+
+// 2-opt + Or-opt (single-stop relocation) local search over a real road-distance matrix. Unlike
+// plain 2-opt (segment-reversal only), Or-opt can pull one misplaced stop out and drop it
+// somewhere better - the fix for cases like two adjacent house numbers ending up split apart,
+// which segment-reversal alone can't repair. Never makes the tour worse. Used both to refine
+// large rounds (where exact solving is too slow) and to polish a TomTom/nearest-neighbor start.
+function refineWithMatrix(order, distances){
+  let route = order.slice();
+  const cost = (a,b)=>distances[a][b];
+  let improved = true, iterations = 0;
+  while(improved && iterations < 400){
+    improved = false; iterations++;
+    let full = [0, ...route, 0];
+    for(let i=1; i<full.length-2; i++){
+      for(let j=i+1; j<full.length-1; j++){
+        const a=full[i-1], b=full[i], c=full[j], d=full[j+1];
+        const before = cost(a,b)+cost(c,d);
+        const after = cost(a,c)+cost(b,d);
+        if(after < before - 1){
+          let lo=i, hi=j;
+          while(lo<hi){ const t=full[lo]; full[lo]=full[hi]; full[hi]=t; lo++; hi--; }
+          improved = true;
+        }
+      }
+    }
+    route = full.slice(1,-1);
+    full = [0, ...route, 0];
+    for(let i=1; i<full.length-1; i++){
+      const node = full[i];
+      const prev = full[i-1], next = full[i+1];
+      const removalGain = cost(prev,node)+cost(node,next)-cost(prev,next);
+      if(removalGain <= 0) continue;
+      let bestPos = -1, bestDelta = 1e-6;
+      for(let j=0; j<full.length-1; j++){
+        if(j===i-1 || j===i) continue;
+        const p = full[j], q = full[j+1];
+        const insertCost = cost(p,node)+cost(node,q)-cost(p,q);
+        const delta = removalGain - insertCost;
+        if(delta > bestDelta){ bestDelta = delta; bestPos = j; }
+      }
+      if(bestPos !== -1){
+        const arr = full.slice();
+        arr.splice(i,1);
+        const insertAfterIdx = bestPos < i ? bestPos : bestPos - 1;
+        arr.splice(insertAfterIdx+1, 0, node);
+        route = arr.slice(1,-1);
+        improved = true;
+        break;
+      }
+    }
+  }
+  return route;
+}
+function matrixTourTotal(order, distances){
+  let total = 0, prev = 0;
+  for(const idx of order){ total += distances[prev][idx]; prev = idx; }
+  total += distances[prev][0];
+  return total;
+}
+
 // Computes the fastest visiting order (starting and ending at the depot), taking real-time
 // traffic into account, via TomTom's free-tier Calculate Route API (computeBestOrder=true +
 // traffic=true). Falls back to OSRM (no traffic, but needs no key at all) if TomTom fails or
@@ -3269,7 +3390,13 @@ async function optimizeRouteOrder(depotObj, city, stops){
 
   const allCoords = [depotCoords, ...geocoded.map(g=>g.coords), depotCoords]; // roundtrip: end back at depot
 
-  // --- Try TomTom first: traffic-aware + reorders intermediate stops for the fastest route ---
+  // --- Try TomTom first: traffic-aware baseline order. Kept as a warm-start candidate and as the
+  // source of live traffic-delay figures - but the final stop order below always comes from our
+  // own solve over real road distances (exact for small rounds, refined heuristic for large ones),
+  // which is provably at least as good in raw distance and fixes cases plain 2-opt over TomTom's
+  // suggestion couldn't (e.g. a single stop relocated to the wrong spot in the sequence). ---
+  let tomtomOrderIdx = null; // 0-based indices into geocoded[], in TomTom's suggested order
+  let tomtomSummary = null;
   try{
     const locStr = allCoords.map(c=>`${c.lat},${c.lon}`).join(':');
     const url = `https://api.tomtom.com/routing/1/calculateRoute/${locStr}/json?key=${TOMTOM_API_KEY}&traffic=true&computeBestOrder=true&routeType=fastest&travelMode=car`;
@@ -3284,27 +3411,86 @@ async function optimizeRouteOrder(depotObj, city, stops){
       const indicesOk = validPermutation(rawEntries.map(e=>({tripPos:e.providedIndex})), geocoded.length)
                       && validPermutation(rawEntries, geocoded.length);
       if(indicesOk){
-        const stopEntries = rawEntries.map(e=>({ order: geocoded[e.providedIndex].order, tripPos: e.tripPos }));
-        stopEntries.sort((a,b)=>a.tripPos - b.tripPos);
+        rawEntries.sort((a,b)=>a.tripPos - b.tripPos);
+        const orderedIdx = rawEntries.map(e=>e.providedIndex);
+        const straightMeters = tourStraightLineMeters(depotCoords, orderedIdx.map(i=>geocoded[i].order), coordsByOrder);
         const summary = route.summary || {};
-        const orderedStops = stopEntries.map(e=>e.order);
-        const straightMeters = tourStraightLineMeters(depotCoords, orderedStops, coordsByOrder);
         if(isPlausibleRoadDistance(summary.lengthInMeters, straightMeters)){
-          return {
-            ordered: applyTwoOpt(depotCoords, orderedStops, coordsByOrder),
-            failed,
-            distanceKm: summary.lengthInMeters!=null ? Math.round(summary.lengthInMeters/1000*10)/10 : null,
-            durationMin: summary.travelTimeInSeconds!=null ? Math.round(summary.travelTimeInSeconds/60) : null,
-            trafficDelayMin: summary.trafficDelayInSeconds!=null ? Math.round(summary.trafficDelayInSeconds/60) : null,
-            hasTraffic: true
-          };
+          tomtomOrderIdx = orderedIdx;
+          tomtomSummary = summary;
         }
-        // TomTom's distance is wildly implausible for this order (seen live: 450km for a single-city
-        // round) - don't trust it even though the indices were technically valid. Fall through to OSRM.
+        // else: TomTom's distance is wildly implausible for this order (seen live: 450km for a
+        // single-city round) - don't trust it even though the indices were technically valid.
       }
-      // TomTom's indices didn't form a clean permutation - don't trust this result, fall through to OSRM.
     }
-  }catch(e){ /* fall through to OSRM below */ }
+  }catch(e){ /* no TomTom result - the road-distance solve below doesn't need it */ }
+
+  // --- Real road-distance matrix (depot + all stops) via OSRM's free Table API. This is what
+  // both the exact solver and the refinement heuristic optimize against, instead of straight-line
+  // distance - so a "shortcut" that's actually blocked by a highway with no crossing, or two
+  // house numbers that look close but are split by a one-way system, get handled correctly. ---
+  const matrixCoords = [depotCoords, ...geocoded.map(g=>g.coords)];
+  const matrix = await fetchRoadMatrix(matrixCoords);
+
+  if(matrix){
+    const n = matrixCoords.length;
+    let matrixOrder = null;
+    let exact = false;
+    if(n <= 13){
+      const exactOrder = heldKarpExact(matrix.distances);
+      if(exactOrder && exactOrder.length === geocoded.length){ matrixOrder = exactOrder; exact = true; }
+    }
+    if(!matrixOrder){
+      let start;
+      if(tomtomOrderIdx){
+        start = tomtomOrderIdx.map(i=>i+1); // warm-start from TomTom's suggestion when available
+      }else{
+        start = [];
+        const visited = new Set([0]);
+        let cur = 0;
+        for(let k=0;k<n-1;k++){
+          let best=-1, bestD=Infinity;
+          for(let j=1;j<n;j++){
+            if(visited.has(j)) continue;
+            if(matrix.distances[cur][j] < bestD){ bestD = matrix.distances[cur][j]; best = j; }
+          }
+          if(best===-1) break;
+          visited.add(best); start.push(best); cur = best;
+        }
+      }
+      matrixOrder = refineWithMatrix(start, matrix.distances);
+    }
+    const orderedStops = matrixOrder.map(idx=>geocoded[idx-1].order);
+    const totalMeters = matrixTourTotal(matrixOrder, matrix.distances);
+    let totalSeconds = null;
+    if(matrix.durations){
+      totalSeconds = 0; let prev=0;
+      for(const idx of matrixOrder){ totalSeconds += matrix.durations[prev][idx]; prev = idx; }
+      totalSeconds += matrix.durations[prev][0];
+    }
+    return {
+      ordered: orderedStops,
+      failed,
+      distanceKm: Math.round(totalMeters/1000*10)/10,
+      durationMin: totalSeconds!=null ? Math.round(totalSeconds/60) : (tomtomSummary ? Math.round(tomtomSummary.travelTimeInSeconds/60) : null),
+      trafficDelayMin: tomtomSummary && tomtomSummary.trafficDelayInSeconds!=null ? Math.round(tomtomSummary.trafficDelayInSeconds/60) : null,
+      hasTraffic: !!tomtomSummary,
+      exact
+    };
+  }
+
+  // --- Road-distance matrix unavailable: fall back to TomTom's own order (if we got one) ---
+  if(tomtomOrderIdx){
+    const orderedStops = tomtomOrderIdx.map(i=>geocoded[i].order);
+    return {
+      ordered: applyTwoOpt(depotCoords, orderedStops, coordsByOrder),
+      failed,
+      distanceKm: tomtomSummary.lengthInMeters!=null ? Math.round(tomtomSummary.lengthInMeters/1000*10)/10 : null,
+      durationMin: tomtomSummary.travelTimeInSeconds!=null ? Math.round(tomtomSummary.travelTimeInSeconds/60) : null,
+      trafficDelayMin: tomtomSummary.trafficDelayInSeconds!=null ? Math.round(tomtomSummary.trafficDelayInSeconds/60) : null,
+      hasTraffic: true
+    };
+  }
 
   // --- Fallback: OSRM (free, no key, no traffic data) ---
   try{
@@ -3410,7 +3596,8 @@ async function openRouteModal(city, round){
   const trafficNote = (result && result.hasTraffic)
     ? ` · מחושב לפי פקקים בזמן אמת${result.trafficDelayMin ? ` (כולל כ-${result.trafficDelayMin} דק' עיכוב פקקים)` : ''}`
     : (result && result.durationMin!=null ? ' · ללא נתוני פקקים בזמן אמת' : '');
-  const statsHtml = (!optimizationFailed && result && result.distanceKm!=null) ? `<div style="font-size:12.5px;color:var(--muted);margin-top:4px;">מרחק כולל משוער: כ-${result.distanceKm} ק"מ · זמן נסיעה משוער: כ-${result.durationMin} דק'${trafficNote} (לא כולל עצירות)</div>` : '';
+  const exactNote = (result && result.exact) ? ' · ✓ מסלול מיטבי מדויק (נבדקו כל הסדרים האפשריים)' : '';
+  const statsHtml = (!optimizationFailed && result && result.distanceKm!=null) ? `<div style="font-size:12.5px;color:var(--muted);margin-top:4px;">מרחק כולל משוער: כ-${result.distanceKm} ק"מ · זמן נסיעה משוער: כ-${result.durationMin} דק'${trafficNote} (לא כולל עצירות)${exactNote}</div>` : '';
   const localOnlyHtml = (optimizationOk && localOnly) ? `<div style="color:var(--danger);font-size:12.5px;margin-top:6px;">⚠️ שירותי הניתוב לא היו זמינים כרגע - הסדר למטה מחושב לפי מרחק אווירי בין הכתובות (עדיין סדר משופר, אבל לא מבוסס כבישים/פקקים בפועל).</div>` : '';
 
   // The optimized order above already covers ALL stops. Google's own consumer directions link
