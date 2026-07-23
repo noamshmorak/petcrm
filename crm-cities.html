@@ -1597,6 +1597,28 @@ function deleteCityToTrash(city){
     showToast(`העיר ${city} הועברה לאשפה`);
   });
 }
+// Same idea as deleteCityToTrash but scoped to a single round (one city+roundNumber),
+// so an admin can delete just one round's worth of orders without wiping the whole city.
+// Visible only to admin/mainadmin, directly on the round card - no need to go into the
+// admin area first.
+function deleteRoundToTrash(city, roundNumber){
+  const roundOrders = orders.filter(o=>o.city===city && (o.roundNumber||0)===roundNumber);
+  if(roundOrders.length===0){ showToast('אין הזמנות בסבב הזה'); return; }
+  const activeCount = roundOrders.filter(o=>!o.cancelled && !o.delivered).length;
+  const deliveredCount = roundOrders.filter(o=>o.delivered && !o.cancelled).length;
+  showConfirm(`למחוק את ${cityDisplayName(city, roundNumber)} בלבד? ${roundOrders.length} הזמנות (${activeCount} פעילות, ${deliveredCount} שנשלחו) יעברו לאשפה לאישור מנהל. סבבים אחרים של אותה עיר לא יושפעו.`, ()=>{
+    orders = orders.filter(o=>!(o.city===city && (o.roundNumber||0)===roundNumber));
+    trashedCities.push({
+      id: Date.now().toString(36)+Math.random().toString(36).slice(2,7),
+      city, roundNumber, orders: roundOrders, trashedAt: Date.now(), trashedBy: currentUser?currentUser.username:''
+    });
+    saveOrders(); saveTrash(); renderAll();
+    showToast(`${cityDisplayName(city, roundNumber)} הועבר לאשפה`);
+  });
+}
+function isAdminRole(){
+  return !!(currentUser && (currentUser.role==='mainadmin' || currentUser.role==='admin'));
+}
 function restoreCityFromTrash(id){
   const entry = trashedCities.find(t=>t.id===id);
   if(!entry) return;
@@ -2025,6 +2047,7 @@ function renderSummary(){
         <button class="btn-pack" onclick="openRouteModal('${c.city}', ${c.roundNumber})">🗺️ מסלול אידיאלי</button>
         ${cuButton}
         <button class="btn-ship" onclick="openShipModal('${c.city}', ${c.roundNumber})">✅ סמן משלוח כבוצע</button>
+        ${isAdminRole() ? `<button class="btn-pack" style="background:#fde3e3;color:var(--danger);" onclick="deleteRoundToTrash('${c.city}', ${c.roundNumber})">🗑️ מחק סבב זה</button>` : ''}
       </div>
     `;
   }).join('');
@@ -2450,6 +2473,7 @@ function renderHistory(){
         <div class="toggle-orders" onclick="toggleShipment('${s.key}')">${isOpen?'הסתר לקוחות ▲':'הצג לקוחות ▼'}</div>
         <div class="city-orders ${isOpen?'open':''}">${rows}</div>
         <button class="btn-ship" onclick="restoreShipment('${s.city}', ${s.roundNumber})">↩️ החזר לסיכום ערים (בטעות סימנתי)</button>
+        ${isAdminRole() ? `<button class="btn-pack" style="background:#fde3e3;color:var(--danger);" onclick="deleteRoundToTrash('${s.city}', ${s.roundNumber})">🗑️ מחק סבב זה</button>` : ''}
       </div>
     `;
   }).join('');
@@ -3200,7 +3224,7 @@ function renderAdminTabContent(){
         const deliveredCount = t.orders.filter(o=>o.delivered && !o.cancelled).length;
         return `
         <div class="city-card" style="padding:12px 14px;margin-bottom:8px;">
-          <div class="city-name" style="margin-bottom:6px;">${t.city}</div>
+          <div class="city-name" style="margin-bottom:6px;">${t.roundNumber!=null ? cityDisplayName(t.city, t.roundNumber) : t.city+' (כל הסבבים)'}</div>
           <div class="city-totals">${t.orders.length} הזמנות (${activeCount} פעילות, ${deliveredCount} נשלחו) · נמחק ב-${formatDate(new Date(t.trashedAt).toISOString().slice(0,10))}${t.trashedBy?' על ידי '+t.trashedBy:''}</div>
           <div style="display:flex;gap:8px;margin-top:8px;">
             <button class="btn-primary" style="flex:1;" onclick="restoreCityFromTrash('${t.id}')">↩️ שחזר</button>
