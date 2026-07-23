@@ -105,6 +105,10 @@
 
   .modal-overlay{display:none;position:fixed;inset:0;background:rgba(30,42,56,0.45);z-index:200;align-items:center;justify-content:center;padding:20px;}
   .modal-overlay.open{display:flex;}
+  /* the confirm ("are you sure?") dialog can be triggered from inside another already-open
+     modal (e.g. admin panel) - it must always render above every other modal, regardless of
+     DOM order, or it ends up hidden behind whatever opened it and becomes unusable. */
+  #confirmModal{z-index:400;}
   .modal-box{background:#fff;border-radius:16px;padding:22px;max-width:340px;width:100%;text-align:center;max-height:80vh;overflow-y:auto;position:relative;}
   .modal-box p{font-size:15px;font-weight:600;margin:0 0 14px;color:var(--ink);}
   .modal-box input{margin-bottom:16px;}
@@ -858,6 +862,7 @@ async function attemptLogin(){
   document.getElementById('logoutLink').textContent = `👤 ${u.username} (${roleLabel(u.role)}) · התנתקות`;
   document.getElementById('adminAreaLink').style.display = (u.role==='mainadmin' || u.role==='admin') ? '' : 'none';
   renderInventoryAlertBanner();
+  resetInactivityTimer();
 }
 function logout(){
   currentUser = null;
@@ -866,7 +871,24 @@ function logout(){
   document.getElementById('appRoot').style.display = 'none';
   document.getElementById('loginUsername').value = '';
   document.getElementById('loginPassword').value = '';
+  if(inactivityTimer){ clearTimeout(inactivityTimer); inactivityTimer = null; }
 }
+/* ---------- auto-logout after inactivity ---------- */
+const INACTIVITY_LOGOUT_MS = 20 * 60 * 1000; // 20 minutes
+let inactivityTimer = null;
+function resetInactivityTimer(){
+  if(!currentUser) return;
+  if(inactivityTimer) clearTimeout(inactivityTimer);
+  inactivityTimer = setTimeout(()=>{
+    if(currentUser){
+      logout();
+      showToast('התנתקת אוטומטית לאחר 20 דקות ללא פעילות');
+    }
+  }, INACTIVITY_LOGOUT_MS);
+}
+['click','keydown','scroll','touchstart','mousemove'].forEach(evt=>{
+  document.addEventListener(evt, resetInactivityTimer, {passive:true});
+});
 function tryAutoLogin(){
   let saved = null;
   try{ saved = sessionStorage.getItem('pet-crm-current-user'); }catch(e){}
@@ -878,6 +900,7 @@ function tryAutoLogin(){
   document.getElementById('appRoot').style.display = '';
   document.getElementById('logoutLink').textContent = `👤 ${u.username} (${roleLabel(u.role)}) · התנתקות`;
   document.getElementById('adminAreaLink').style.display = (u.role==='mainadmin' || u.role==='admin') ? '' : 'none';
+  resetInactivityTimer();
   return true;
 }
 
@@ -1557,7 +1580,14 @@ function deleteCityToTrash(city){
   if(cityOrders.length===0){ showToast('אין הזמנות לעיר הזו'); return; }
   const activeCount = cityOrders.filter(o=>!o.cancelled && !o.delivered).length;
   const deliveredCount = cityOrders.filter(o=>o.delivered && !o.cancelled).length;
-  showConfirm(`למחוק את כל העיר ${city}? ${cityOrders.length} הזמנות (${activeCount} פעילות, ${deliveredCount} שנשלחו) יעברו לאשפה לאישור מנהל.`, ()=>{
+  // "עיר" here means every round of it together - צפת, צפת 2, צפת 3 etc. are all the SAME
+  // city, just different roundNumber values. Spell out the round breakdown explicitly in the
+  // confirmation so it's clear this deletes all of them at once, not just one round.
+  const roundCounts = {};
+  cityOrders.forEach(o=>{ const r = o.roundNumber||0; roundCounts[r] = (roundCounts[r]||0)+1; });
+  const roundsBreakdown = Object.keys(roundCounts).map(Number).sort((a,b)=>a-b)
+    .map(r=>`${cityDisplayName(city, r)}: ${roundCounts[r]} הזמנות`).join(', ');
+  showConfirm(`למחוק את כל העיר ${city} - כולל כל הסבבים שלה (${roundsBreakdown})? סה"כ ${cityOrders.length} הזמנות (${activeCount} פעילות, ${deliveredCount} שנשלחו) יעברו לאשפה לאישור מנהל.`, ()=>{
     orders = orders.filter(o=>o.city!==city);
     trashedCities.push({
       id: Date.now().toString(36)+Math.random().toString(36).slice(2,7),
@@ -3155,7 +3185,11 @@ function renderAdminTabContent(){
       <div class="field" style="margin-bottom:10px;">
         <label>בחר עיר למחיקה</label>
         <select id="trashCitySelect">
-          ${cities.map(c=>`<option value="${escAttr(c)}">${c}</option>`).join('')}
+          ${cities.map(c=>{
+            const cCount = orders.filter(o=>o.city===c).length;
+            const cRounds = new Set(orders.filter(o=>o.city===c).map(o=>o.roundNumber||0)).size;
+            return `<option value="${escAttr(c)}">${c} (${cRounds} סבבים, ${cCount} הזמנות)</option>`;
+          }).join('')}
         </select>
       </div>
       <button class="btn-primary" style="background:var(--danger);" onclick="deleteCityToTrash(document.getElementById('trashCitySelect').value)">🗑️ מחק את העיר הנבחרת</button>
