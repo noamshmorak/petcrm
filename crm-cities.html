@@ -1788,6 +1788,20 @@ function deleteOrder(id){
     orders = orders.filter(o=>o.id!==id); saveOrders(); renderAll(); showToast('ההזמנה נמחקה');
   });
 }
+// Moves a single order to the next round number in the same city (creating that round
+// implicitly if it doesn't exist yet, or joining it if it already has other orders).
+function postponeOrderToNextRound(id){
+  const o = orders.find(x=>x.id===id);
+  if(!o) return;
+  if(o.delivered){ showToast('לא ניתן לדחות הזמנה שכבר נשלחה'); return; }
+  if(o.cancelled){ showToast('לא ניתן לדחות הזמנה מבוטלת'); return; }
+  const currentRound = o.roundNumber||0;
+  const nextRound = currentRound + 1;
+  showConfirm(`לדחות את ההזמנה של ${o.customer||'הלקוח'} לסבב הבא (${cityDisplayName(o.city, nextRound)})? בטוח?`, ()=>{
+    o.roundNumber = nextRound;
+    saveOrders(); renderAll(); showToast('ההזמנה נדחתה לסבב הבא');
+  });
+}
 
 /* ---------- summary ---------- */
 function daysSince(dateStr){
@@ -1876,6 +1890,7 @@ function renderSummary(){
         </div>
         <div class="order-actions">
           <button class="icon-btn" onclick="startEdit('${o.id}')">✏️</button>
+          <button class="icon-btn" onclick="postponeOrderToNextRound('${o.id}')" title="דחה לסבב הבא">⏭️</button>
           <button class="icon-btn" onclick="toggleCancel('${o.id}')">🚫</button>
           <button class="icon-btn" onclick="deleteOrder('${o.id}')">🗑️</button>
         </div>
@@ -1944,6 +1959,7 @@ function renderAllOrders(){
       </div>
       <div class="order-actions">
         <button class="icon-btn" onclick="startEdit('${o.id}')">✏️</button>
+        ${(!o.cancelled && !o.delivered) ? `<button class="icon-btn" onclick="postponeOrderToNextRound('${o.id}')" title="דחה לסבב הבא">⏭️</button>` : ''}
         <button class="icon-btn" onclick="toggleCancel('${o.id}')">${o.cancelled?'↩️':'🚫'}</button>
         <button class="icon-btn" onclick="deleteOrder('${o.id}')">🗑️</button>
       </div>
