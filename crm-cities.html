@@ -2005,7 +2005,7 @@ function renderSummary(){
       <div class="order-row">
         <div>
           <div class="order-main">${o.deliveryConfirmed?'✅ ':''}${formatAnimals(o.animals,o.pairFlags,o.cageSharing)} — ${o.customer}</div>
-          <div class="order-sub">${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''} · 💰 ${o.totalPrice||0} ₪</div>
+          <div class="order-sub">${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}</div>
         </div>
         <div class="order-actions">
           <button class="icon-btn" onclick="startEdit('${o.id}')">✏️</button>
@@ -2038,7 +2038,7 @@ function renderSummary(){
         </div>
         <div class="city-breakdown">${chips}</div>
         <div class="city-totals">${c.count} הזמנות · ${c.totalQty} בעלי חיים בסה"כ · 📦 ${cages} כלובים נדרשים למשלוח</div>
-        <div class="city-totals" style="color:var(--accent-dark);font-weight:700;margin-top:4px;">💰 ${c.totalRevenue} ₪ סה"כ מכירות בעיר</div>
+        ${isAdminRole() ? `<div class="city-totals" style="color:var(--accent-dark);font-weight:700;margin-top:4px;">💰 ${c.totalRevenue} ₪ סה"כ מכירות בעיר</div>` : ''}
         <div class="city-totals" style="margin-top:4px;">🚚 מסירה בשטח: ${confirmedCount} מתוך ${c.count} סומנו כנמסרו</div>
         <div class="toggle-orders" onclick="toggleCity('${toggleKey}')">${isOpen?'הסתר הזמנות ▲':'הצג הזמנות ▼'}</div>
         <div class="city-orders ${isOpen?'open':''}">${ordersHtml}</div>
@@ -2075,7 +2075,7 @@ function renderAllOrders(){
     <div class="order-row ${o.cancelled?'cancelled':''}">
       <div>
         <div class="order-main">${o.city} — ${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.cancelled?'<span class="badge-cancelled">מבוטלת</span>':''}${(!o.cancelled && o.delivered)?'<span class="badge-shipped">נשלח '+formatDate(o.deliveryDate)+'</span>':''}</div>
-        <div class="order-sub">${o.customer} · ${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''} · 💰 ${o.totalPrice||0} ₪</div>
+        <div class="order-sub">${o.customer} · ${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}</div>
       </div>
       <div class="order-actions">
         <button class="icon-btn" onclick="startEdit('${o.id}')">✏️</button>
@@ -2458,7 +2458,7 @@ function renderHistory(){
       <div class="order-row">
         <div>
           <div class="order-main">${o.customer} — ${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}</div>
-          <div class="order-sub">הוזמן ב-${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''} · 💰 ${o.totalPrice||0} ₪</div>
+          <div class="order-sub">הוזמן ב-${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}</div>
         </div>
       </div>
     `).join('');
@@ -2469,7 +2469,7 @@ function renderHistory(){
           <div class="city-last">משלוח: ${formatDate(s.deliveryDate)} · ${relativeTime(s.deliveryDate)}</div>
         </div>
         <div class="city-totals">${s.orders.length} לקוחות · ${s.totalQty} בעלי חיים</div>
-        <div class="city-totals" style="color:var(--accent-dark);font-weight:700;margin-top:4px;">💰 ${s.totalRevenue} ₪ הכנסה מהמשלוח הזה</div>
+        ${isAdminRole() ? `<div class="city-totals" style="color:var(--accent-dark);font-weight:700;margin-top:4px;">💰 ${s.totalRevenue} ₪ הכנסה מהמשלוח הזה</div>` : ''}
         <div class="toggle-orders" onclick="toggleShipment('${s.key}')">${isOpen?'הסתר לקוחות ▲':'הצג לקוחות ▼'}</div>
         <div class="city-orders ${isOpen?'open':''}">${rows}</div>
         <button class="btn-ship" onclick="restoreShipment('${s.city}', ${s.roundNumber})">↩️ החזר לסיכום ערים (בטעות סימנתי)</button>
