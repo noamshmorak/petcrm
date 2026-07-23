@@ -682,6 +682,10 @@ function getSkuUnitCost(sku){
   return (typeof c === 'number') ? c : null;
 }
 let avgMarketingCostPerOrder = 70;
+// Optional per-city override: total advertising spend for that city (all-time), divided by
+// that city's all-time order count to get a per-order marketing rate for it. Cities without
+// an entry here fall back to the global avgMarketingCostPerOrder. See getCityMarketingRate().
+let cityMarketingSpend = {};
 let spotSales = [];
 
 const CAGE_GROUP_MAP = {
@@ -2562,11 +2566,12 @@ async function loadCostSettings(){
       const parsed = JSON.parse(res.value);
       costSettings = Object.assign({}, JSON.parse(JSON.stringify(DEFAULT_COST_MAP)), parsed.costs||{});
       avgMarketingCostPerOrder = typeof parsed.marketing === 'number' ? parsed.marketing : 70;
+      cityMarketingSpend = parsed.cityMarketing || {};
     }
   }catch(e){ /* use defaults */ }
 }
 async function saveCostSettings(){
-  try{ await window.storage.set(COST_SETTINGS_KEY, JSON.stringify({costs:costSettings, marketing:avgMarketingCostPerOrder}), true); }
+  try{ await window.storage.set(COST_SETTINGS_KEY, JSON.stringify({costs:costSettings, marketing:avgMarketingCostPerOrder, cityMarketing:cityMarketingSpend}), true); }
   catch(e){ showToast('שגיאה בשמירת ההגדרות'); }
 }
 
@@ -2602,9 +2607,45 @@ function computeAdminFinancials(){
   const netProfit = totalRevenue - totalCost - marketingEstimate;
   return { revenue, spotRevenue, totalRevenue, cost, spotCost, totalCost, marketingEstimate, netProfit, orderCount, unitsSold };
 }
+// "General profit" header - keeps actual (already-shipped) and projected (not yet shipped)
+// numbers in two clearly separate blocks, instead of blending them into one confusing figure.
+// scope: 'month' (current calendar month only) or 'all' (every order, all-time).
+function computeGeneralFinancials(scope){
+  const curMonth = new Date().toISOString().slice(0,7);
+  const inScope = d => scope==='all' || (d||'').slice(0,7)===curMonth;
+  const validOrders = orders.filter(o=>!o.cancelled && inScope(o.date));
+  const validSpotSales = spotSales.filter(s=>inScope(s.date));
+
+  let actual = { revenue:0, cost:0, count:0 };
+  let projected = { revenue:0, cost:0, count:0 };
+  validOrders.forEach(o=>{
+    const c = computeOrderCost(o);
+    const bucket = o.delivered ? actual : projected;
+    bucket.revenue += (o.totalPrice||0);
+    bucket.cost += c;
+    bucket.count += 1;
+  });
+  // spot/quick sales leave stock and get paid immediately - they're always "actual", never projected.
+  validSpotSales.forEach(s=>{
+    const c = getSkuUnitCost(s.product);
+    actual.revenue += (s.totalPrice||0);
+    actual.cost += (c!=null ? c*s.quantity : 0);
+    actual.count += 1;
+  });
+  [actual, projected].forEach(b=>{
+    b.marketing = b.count * avgMarketingCostPerOrder;
+    b.profit = b.revenue - b.cost - b.marketing;
+  });
+  return { actual, projected };
+}
 
 /* ---------- per-city financial report (all rounds merged, actual vs expected, month/year filter) ---------- */
 let adminReportPeriod = 'all';
+let adminGeneralScope = 'all'; // 'month' | 'all' - scope for the "רווח כללי" header block
+function setAdminGeneralScope(scope){
+  adminGeneralScope = scope;
+  renderAdminTabContent();
+}
 // Cost for the animal lines of an order, accounting for shared cages
 // (2 single-unit animals sharing one cage cost only 1 cage, not 2).
 function computeOrderAnimalCost(o){
@@ -2649,6 +2690,16 @@ function getAvailablePeriods(){
     years: Array.from(yearSet).sort().reverse()
   };
 }
+// Per-order marketing cost for a city: if an admin entered a total ad-spend for that city
+// (cityMarketingSpend), it's divided by the city's all-time order count for a stable rate;
+// otherwise falls back to the global avgMarketingCostPerOrder.
+function getCityMarketingRate(city){
+  const totalSpend = cityMarketingSpend[city];
+  if(totalSpend==null || totalSpend==='') return avgMarketingCostPerOrder;
+  const totalCityOrders = orders.filter(o=>!o.cancelled && o.city===city).length;
+  if(totalCityOrders===0) return avgMarketingCostPerOrder;
+  return totalSpend / totalCityOrders;
+}
 function computeCityFinancials(period){
   const map = {};
   orders.filter(o=>!o.cancelled).forEach(o=>{
@@ -2671,14 +2722,71 @@ function computeCityFinancials(period){
       c.expectedCost += orderCost;
     }
   });
-  const list = Object.values(map).map(c=>({
-    ...c,
-    totalRevenue: c.deliveredRevenue + c.expectedRevenue,
-    totalCost: c.deliveredCost + c.expectedCost,
-    deliveredProfit: c.deliveredRevenue - c.deliveredCost,
-    totalProfit: (c.deliveredRevenue + c.expectedRevenue) - (c.deliveredCost + c.expectedCost)
-  }));
+  const list = Object.values(map).map(c=>{
+    const marketingRate = getCityMarketingRate(c.city);
+    const marketing = marketingRate * c.ordersCount;
+    const totalRevenue = c.deliveredRevenue + c.expectedRevenue;
+    const merchCost = c.deliveredCost + c.expectedCost;
+    const totalCost = merchCost + marketing;
+    const totalProfit = totalRevenue - totalCost;
+    const profitPct = totalRevenue>0 ? (totalProfit/totalRevenue*100) : null;
+    const expenseRatio = totalRevenue>0 ? (totalCost/totalRevenue) : null;
+    return {
+      ...c,
+      marketing,
+      totalRevenue,
+      merchCost,
+      totalCost,
+      deliveredProfit: c.deliveredRevenue - c.deliveredCost,
+      totalProfit,
+      profitPct,
+      highExpenseWarning: expenseRatio!=null && expenseRatio >= 0.5
+    };
+  });
   return list.sort((a,b)=> b.totalRevenue - a.totalRevenue);
+}
+// Same per-city math as computeCityFinancials, but broken down by month for ONE city -
+// used by the "drill into one city, see all its months" report view.
+function computeCityMonthlyBreakdown(city){
+  const map = {};
+  orders.filter(o=>!o.cancelled && o.city===city && o.date).forEach(o=>{
+    const month = o.date.slice(0,7);
+    if(!map[month]){
+      map[month] = { month, ordersCount:0, deliveredRevenue:0, deliveredCost:0, expectedRevenue:0, expectedCost:0 };
+    }
+    const m = map[month];
+    m.ordersCount += 1;
+    const orderCost = computeOrderCost(o);
+    if(o.delivered){
+      m.deliveredRevenue += (o.totalPrice||0);
+      m.deliveredCost += orderCost;
+    }else{
+      m.expectedRevenue += (o.totalPrice||0);
+      m.expectedCost += orderCost;
+    }
+  });
+  const marketingRate = getCityMarketingRate(city);
+  const list = Object.values(map).map(m=>{
+    const marketing = marketingRate * m.ordersCount;
+    const totalRevenue = m.deliveredRevenue + m.expectedRevenue;
+    const merchCost = m.deliveredCost + m.expectedCost;
+    const totalCost = merchCost + marketing;
+    const totalProfit = totalRevenue - totalCost;
+    const profitPct = totalRevenue>0 ? (totalProfit/totalRevenue*100) : null;
+    const expenseRatio = totalRevenue>0 ? (totalCost/totalRevenue) : null;
+    return {
+      ...m,
+      marketing,
+      totalRevenue,
+      merchCost,
+      totalCost,
+      deliveredProfit: m.deliveredRevenue - m.deliveredCost,
+      totalProfit,
+      profitPct,
+      highExpenseWarning: expenseRatio!=null && expenseRatio >= 0.5
+    };
+  });
+  return list.sort((a,b)=> b.month.localeCompare(a.month));
 }
 // Revenue by city, broken down per shipment/round (each round shown separately, plus a city grand total).
 function computeCityRevenueBreakdown(){
@@ -2706,10 +2814,56 @@ function periodLabel(p){
   const names = ['ינואר','פברואר','מרץ','אפריל','מאי','יוני','יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'];
   return `${names[parseInt(m,10)-1]} ${y}`;
 }
+let adminCityReportMode = 'byPeriod'; // 'byPeriod' = pick a month/year, see all cities | 'byCity' = pick a city, see all its months
+let adminCityReportCity = '';
+function cityFinCardHtml(c, titleHtml){
+  const warningHtml = c.highExpenseWarning
+    ? `<div style="margin-top:6px;color:var(--danger);font-weight:700;font-size:12.5px;">⚠️ ההוצאות בעיר הזו הן ${(c.totalCost/c.totalRevenue*100).toFixed(0)}% מההכנסות (50% ומעלה)</div>`
+    : '';
+  const pctHtml = c.profitPct!=null ? ` · אחוז רווח: ${c.profitPct.toFixed(0)}%` : '';
+  return `
+    <div class="city-card" style="padding:12px 14px;margin-bottom:8px;">
+      <div class="city-name" style="margin-bottom:6px;">${titleHtml}</div>
+      <div class="city-totals">${c.ordersCount} הזמנות</div>
+      <div class="city-totals">✅ נמסר בפועל: ${c.deliveredRevenue.toFixed(1)} ₪ הכנסה · עלות ${c.deliveredCost.toFixed(1)} ₪ · רווח ${c.deliveredProfit.toFixed(1)} ₪</div>
+      <div class="city-totals">⏳ צפוי (טרם נמסר): ${c.expectedRevenue.toFixed(1)} ₪ הכנסה · עלות ${c.expectedCost.toFixed(1)} ₪</div>
+      <div class="city-totals">📢 עלות פרסום משוערת: ${c.marketing.toFixed(1)} ₪${cityMarketingSpend[c.city]!=null && cityMarketingSpend[c.city]!=='' ? ' (לפי הוצאה שהוזנה לעיר זו)' : ' (לפי ההערכה הכללית)'}</div>
+      <div class="city-totals" style="font-weight:800;color:${c.totalProfit>=0?'var(--route)':'var(--danger)'};margin-top:4px;">🧾 רווח כולל (בפועל+צפוי, אחרי עלות סחורה ופרסום): ${c.totalProfit.toFixed(1)} ₪ · הכנסה כוללת: ${c.totalRevenue.toFixed(1)} ₪${pctHtml}</div>
+      ${warningHtml}
+    </div>
+  `;
+}
 function renderAdminCityReport(){
   const container = document.getElementById('adminCityReport');
   if(!container) return;
   const periods = getAvailablePeriods();
+  const cities = getKnownCities().slice().sort();
+
+  const modeToggleHtml = `
+    <div class="cage-toggle" style="margin-bottom:10px;">
+      <button type="button" class="${adminCityReportMode==='byPeriod'?'active':''}" onclick="setAdminCityReportMode('byPeriod')">לפי תקופה (כל הערים)</button>
+      <button type="button" class="${adminCityReportMode==='byCity'?'active':''}" onclick="setAdminCityReportMode('byCity')">לפי עיר (כל החודשים שלה)</button>
+    </div>
+  `;
+
+  if(adminCityReportMode==='byCity'){
+    if(!adminCityReportCity && cities.length) adminCityReportCity = cities[0];
+    const list = adminCityReportCity ? computeCityMonthlyBreakdown(adminCityReportCity) : [];
+    container.innerHTML = `
+      ${modeToggleHtml}
+      <div class="field" style="margin-bottom:10px;">
+        <label>בחר עיר</label>
+        <select id="adminCityReportCitySelect">
+          ${cities.map(c=>`<option value="${escAttr(c)}" ${c===adminCityReportCity?'selected':''}>${c}</option>`).join('')}
+        </select>
+      </div>
+      ${list.length===0 ? '<div style="color:var(--muted);font-size:13px;">אין נתונים לעיר זו.</div>' : list.map(m=>cityFinCardHtml({...m, city:adminCityReportCity}, `${periodLabel(m.month)}`)).join('')}
+    `;
+    const citySel = document.getElementById('adminCityReportCitySelect');
+    if(citySel) citySel.addEventListener('change', ()=>{ adminCityReportCity = citySel.value; renderAdminCityReport(); });
+    return;
+  }
+
   const list = computeCityFinancials(adminReportPeriod);
   const totals = list.reduce((s,c)=>({
     deliveredRevenue: s.deliveredRevenue + c.deliveredRevenue,
@@ -2719,6 +2873,7 @@ function renderAdminCityReport(){
   }), {deliveredRevenue:0, expectedRevenue:0, totalCost:0, totalProfit:0});
 
   container.innerHTML = `
+    ${modeToggleHtml}
     <div class="field" style="margin-bottom:10px;">
       <label>סינון לפי שנה / חודש</label>
       <select id="adminPeriodSelect">
@@ -2734,21 +2889,17 @@ function renderAdminCityReport(){
     <div class="total-price-box" style="text-align:right;margin-bottom:10px;">
       <div>✅ הכנסה שהתקבלה בפועל (נמסר): ${totals.deliveredRevenue.toFixed(1)} ₪</div>
       <div>⏳ הכנסה צפויה (טרם נמסר): ${totals.expectedRevenue.toFixed(1)} ₪</div>
-      <div>📦 עלות סחורה כוללת (כולל מע"מ על כלובים): ${totals.totalCost.toFixed(1)} ₪</div>
+      <div>📦 עלות כוללת (סחורה + פרסום): ${totals.totalCost.toFixed(1)} ₪</div>
       <div style="font-weight:800;color:${totals.totalProfit>=0?'var(--route)':'var(--danger)'};">🧾 רווח כולל משוער: ${totals.totalProfit.toFixed(1)} ₪</div>
     </div>
-    ${list.length===0 ? '<div style="color:var(--muted);font-size:13px;">אין נתונים לתקופה זו.</div>' : list.map(c=>`
-      <div class="city-card" style="padding:12px 14px;margin-bottom:8px;">
-        <div class="city-name" style="margin-bottom:6px;">${c.city} — סה"כ כולל</div>
-        <div class="city-totals">${c.ordersCount} הזמנות</div>
-        <div class="city-totals">✅ נמסר בפועל: ${c.deliveredRevenue.toFixed(1)} ₪ הכנסה · עלות ${c.deliveredCost.toFixed(1)} ₪ · רווח ${c.deliveredProfit.toFixed(1)} ₪</div>
-        <div class="city-totals">⏳ צפוי (טרם נמסר): ${c.expectedRevenue.toFixed(1)} ₪ הכנסה · עלות ${c.expectedCost.toFixed(1)} ₪</div>
-        <div class="city-totals" style="font-weight:800;color:${c.totalProfit>=0?'var(--route)':'var(--danger)'};margin-top:4px;">🧾 רווח כולל (בפועל+צפוי): ${c.totalProfit.toFixed(1)} ₪ · הכנסה כוללת: ${c.totalRevenue.toFixed(1)} ₪</div>
-      </div>
-    `).join('')}
+    ${list.length===0 ? '<div style="color:var(--muted);font-size:13px;">אין נתונים לתקופה זו.</div>' : list.map(c=>cityFinCardHtml(c, `${c.city} — סה"כ כולל`)).join('')}
   `;
   const sel = document.getElementById('adminPeriodSelect');
   if(sel) sel.addEventListener('change', ()=>{ adminReportPeriod = sel.value; renderAdminCityReport(); });
+}
+function setAdminCityReportMode(mode){
+  adminCityReportMode = mode;
+  renderAdminCityReport();
 }
 function renderAdminRevenueByCity(){
   const container = document.getElementById('adminRevenueByCity');
@@ -2792,21 +2943,36 @@ function renderAdminTabContent(){
   if(!adminActiveTab){ content.innerHTML = '<div style="color:var(--muted);">אין לך הרשאה לתוכן כלשהו כאן.</div>'; return; }
 
   if(adminActiveTab==='report'){
-    const f = computeAdminFinancials();
+    const gf = computeGeneralFinancials(adminGeneralScope);
     content.innerHTML = `
+      <div style="font-weight:800;margin-bottom:8px;">🧾 רווח כללי</div>
+      <div class="cage-toggle" style="margin-bottom:10px;">
+        <button type="button" class="${adminGeneralScope==='month'?'active':''}" onclick="setAdminGeneralScope('month')">החודש</button>
+        <button type="button" class="${adminGeneralScope==='all'?'active':''}" onclick="setAdminGeneralScope('all')">כל ההזמנות</button>
+      </div>
       <div class="total-price-box" style="text-align:right;">
-        <div>💰 הכנסות ממשלוחים: ${f.revenue} ₪</div>
-        <div>💵 הכנסות ממכירות מהירות/יריד: ${f.spotRevenue} ₪</div>
-        <div style="font-size:18px;margin-top:4px;">📈 סה"כ הכנסות: ${f.totalRevenue} ₪</div>
-        <div style="margin-top:8px;">📦 עלות סחורה כוללת (כולל מע"מ 18% על כלובים): ${f.totalCost.toFixed(1)} ₪</div>
-        <div>📢 הערכת עלות פרסום (${f.orderCount} הזמנות × ${avgMarketingCostPerOrder} ₪): ${f.marketingEstimate} ₪</div>
-        <div style="font-size:18px;font-weight:800;margin-top:6px;color:${f.netProfit>=0?'var(--route)':'var(--danger)'};">🧾 רווח נקי משוער: ${f.netProfit.toFixed(1)} ₪</div>
-        <div style="font-size:12px;color:var(--muted);margin-top:4px;">${f.unitsSold} בעלי חיים נמכרו בסה"כ (במשלוחים)</div>
+        <div style="font-weight:800;margin-bottom:4px;">✅ בפועל (הזמנות שכבר נשלחו + מכירות מהירות)</div>
+        <div>הכנסה: ${gf.actual.revenue.toFixed(1)} ₪ · עלות סחורה: ${gf.actual.cost.toFixed(1)} ₪ · פרסום: ${gf.actual.marketing.toFixed(1)} ₪ (${gf.actual.count} הזמנות)</div>
+        <div style="font-weight:800;color:${gf.actual.profit>=0?'var(--route)':'var(--danger)'};">רווח בפועל: ${gf.actual.profit.toFixed(1)} ₪</div>
+        <div style="font-weight:800;margin:10px 0 4px;">⏳ צפוי (הזמנות שטרם נשלחו)</div>
+        <div>הכנסה: ${gf.projected.revenue.toFixed(1)} ₪ · עלות סחורה: ${gf.projected.cost.toFixed(1)} ₪ · פרסום: ${gf.projected.marketing.toFixed(1)} ₪ (${gf.projected.count} הזמנות)</div>
+        <div style="font-weight:800;color:${gf.projected.profit>=0?'var(--route)':'var(--danger)'};">רווח צפוי: ${gf.projected.profit.toFixed(1)} ₪</div>
       </div>
 
       <div class="field">
-        <label>עלות פרסום ממוצעת ללקוח (₪) - הערכה ידנית</label>
+        <label>עלות פרסום ממוצעת ללקוח (₪) - הערכה ידנית, ברירת מחדל לכל עיר שלא הוגדרה לה עלות ספציפית</label>
         <input type="number" id="adminMarketingInput" value="${avgMarketingCostPerOrder}">
+      </div>
+
+      <div style="font-weight:800;margin:18px 0 8px;border-top:1px solid var(--border);padding-top:14px;">📢 עלות פרסום לפי עיר (אופציונלי)</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">הזינו כמה עלה הפרסום הכולל (בכל הזמן) בעיר מסוימת - המערכת תחלק את זה לפי מספר ההזמנות באותה עיר. השאירו ריק כדי להשתמש בהערכה הכללית למעלה.</div>
+      <div id="adminCityMarketingList">
+        ${getKnownCities().slice().sort().map(c=>`
+          <div class="row2" style="margin-bottom:8px;align-items:center;">
+            <div style="flex:2;font-size:13px;">${c}</div>
+            <input type="number" step="1" class="admin-city-marketing-input" data-city="${escAttr(c)}" style="flex:1;" placeholder="ברירת מחדל" value="${cityMarketingSpend[c]??''}">
+          </div>
+        `).join('')}
       </div>
 
       <div style="font-weight:800;margin:18px 0 8px;border-top:1px solid var(--border);padding-top:14px;">📊 דוח הכנסות/רווח לפי עיר (כל הסבבים מאוחדים, בפועל מול צפוי)</div>
@@ -3050,6 +3216,12 @@ function saveAdminSettings(){
   });
   const marketingVal = parseFloat(document.getElementById('adminMarketingInput').value);
   avgMarketingCostPerOrder = isNaN(marketingVal) ? avgMarketingCostPerOrder : marketingVal;
+  document.querySelectorAll('.admin-city-marketing-input').forEach(inp=>{
+    const city = inp.dataset.city;
+    const val = inp.value.trim();
+    if(val==='') delete cityMarketingSpend[city];
+    else cityMarketingSpend[city] = parseFloat(val);
+  });
   saveCostSettings();
   showToast('ההגדרות נשמרו');
   renderAdminTabContent();
