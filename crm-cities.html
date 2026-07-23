@@ -877,11 +877,13 @@ function tryAutoLogin(){
 }
 
 /* ---------- inventory / stock ---------- */
-let stock = { animals:{}, cages:{} };
+let stock = { animals:{}, cages:{}, animalsMissing:{}, cagesMissing:{} };
 function defaultStock(){
   const animals = {}; ANIMAL_SPECIES_LIST.forEach(s=>animals[s]=0);
   const cages = {}; CAGE_TYPES_LIST.forEach(c=>cages[c]=0);
-  return { animals, cages };
+  const animalsMissing = {}; ANIMAL_SPECIES_LIST.forEach(s=>animalsMissing[s]=0);
+  const cagesMissing = {}; CAGE_TYPES_LIST.forEach(c=>cagesMissing[c]=0);
+  return { animals, cages, animalsMissing, cagesMissing };
 }
 async function loadStock(){
   try{
@@ -891,31 +893,70 @@ async function loadStock(){
   const def = defaultStock();
   stock.animals = Object.assign(def.animals, stock.animals||{});
   stock.cages = Object.assign(def.cages, stock.cages||{});
+  // "missing" counters track real shortages separately from stock-on-hand, which must
+  // never go negative - see stockDeduct/stockRestore below. Migrate any pre-existing
+  // negative stock values (from before this change) into the missing counters once.
+  stock.animalsMissing = Object.assign(def.animalsMissing, stock.animalsMissing||{});
+  stock.cagesMissing = Object.assign(def.cagesMissing, stock.cagesMissing||{});
+  Object.keys(stock.animals).forEach(k=>{
+    if(stock.animals[k] < 0){ stock.animalsMissing[k] = (stock.animalsMissing[k]||0) + (-stock.animals[k]); stock.animals[k] = 0; }
+  });
+  Object.keys(stock.cages).forEach(k=>{
+    if(stock.cages[k] < 0){ stock.cagesMissing[k] = (stock.cagesMissing[k]||0) + (-stock.cages[k]); stock.cages[k] = 0; }
+  });
 }
 async function saveStock(){
   try{ await window.storage.set(STOCK_KEY, JSON.stringify(stock), true); }
   catch(e){ showToast('שגיאה בשמירת המלאי'); }
 }
+// Stock-on-hand must never go negative. If a deduction exceeds what's actually on hand,
+// stock is floored at 0 and the shortfall is tracked separately in `missingMap` as a real
+// "we owe X units" counter - not as a negative stock number. Admins can correct either
+// number by hand at any time (e.g. after sourcing extra animals outside the normal flow).
+function stockDeduct(map, missingMap, key, qty){
+  if(!key || !qty) return;
+  const have = map[key]||0;
+  if(have >= qty){
+    map[key] = have - qty;
+  }else{
+    const shortfall = qty - have;
+    map[key] = 0;
+    missingMap[key] = (missingMap[key]||0) + shortfall;
+  }
+}
+// Reverses a previous stockDeduct of `qty` units of `key` (undo-ship, cancel, delete sale).
+// Clears any outstanding "missing" debt for that key first; only the remainder (if any)
+// is added back to real stock-on-hand.
+function stockRestore(map, missingMap, key, qty){
+  if(!key || !qty) return;
+  const missing = missingMap[key]||0;
+  if(missing >= qty){
+    missingMap[key] = missing - qty;
+  }else{
+    missingMap[key] = 0;
+    map[key] = (map[key]||0) + (qty - missing);
+  }
+}
 function deductStockForOrder(o){
   (o.animals||[]).forEach(a=>{
     const species = ANIMAL_SPECIES_MAP[a.type];
-    if(species) stock.animals[species] = (stock.animals[species]||0) - a.quantity*(ANIMALS_PER_UNIT[a.type]||1);
+    if(species) stockDeduct(stock.animals, stock.animalsMissing, species, a.quantity*(ANIMALS_PER_UNIT[a.type]||1));
   });
   const cageCounts = computeOrderCageCounts(o);
   Object.entries(cageCounts).forEach(([type,cages])=>{
     const cageGroup = CAGE_GROUP_MAP[type];
-    if(cageGroup) stock.cages[cageGroup] = (stock.cages[cageGroup]||0) - cages;
+    if(cageGroup) stockDeduct(stock.cages, stock.cagesMissing, cageGroup, cages);
   });
 }
 function restockForOrder(o){
   (o.animals||[]).forEach(a=>{
     const species = ANIMAL_SPECIES_MAP[a.type];
-    if(species) stock.animals[species] = (stock.animals[species]||0) + a.quantity*(ANIMALS_PER_UNIT[a.type]||1);
+    if(species) stockRestore(stock.animals, stock.animalsMissing, species, a.quantity*(ANIMALS_PER_UNIT[a.type]||1));
   });
   const cageCounts = computeOrderCageCounts(o);
   Object.entries(cageCounts).forEach(([type,cages])=>{
     const cageGroup = CAGE_GROUP_MAP[type];
-    if(cageGroup) stock.cages[cageGroup] = (stock.cages[cageGroup]||0) + cages;
+    if(cageGroup) stockRestore(stock.cages, stock.cagesMissing, cageGroup, cages);
   });
 }
 function computeInventoryAlerts(){
@@ -923,14 +964,18 @@ function computeInventoryAlerts(){
     .map(s=>({ species:s, qty: stock.animals[s]||0 }));
   const lowCages = CAGE_TYPES_LIST.filter(c=>(stock.cages[c]||0) < CAGE_STOCK_ALERT_THRESHOLD)
     .map(c=>({ type:c, qty: stock.cages[c]||0 }));
-  return { lowAnimals, lowCages };
+  const missingAnimals = ANIMAL_SPECIES_LIST.filter(s=>(stock.animalsMissing[s]||0) > 0)
+    .map(s=>({ species:s, qty: stock.animalsMissing[s]||0 }));
+  const missingCages = CAGE_TYPES_LIST.filter(c=>(stock.cagesMissing[c]||0) > 0)
+    .map(c=>({ type:c, qty: stock.cagesMissing[c]||0 }));
+  return { lowAnimals, lowCages, missingAnimals, missingCages };
 }
 function renderInventoryAlertBanner(){
   const el = document.getElementById('inventoryAlertBanner');
   if(!el) return;
   if(!currentUser || currentUser.role==='rep'){ el.innerHTML=''; return; }
-  const { lowAnimals, lowCages } = computeInventoryAlerts();
-  if(lowAnimals.length===0 && lowCages.length===0){ el.innerHTML=''; return; }
+  const { lowAnimals, lowCages, missingAnimals, missingCages } = computeInventoryAlerts();
+  if(lowAnimals.length===0 && lowCages.length===0 && missingAnimals.length===0 && missingCages.length===0){ el.innerHTML=''; return; }
   let html = '<div class="alert-banner"><div class="alert-title">⚠️ התראת מלאי נמוך</div>';
   lowAnimals.forEach(a=>{
     html += `<div>🐦 ${a.species}: נשארו ${a.qty} יח' (התראה מתחת ל-${ANIMAL_STOCK_ALERT_THRESHOLD})</div>`;
@@ -938,6 +983,11 @@ function renderInventoryAlertBanner(){
   lowCages.forEach(c=>{
     html += `<div>📦 ${c.type}: נשארו ${c.qty} יח' (התראה מתחת ל-${CAGE_STOCK_ALERT_THRESHOLD})</div>`;
   });
+  if(missingAnimals.length || missingCages.length){
+    html += '<div class="alert-title" style="margin-top:8px;">❗ חוסרים בפועל (מעבר למה שיש במלאי)</div>';
+    missingAnimals.forEach(a=>{ html += `<div>🐦 חסרים ${a.qty} ${a.species}</div>`; });
+    missingCages.forEach(c=>{ html += `<div>📦 חסרים ${c.qty} ${c.type}</div>`; });
+  }
   html += '</div>';
   el.innerHTML = html;
 }
@@ -1717,9 +1767,15 @@ function toggleCancel(id){
   if(!o) return;
   if(!o.cancelled){
     showConfirm('לבטל את ההזמנה הזו? היא תעבור ל"כל ההזמנות" עם סימון מבוטלת, ולא תיכלל בסיכום הערים.', ()=>{
+      // if the order already shipped, its animals/cages were deducted from stock -
+      // cancelling it now needs to give that stock back, or it's lost permanently.
+      if(o.delivered){ restockForOrder(o); saveStock(); renderInventoryAlertBanner(); }
       o.cancelled = true; saveOrders(); renderAll(); showToast('ההזמנה בוטלה');
     });
   }else{
+    // restoring a cancelled order that was already marked as shipped needs to re-deduct
+    // stock, mirroring the restock done when it was cancelled.
+    if(o.delivered){ deductStockForOrder(o); saveStock(); renderInventoryAlertBanner(); }
     o.cancelled = false; saveOrders(); renderAll(); showToast('ההזמנה שוחזרה');
   }
 }
@@ -2423,10 +2479,10 @@ function submitQuickSale(){
     // a special-delivery sale leaves stock right away - it's not routed through the normal city/shipping flow.
     if(ANIMAL_SPECIES_MAP[product]){
       const species = ANIMAL_SPECIES_MAP[product];
-      stock.animals[species] = (stock.animals[species]||0) - qty*(ANIMALS_PER_UNIT[product]||1);
+      stockDeduct(stock.animals, stock.animalsMissing, species, qty*(ANIMALS_PER_UNIT[product]||1));
       if(!noCage){
         const cageGroup = CAGE_GROUP_MAP[product];
-        if(cageGroup) stock.cages[cageGroup] = (stock.cages[cageGroup]||0) - qty;
+        if(cageGroup) stockDeduct(stock.cages, stock.cagesMissing, cageGroup, qty);
       }
       saveStock();
       renderInventoryAlertBanner();
@@ -2469,10 +2525,10 @@ function deleteSpotSale(id){
     const s = spotSales.find(x=>x.id===id);
     if(s && ANIMAL_SPECIES_MAP[s.product]){
       const species = ANIMAL_SPECIES_MAP[s.product];
-      stock.animals[species] = (stock.animals[species]||0) + s.quantity*(ANIMALS_PER_UNIT[s.product]||1);
+      stockRestore(stock.animals, stock.animalsMissing, species, s.quantity*(ANIMALS_PER_UNIT[s.product]||1));
       if(!s.noCage){
         const cageGroup = CAGE_GROUP_MAP[s.product];
-        if(cageGroup) stock.cages[cageGroup] = (stock.cages[cageGroup]||0) + s.quantity;
+        if(cageGroup) stockRestore(stock.cages, stock.cagesMissing, cageGroup, s.quantity);
       }
       saveStock();
       renderInventoryAlertBanner();
@@ -2799,22 +2855,26 @@ function renderAdminTabContent(){
   }else if(adminActiveTab==='stock'){
     content.innerHTML = `
       <div style="font-weight:800;margin-bottom:4px;">🐦 מלאי בעלי חיים (לפי מין)</div>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">התראה אוטומטית במסך הראשי כשיש פחות מ-${ANIMAL_STOCK_ALERT_THRESHOLD} יחידות.</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">"יש במלאי" לעולם לא יורד מתחת ל-0. אם הזמנה חורגת ממה שיש, ההפרש עובר ל"חסרים בפועל" בתור התראה נפרדת - אפשר לתקן כל אחד מהשדות ידנית בכל עת. התראה אוטומטית במסך הראשי כשיש פחות מ-${ANIMAL_STOCK_ALERT_THRESHOLD} יחידות במלאי, או כשיש חוסר בפועל.</div>
       <div id="stockAnimalsList">
         ${ANIMAL_SPECIES_LIST.map(s=>`
           <div class="stock-row ${(stock.animals[s]||0)<ANIMAL_STOCK_ALERT_THRESHOLD?'stock-low':''}">
             <div class="stock-label">${s}</div>
-            <input type="number" class="stock-input-animal" data-species="${escAttr(s)}" value="${stock.animals[s]||0}">
+            <input type="number" min="0" class="stock-input-animal" data-species="${escAttr(s)}" value="${stock.animals[s]||0}">
+            <div class="stock-label" style="color:var(--muted);font-size:12px;">חסרים בפועל</div>
+            <input type="number" min="0" class="stock-input-animal-missing" data-species="${escAttr(s)}" value="${stock.animalsMissing[s]||0}">
           </div>
         `).join('')}
       </div>
       <div style="font-weight:800;margin:16px 0 4px;">📦 מלאי כלובים (לפי סוג)</div>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">התראה אוטומטית במסך הראשי כשיש פחות מ-${CAGE_STOCK_ALERT_THRESHOLD} יחידות.</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">אותו עיקרון: "יש במלאי" לא יורד מתחת ל-0, וההפרש עובר ל"חסרים בפועל". התראה אוטומטית במסך הראשי כשיש פחות מ-${CAGE_STOCK_ALERT_THRESHOLD} יחידות במלאי, או כשיש חוסר בפועל.</div>
       <div id="stockCagesList">
         ${CAGE_TYPES_LIST.map(c=>`
           <div class="stock-row ${(stock.cages[c]||0)<CAGE_STOCK_ALERT_THRESHOLD?'stock-low':''}">
             <div class="stock-label">${c}</div>
-            <input type="number" class="stock-input-cage" data-cage="${escAttr(c)}" value="${stock.cages[c]||0}">
+            <input type="number" min="0" class="stock-input-cage" data-cage="${escAttr(c)}" value="${stock.cages[c]||0}">
+            <div class="stock-label" style="color:var(--muted);font-size:12px;">חסרים בפועל</div>
+            <input type="number" min="0" class="stock-input-cage-missing" data-cage="${escAttr(c)}" value="${stock.cagesMissing[c]||0}">
           </div>
         `).join('')}
       </div>
@@ -2943,12 +3003,22 @@ function saveStockSettings(){
   document.querySelectorAll('.stock-input-animal').forEach(inp=>{
     const species = inp.dataset.species;
     const val = parseFloat(inp.value);
-    stock.animals[species] = isNaN(val) ? 0 : val;
+    stock.animals[species] = isNaN(val) ? 0 : Math.max(0, val);
+  });
+  document.querySelectorAll('.stock-input-animal-missing').forEach(inp=>{
+    const species = inp.dataset.species;
+    const val = parseFloat(inp.value);
+    stock.animalsMissing[species] = isNaN(val) ? 0 : Math.max(0, val);
   });
   document.querySelectorAll('.stock-input-cage').forEach(inp=>{
     const cageType = inp.dataset.cage;
     const val = parseFloat(inp.value);
-    stock.cages[cageType] = isNaN(val) ? 0 : val;
+    stock.cages[cageType] = isNaN(val) ? 0 : Math.max(0, val);
+  });
+  document.querySelectorAll('.stock-input-cage-missing').forEach(inp=>{
+    const cageType = inp.dataset.cage;
+    const val = parseFloat(inp.value);
+    stock.cagesMissing[cageType] = isNaN(val) ? 0 : Math.max(0, val);
   });
   saveStock();
   showToast('המלאי נשמר');
