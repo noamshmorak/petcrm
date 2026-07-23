@@ -1740,6 +1740,7 @@ function addBusinessDebt(){
   renderAdminTabContent();
 }
 function deleteBusinessDebt(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול למחוק חוב'); return; }
   showConfirm('למחוק את רשומת החוב הזו?', ()=>{
     businessDebts = businessDebts.filter(e=>e.id!==id);
     saveExpensesData(); renderAdminTabContent();
