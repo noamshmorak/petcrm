@@ -1076,15 +1076,25 @@ function renderInventoryAlertBanner(){
   el.innerHTML = html;
 }
 
-// Shown to reps only: a reminder banner if today's hour report hasn't been submitted yet.
+// Reps: a reminder banner if today's hour report hasn't been submitted yet.
+// Main admin: a notice if any rep has hour reports pending approval (reports for the day
+// before yesterday or earlier).
 function renderHoursReminderBanner(){
   const el = document.getElementById('hoursReminderBanner');
   if(!el) return;
-  if(!currentUser || currentUser.role!=='rep'){ el.innerHTML=''; return; }
-  const today = todayStr();
-  const already = findHourReport(currentUser.username, today);
-  if(already){ el.innerHTML=''; return; }
-  el.innerHTML = `<div class="alert-banner" style="cursor:pointer;" onclick="switchTab('hours')"><div class="alert-title">🕐 תזכורת</div><div>אל תשכח/י להזין את שעות העבודה שלך היום לפני סיום היום (לחצ/י כאן למעבר ל"⏱️ השעות שלי")</div></div>`;
+  if(!currentUser){ el.innerHTML=''; return; }
+  if(currentUser.role==='rep'){
+    const today = todayStr();
+    const already = findHourReport(currentUser.username, today);
+    el.innerHTML = already ? '' : `<div class="alert-banner" style="cursor:pointer;" onclick="switchTab('hours')"><div class="alert-title">🕐 תזכורת</div><div>אל תשכח/י להזין את שעות העבודה שלך היום לפני סיום היום (לחצ/י כאן למעבר ל"⏱️ השעות שלי")</div></div>`;
+    return;
+  }
+  if(currentUser.role==='mainadmin'){
+    const pendingCount = hourReports.filter(r=>r.pendingApproval).length;
+    el.innerHTML = pendingCount===0 ? '' : `<div class="alert-banner" style="cursor:pointer;" onclick="openAdminGate();switchAdminTab('payroll');"><div class="alert-title">⏳ ${pendingCount} דיווחי שעות ממתינים לאישורך</div><div>לחצ/י כאן למעבר לטאב "שכר ושעות"</div></div>`;
+    return;
+  }
+  el.innerHTML = '';
 }
 
 function askRoundChoice(city, activeCount, activeRound, onResolve){
@@ -1911,21 +1921,43 @@ function computeHourReportAmount(report){
 function findHourReport(username, date){
   return hourReports.find(r=>r.username===username && r.date===date);
 }
+// A rep can freely log hours for today or yesterday. Anything older (the day before yesterday
+// and further back) is allowed to be submitted, but is held as "pending admin approval" - it
+// doesn't count toward the total owed, and isn't payable, until the main admin approves it.
+function daysBeforeToday(dateStr){
+  const today = new Date(todayStr()+'T00:00:00Z');
+  const d = new Date(dateStr+'T00:00:00Z');
+  return Math.round((today - d) / 86400000);
+}
+function dateRequiresApproval(dateStr){
+  return daysBeforeToday(dateStr) > 1;
+}
 function submitHourReport(){
   if(!currentUser){ return; }
   const date = document.getElementById('hrDate').value || todayStr();
   const hours = parseFloat(document.getElementById('hrHours').value);
   if(isNaN(hours) || hours<0){ showToast('נא להזין מספר שעות תקין'); return; }
+  const needsApproval = dateRequiresApproval(date);
   let report = findHourReport(currentUser.username, date);
   if(report){
     report.hours = hours;
+    report.pendingApproval = needsApproval;
   }else{
-    report = { id: genExpenseId(), username: currentUser.username, date, hours, createdAt: Date.now(), paid:false, paidAt:null, paidAmount:null };
+    report = { id: genExpenseId(), username: currentUser.username, date, hours, createdAt: Date.now(), paid:false, paidAt:null, paidAmount:null, pendingApproval: needsApproval };
     hourReports.push(report);
   }
   saveHourReports();
-  showToast('דוח השעות נשמר');
+  showToast(needsApproval ? 'הדיווח נשמר וממתין לאישור המנהל (יותר משלשום אחורה)' : 'דוח השעות נשמר');
   renderMyHoursTab();
+}
+function approveHourReport(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לאשר דיווח'); return; }
+  const r = hourReports.find(x=>x.id===id);
+  if(!r) return;
+  r.pendingApproval = false;
+  saveHourReports();
+  showToast('הדיווח אושר');
+  renderAdminTabContent();
 }
 function toggleHourReportPaid(id, checked){
   if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לסמן תשלום'); return; }
@@ -1958,7 +1990,7 @@ function renderMyHoursTab(){
   const existing = findHourReport(currentUser.username, today);
   const activity = computeRepDailyActivity(currentUser.username, today);
   const myReports = hourReports.filter(r=>r.username===currentUser.username).sort((a,b)=>b.date.localeCompare(a.date));
-  const totalOwed = myReports.filter(r=>!r.paid).reduce((s,r)=>s+computeHourReportAmount(r), 0);
+  const totalOwed = myReports.filter(r=>!r.paid && !r.pendingApproval).reduce((s,r)=>s+computeHourReportAmount(r), 0);
   el.innerHTML = `
     <div style="font-weight:800;margin-bottom:8px;">⏱️ דיווח שעות יומי</div>
     <div class="field">
@@ -1969,6 +2001,7 @@ function renderMyHoursTab(){
       <label>כמה שעות עבדת ביום זה?</label>
       <input type="number" step="0.25" min="0" id="hrHours" value="${existing?existing.hours:''}" placeholder="לדוגמה: 8">
     </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">ניתן לדווח באופן חופשי על היום או על אתמול. דיווח על שלשום ואילך יישמר אך יידרש אישור של המנהל הראשי לפני שהוא נספר בחוב.</div>
     <div style="font-size:13px;color:var(--muted);margin-bottom:10px;">📦 הזמנות שסגרת בתאריך זה: <b>${activity.ordersCount}</b>${activity.quaverCount>0?` (כולל ${activity.quaverCount} קוואקרים)`:''}</div>
     <button class="btn-primary" onclick="submitHourReport()">${existing?'עדכן דיווח':'שמור דיווח'}</button>
 
@@ -1976,11 +2009,13 @@ function renderMyHoursTab(){
     ${myReports.length===0 ? '<div style="color:var(--muted);font-size:13px;">עדיין לא הזנת דיווחים.</div>' : myReports.map(r=>{
       const act = computeRepDailyActivity(r.username, r.date);
       const amount = computeHourReportAmount(r);
+      const statusText = r.pendingApproval ? '· ⏳ ממתין לאישור המנהל' : (r.paid ? '· שולם ✅' : '· ממתין לתשלום');
+      const statusColor = r.pendingApproval ? 'var(--muted)' : (r.paid ? 'var(--route)' : 'var(--danger)');
       return `
       <div style="border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin-bottom:8px;">
         <div style="font-weight:700;">${formatDate(r.date)} — ${r.hours} שעות</div>
         <div style="font-size:12.5px;color:var(--muted);margin-top:2px;">${act.ordersCount} הזמנות${act.quaverCount>0?` · ${act.quaverCount} קוואקרים`:''}</div>
-        <div style="font-weight:700;margin-top:4px;color:${r.paid?'var(--route)':'var(--danger)'};">${amount.toFixed(1)} ₪ ${r.paid?'· שולם ✅':'· ממתין לתשלום'}</div>
+        <div style="font-weight:700;margin-top:4px;color:${statusColor};">${amount.toFixed(1)} ₪ ${statusText}</div>
       </div>`;
     }).join('')}
     <div style="font-weight:800;color:var(--danger);margin-top:10px;">💰 סה"כ חוב פתוח כלפיך: ${totalOwed.toFixed(1)} ₪</div>
@@ -3673,14 +3708,17 @@ function renderAdminTabContent(){
     `;
   }else if(adminActiveTab==='payroll'){
     const reps = users.filter(u=>u.role==='rep');
-    const grandTotalOwed = hourReports.filter(r=>!r.paid).reduce((s,r)=>s+computeHourReportAmount(r), 0);
+    const allPending = hourReports.filter(r=>r.pendingApproval);
+    const grandTotalOwed = hourReports.filter(r=>!r.paid && !r.pendingApproval).reduce((s,r)=>s+computeHourReportAmount(r), 0);
     content.innerHTML = `
       <div style="font-weight:800;margin-bottom:4px;">🕐 שכר ושעות נציגים</div>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">לכל נציג: שכר שעתי, תוספת לכל 10 הזמנות שנסגרו ביום, ותוספת לכל קוואקר שנמכר. "נציג קבוע" מבטל את הגבלת תקופת הפעילות - נציג שאינו קבוע וללא תאריכים מוגדרים יכול להתחבר בכל עת; אם הוגדרו תאריכים, הוא יכול להתחבר רק בטווח הזה.</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">לכל נציג: שכר שעתי, תוספת לכל 10 הזמנות שנסגרו ביום, ותוספת לכל קוואקר שנמכר. "נציג קבוע" מבטל את הגבלת תקופת הפעילות - נציג שאינו קבוע וללא תאריכים מוגדרים יכול להתחבר בכל עת; אם הוגדרו תאריכים, הוא יכול להתחבר רק בטווח הזה. דיווח על שלשום ואילך אחורה ממתין לאישורך לפני שהוא נספר בחוב.</div>
+      ${allPending.length>0 ? `<div class="alert-banner" style="margin-bottom:14px;"><div class="alert-title">⏳ ${allPending.length} דיווחי שעות ממתינים לאישורך</div><div>גללו למטה לכל נציג כדי לאשר או לדחות.</div></div>` : ''}
       <div style="font-weight:800;color:var(--danger);margin-bottom:14px;">💰 סה"כ חוב כולל לכל הנציגים: ${grandTotalOwed.toFixed(1)} ₪</div>
       ${reps.length===0 ? '<div style="color:var(--muted);">אין נציגים רשומים עדיין.</div>' : reps.map(u=>{
         const myReports = hourReports.filter(r=>r.username===u.username).sort((a,b)=>b.date.localeCompare(a.date));
-        const unpaid = myReports.filter(r=>!r.paid);
+        const pending = myReports.filter(r=>r.pendingApproval);
+        const unpaid = myReports.filter(r=>!r.paid && !r.pendingApproval);
         const paid = myReports.filter(r=>r.paid);
         const repOwed = unpaid.reduce((s,r)=>s+computeHourReportAmount(r), 0);
         return `
@@ -3718,6 +3756,19 @@ function renderAdminTabContent(){
             </div>
           </div>
           <button class="btn-ghost" onclick="saveRepWageSettings('${escAttr(u.username)}')">שמור הגדרות שכר</button>
+
+          ${pending.length>0 ? `
+          <div style="font-weight:700;margin:12px 0 6px;color:var(--danger);">⏳ ממתין לאישורך (דווח על שלשום ואילך אחורה)</div>
+          ${pending.map(r=>{
+            const act = computeRepDailyActivity(r.username, r.date);
+            const amount = computeHourReportAmount(r);
+            return `
+            <div class="row2" style="align-items:center;margin-bottom:6px;">
+              <div style="flex:2;font-size:13px;">${formatDate(r.date)} · ${r.hours} שעות · ${act.ordersCount} הזמנות${act.quaverCount>0?` (${act.quaverCount} קוואקרים)`:''} · ${amount.toFixed(1)} ₪</div>
+              <button class="btn-ghost" style="flex:0;padding:6px 10px;" onclick="approveHourReport('${r.id}')">✅ אשר</button>
+              <button class="icon-btn" onclick="deleteHourReport('${r.id}')" title="דחה/מחק">🗑️</button>
+            </div>`;
+          }).join('')}` : ''}
 
           <div style="font-weight:700;margin:12px 0 6px;">ימי עבודה שטרם שולמו</div>
           ${unpaid.length===0 ? '<div style="color:var(--muted);font-size:13px;">אין ימים ממתינים לתשלום.</div>' : unpaid.map(r=>{
