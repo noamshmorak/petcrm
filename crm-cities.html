@@ -1032,6 +1032,17 @@ function closeConfirm(result){
   confirmCallback = null;
   if(result && cb) cb();
 }
+// Clicking the dark backdrop area outside any modal box closes that modal - reuses each
+// modal's own "X" close button/logic, so this stays correct even if a modal is later added
+// or its close behavior changes. Only closes when the click lands directly on the backdrop
+// itself (not when it bubbles up from something inside the modal box).
+document.querySelectorAll('.modal-overlay').forEach(overlay=>{
+  overlay.addEventListener('click', (e)=>{
+    if(e.target !== overlay) return;
+    const closeBtn = overlay.querySelector('.modal-close-x');
+    if(closeBtn) closeBtn.click();
+  });
+});
 function openShipModal(city, round){
   shipCityTarget = city;
   shipRoundTarget = round;
