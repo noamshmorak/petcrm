@@ -571,6 +571,7 @@ const COST_SETTINGS_KEY = 'pet-crm-cost-settings';
 const USERS_KEY = 'pet-crm-users';
 const STOCK_KEY = 'pet-crm-stock';
 const DEPOT_KEY = 'pet-crm-depot';
+const TRASH_KEY = 'pet-crm-trash';
 let depot = { city:'', street:'' };
 async function loadDepot(){
   try{
@@ -1532,6 +1533,58 @@ async function loadOrders(){
 async function saveOrders(){
   try{ await window.storage.set(STORAGE_KEY, JSON.stringify(orders), true); }
   catch(e){ showToast('שגיאה בשמירה, נסה שוב'); }
+}
+
+/* ---------- trash (soft-delete a whole city) ---------- */
+let trashedCities = []; // { id, city, orders:[...], trashedAt, trashedBy }
+async function loadTrash(){
+  try{
+    const res = await window.storage.get(TRASH_KEY, true);
+    trashedCities = res && res.value ? JSON.parse(res.value) : [];
+  }catch(e){ trashedCities = []; }
+}
+async function saveTrash(){
+  try{ await window.storage.set(TRASH_KEY, JSON.stringify(trashedCities), true); }
+  catch(e){ showToast('שגיאה בשמירת האשפה'); }
+}
+// Moves EVERY order for a city (both already-shipped/delivered and still-active/pending)
+// out of the live order list and into the trash, pending review/approval by the main admin.
+// This does not touch stock - if a delivered order in this batch is later restored, its
+// stock was already deducted at ship time and stays deducted; only permanent deletion or a
+// manual stock correction should change that.
+function deleteCityToTrash(city){
+  const cityOrders = orders.filter(o=>o.city===city);
+  if(cityOrders.length===0){ showToast('אין הזמנות לעיר הזו'); return; }
+  const activeCount = cityOrders.filter(o=>!o.cancelled && !o.delivered).length;
+  const deliveredCount = cityOrders.filter(o=>o.delivered && !o.cancelled).length;
+  showConfirm(`למחוק את כל העיר ${city}? ${cityOrders.length} הזמנות (${activeCount} פעילות, ${deliveredCount} שנשלחו) יעברו לאשפה לאישור מנהל.`, ()=>{
+    orders = orders.filter(o=>o.city!==city);
+    trashedCities.push({
+      id: Date.now().toString(36)+Math.random().toString(36).slice(2,7),
+      city, orders: cityOrders, trashedAt: Date.now(), trashedBy: currentUser?currentUser.username:''
+    });
+    saveOrders(); saveTrash(); renderAll(); renderAdminTabContent();
+    showToast(`העיר ${city} הועברה לאשפה`);
+  });
+}
+function restoreCityFromTrash(id){
+  const entry = trashedCities.find(t=>t.id===id);
+  if(!entry) return;
+  showConfirm(`לשחזר את העיר ${entry.city} (${entry.orders.length} הזמנות) בחזרה לרשימה הפעילה?`, ()=>{
+    orders = orders.concat(entry.orders);
+    trashedCities = trashedCities.filter(t=>t.id!==id);
+    saveOrders(); saveTrash(); renderAll(); renderAdminTabContent();
+    showToast(`העיר ${entry.city} שוחזרה`);
+  });
+}
+function purgeCityFromTrash(id){
+  const entry = trashedCities.find(t=>t.id===id);
+  if(!entry) return;
+  showConfirm(`למחוק את העיר ${entry.city} לצמיתות? לא ניתן לשחזר לאחר מכן.`, ()=>{
+    trashedCities = trashedCities.filter(t=>t.id!==id);
+    saveTrash(); renderAdminTabContent();
+    showToast(`העיר ${entry.city} נמחקה לצמיתות`);
+  });
 }
 function migrateOrder(o){
   if(!o.animals){
@@ -2951,11 +3004,11 @@ function renderAdminRevenueByCity(){
 /* ---------- admin tabs ---------- */
 let adminActiveTab = 'report';
 function adminTabsForRole(){
-  if(currentUser && currentUser.role==='mainadmin') return ['report','revenue','stock','depot','users'];
+  if(currentUser && currentUser.role==='mainadmin') return ['report','revenue','stock','depot','trash','users'];
   if(currentUser && currentUser.role==='admin') return ['stock','depot'];
   return [];
 }
-const ADMIN_TAB_LABELS = { report:'📊 דוח כספי', revenue:'💰 הכנסות לפי עיר', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', users:'👤 משתמשים' };
+const ADMIN_TAB_LABELS = { report:'📊 דוח כספי', revenue:'💰 הכנסות לפי עיר', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', trash:'🗑️ אשפה', users:'👤 משתמשים' };
 function renderAdminTabsBar(){
   const bar = document.getElementById('adminTabsBar');
   const tabs = adminTabsForRole();
@@ -3094,6 +3147,34 @@ function renderAdminTabContent(){
     renderDepotCityOptions(depot.city||'');
     depotPickedStreet = depot.street || null;
     wireStreetAutocomplete('depotAddressInput', 'depotAddressSuggestions', ()=>document.getElementById('depotCitySelect').value||'', (v)=>{ if(v!==undefined) depotPickedStreet = v; return depotPickedStreet; });
+  }else if(adminActiveTab==='trash'){
+    const cities = getKnownCities().slice().sort();
+    content.innerHTML = `
+      <div style="font-weight:800;margin-bottom:4px;">🗑️ מחיקת עיר שלמה</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">מוחק את כל ההזמנות של העיר - גם כאלה שכבר נשלחו וגם כאלה שעדיין פעילות. ההזמנות עוברות לאשפה למטה, לא נמחקות מיידית - אפשר לשחזר משם.</div>
+      <div class="field" style="margin-bottom:10px;">
+        <label>בחר עיר למחיקה</label>
+        <select id="trashCitySelect">
+          ${cities.map(c=>`<option value="${escAttr(c)}">${c}</option>`).join('')}
+        </select>
+      </div>
+      <button class="btn-primary" style="background:var(--danger);" onclick="deleteCityToTrash(document.getElementById('trashCitySelect').value)">🗑️ מחק את העיר הנבחרת</button>
+
+      <div style="font-weight:800;margin:20px 0 8px;border-top:1px solid var(--border);padding-top:14px;">אשפה (ממתין לאישור/שחזור)</div>
+      ${trashedCities.length===0 ? '<div style="color:var(--muted);font-size:13px;">האשפה ריקה.</div>' : trashedCities.slice().sort((a,b)=>b.trashedAt-a.trashedAt).map(t=>{
+        const activeCount = t.orders.filter(o=>!o.cancelled && !o.delivered).length;
+        const deliveredCount = t.orders.filter(o=>o.delivered && !o.cancelled).length;
+        return `
+        <div class="city-card" style="padding:12px 14px;margin-bottom:8px;">
+          <div class="city-name" style="margin-bottom:6px;">${t.city}</div>
+          <div class="city-totals">${t.orders.length} הזמנות (${activeCount} פעילות, ${deliveredCount} נשלחו) · נמחק ב-${formatDate(new Date(t.trashedAt).toISOString().slice(0,10))}${t.trashedBy?' על ידי '+t.trashedBy:''}</div>
+          <div style="display:flex;gap:8px;margin-top:8px;">
+            <button class="btn-primary" style="flex:1;" onclick="restoreCityFromTrash('${t.id}')">↩️ שחזר</button>
+            <button class="btn-primary" style="flex:1;background:var(--danger);" onclick="purgeCityFromTrash('${t.id}')">🗑️ מחק לצמיתות</button>
+          </div>
+        </div>
+      `;}).join('')}
+    `;
   }else if(adminActiveTab==='users'){
     content.innerHTML = `
       <div style="font-weight:800;margin-bottom:8px;">👤 ניהול משתמשים</div>
@@ -3949,6 +4030,7 @@ async function initApp(){
   await loadCostSettings();
   await loadRoundDepartures();
   await loadDepot();
+  await loadTrash();
   renderSummary();
   renderCuFeatureToggleLabel();
   renderInventoryAlertBanner();
