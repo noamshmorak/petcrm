@@ -576,6 +576,7 @@ const USERS_KEY = 'pet-crm-users';
 const STOCK_KEY = 'pet-crm-stock';
 const DEPOT_KEY = 'pet-crm-depot';
 const TRASH_KEY = 'pet-crm-trash';
+const EXPENSES_KEY = 'pet-crm-expenses';
 let depot = { city:'', street:'' };
 async function loadDepot(){
   try{
@@ -1666,6 +1667,139 @@ function purgeCityFromTrash(id){
     showToast(`העיר ${entry.city} נמחקה לצמיתות`);
   });
 }
+
+/* ---------- manual expenses / loans / debts (main admin only) ---------- */
+// manualExpenses: ad-hoc one-off expenses the main admin logs (e.g. "קניית רכב").
+// These DO subtract from the "רווח כללי" actual profit (see computeGeneralFinancials).
+// businessLoans / businessDebts: pure tracking lists (money lent out by the business / money the
+// business owes) - explicitly informational only, they do NOT affect any profit calculation.
+let manualExpenses = []; // { id, name, amount, date, createdAt }
+let businessLoans = [];  // { id, name, amount, date, note, createdAt }
+let businessDebts = [];  // { id, name, amount, date, note, createdAt }
+async function loadExpensesData(){
+  try{
+    const res = await window.storage.get(EXPENSES_KEY, true);
+    const data = res && res.value ? JSON.parse(res.value) : {};
+    manualExpenses = Array.isArray(data.manualExpenses) ? data.manualExpenses : [];
+    businessLoans = Array.isArray(data.businessLoans) ? data.businessLoans : [];
+    businessDebts = Array.isArray(data.businessDebts) ? data.businessDebts : [];
+  }catch(e){ manualExpenses = []; businessLoans = []; businessDebts = []; }
+}
+async function saveExpensesData(){
+  try{ await window.storage.set(EXPENSES_KEY, JSON.stringify({manualExpenses, businessLoans, businessDebts}), true); }
+  catch(e){ showToast('שגיאה בשמירת הנתונים הכספיים'); }
+}
+function genExpenseId(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+function addManualExpense(){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול להוסיף הוצאה'); return; }
+  const name = document.getElementById('newExpenseName').value.trim();
+  const amount = parseFloat(document.getElementById('newExpenseAmount').value);
+  const date = document.getElementById('newExpenseDate').value || new Date().toISOString().slice(0,10);
+  if(!name || !amount){ showToast('יש למלא שם וסכום להוצאה'); return; }
+  manualExpenses.push({ id: genExpenseId(), name, amount, date, createdAt: Date.now() });
+  saveExpensesData();
+  showToast('ההוצאה נוספה');
+  renderAdminTabContent();
+}
+function deleteManualExpense(id){
+  showConfirm('למחוק את ההוצאה הזו?', ()=>{
+    manualExpenses = manualExpenses.filter(e=>e.id!==id);
+    saveExpensesData(); renderAdminTabContent();
+    showToast('ההוצאה נמחקה');
+  });
+}
+function addBusinessLoan(){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול להוסיף רשומה'); return; }
+  const name = document.getElementById('newLoanName').value.trim();
+  const amount = parseFloat(document.getElementById('newLoanAmount').value);
+  const date = document.getElementById('newLoanDate').value || new Date().toISOString().slice(0,10);
+  const note = document.getElementById('newLoanNote').value.trim();
+  if(!name || !amount){ showToast('יש למלא שם וסכום'); return; }
+  businessLoans.push({ id: genExpenseId(), name, amount, date, note, createdAt: Date.now() });
+  saveExpensesData();
+  showToast('ההלוואה נוספה');
+  renderAdminTabContent();
+}
+function deleteBusinessLoan(id){
+  showConfirm('למחוק את רשומת ההלוואה הזו?', ()=>{
+    businessLoans = businessLoans.filter(e=>e.id!==id);
+    saveExpensesData(); renderAdminTabContent();
+    showToast('הרשומה נמחקה');
+  });
+}
+function addBusinessDebt(){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול להוסיף רשומה'); return; }
+  const name = document.getElementById('newDebtName').value.trim();
+  const amount = parseFloat(document.getElementById('newDebtAmount').value);
+  const date = document.getElementById('newDebtDate').value || new Date().toISOString().slice(0,10);
+  const note = document.getElementById('newDebtNote').value.trim();
+  if(!name || !amount){ showToast('יש למלא שם וסכום'); return; }
+  businessDebts.push({ id: genExpenseId(), name, amount, date, note, createdAt: Date.now() });
+  saveExpensesData();
+  showToast('החוב נוסף');
+  renderAdminTabContent();
+}
+function deleteBusinessDebt(id){
+  showConfirm('למחוק את רשומת החוב הזו?', ()=>{
+    businessDebts = businessDebts.filter(e=>e.id!==id);
+    saveExpensesData(); renderAdminTabContent();
+    showToast('הרשומה נמחקה');
+  });
+}
+// Breaks down the current month's cost-of-goods into categories (animals / cages / food / marketing),
+// each with a quantity breakdown for drill-down, plus this month's manual expenses listed individually.
+function computeMonthlyExpenseCategories(){
+  const curMonth = new Date().toISOString().slice(0,7);
+  const monthOrders = orders.filter(o=>!o.cancelled && (o.date||'').slice(0,7)===curMonth);
+
+  let animalCost = 0; const animalCounts = {};
+  let cageCost = 0; const cageCounts = {};
+  let foodCost = 0; const foodCounts = {};
+  let marketingCost = 0;
+
+  monthOrders.forEach(o=>{
+    const qtyByType = {};
+    (o.animals||[]).forEach(a=>{ qtyByType[a.type] = (qtyByType[a.type]||0) + a.quantity; });
+    Object.entries(qtyByType).forEach(([type, qty])=>{
+      const species = ANIMAL_SPECIES_MAP[type];
+      if(species) animalCounts[species] = (animalCounts[species]||0) + qty*(ANIMALS_PER_UNIT[type]||1);
+      const c = costSettings[type];
+      if(c==null || !isAnimalSku(type)) return;
+      const animalUnitCost = (c.animal!=null) ? c.animal : 0;
+      const cageUnitCost = (c.cage!=null) ? c.cage : 0;
+      const cageWithVat = cageUnitCost*(1+VAT_RATE);
+      let cagesNeeded = qty;
+      if(SINGLE_UNIT_TYPES.includes(type) && qty>=2 && o.cageSharing && o.cageSharing[type]==='one'){
+        cagesNeeded = Math.ceil(qty/2);
+      }
+      animalCost += animalUnitCost*qty;
+      cageCost += cageWithVat*cagesNeeded;
+      const cageGroup = CAGE_GROUP_MAP[type];
+      if(cageGroup) cageCounts[cageGroup] = (cageCounts[cageGroup]||0) + cagesNeeded;
+    });
+    (o.foodItems||[]).forEach(f=>{
+      const c = getSkuUnitCost(f.type);
+      if(c!=null) foodCost += c*f.quantity;
+      foodCounts[f.type] = (foodCounts[f.type]||0) + f.quantity;
+    });
+    marketingCost += getCityMarketingRate(o.city);
+  });
+
+  const monthManualExpenses = manualExpenses.filter(e=>(e.date||'').slice(0,7)===curMonth).sort((a,b)=>b.date.localeCompare(a.date));
+  const manualTotal = monthManualExpenses.reduce((s,e)=>s+(e.amount||0),0);
+
+  return {
+    curMonth,
+    orderCount: monthOrders.length,
+    animal: { total: animalCost, counts: animalCounts },
+    cage: { total: cageCost, counts: cageCounts },
+    food: { total: foodCost, counts: foodCounts },
+    marketing: { total: marketingCost },
+    manual: { total: manualTotal, items: monthManualExpenses },
+    grandTotal: animalCost + cageCost + foodCost + marketingCost + manualTotal
+  };
+}
+
 function migrateOrder(o){
   if(!o.animals){
     o.animals = o.animalType ? [{type:o.animalType, quantity:o.quantity||1}] : [];
@@ -2780,6 +2914,10 @@ function computeGeneralFinancials(scope){
   const inScope = d => scope==='all' || (d||'').slice(0,7)===curMonth;
   const validOrders = orders.filter(o=>!o.cancelled && inScope(o.date));
   const validSpotSales = spotSales.filter(s=>inScope(s.date));
+  // ad-hoc manual expenses (e.g. "קניית רכב") logged by the main admin - counted as realized/actual
+  // money out, never "projected". Loans/debts are deliberately excluded - tracking-only, no profit impact.
+  const validManualExpenses = manualExpenses.filter(e=>inScope(e.date));
+  const manualExpenseTotal = validManualExpenses.reduce((s,e)=>s+(e.amount||0),0);
 
   let actual = { revenue:0, cost:0, count:0 };
   let projected = { revenue:0, cost:0, count:0 };
@@ -2797,9 +2935,11 @@ function computeGeneralFinancials(scope){
     actual.cost += (c!=null ? c*s.quantity : 0);
     actual.count += 1;
   });
+  actual.otherExpenses = manualExpenseTotal;
+  projected.otherExpenses = 0;
   [actual, projected].forEach(b=>{
     b.marketing = b.count * avgMarketingCostPerOrder;
-    b.profit = b.revenue - b.cost - b.marketing;
+    b.profit = b.revenue - b.cost - b.marketing - (b.otherExpenses||0);
   });
   return { actual, projected };
 }
@@ -3086,11 +3226,11 @@ function renderAdminRevenueByCity(){
 /* ---------- admin tabs ---------- */
 let adminActiveTab = 'report';
 function adminTabsForRole(){
-  if(currentUser && currentUser.role==='mainadmin') return ['report','revenue','stock','depot','trash','users'];
+  if(currentUser && currentUser.role==='mainadmin') return ['report','revenue','expenses','stock','depot','trash','users'];
   if(currentUser && currentUser.role==='admin') return ['stock','depot'];
   return [];
 }
-const ADMIN_TAB_LABELS = { report:'📊 דוח כספי', revenue:'💰 הכנסות לפי עיר', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', trash:'🗑️ אשפה', users:'👤 משתמשים' };
+const ADMIN_TAB_LABELS = { report:'📊 דוח כספי', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', trash:'🗑️ אשפה', users:'👤 משתמשים' };
 function renderAdminTabsBar(){
   const bar = document.getElementById('adminTabsBar');
   const tabs = adminTabsForRole();
@@ -3117,7 +3257,7 @@ function renderAdminTabContent(){
       </div>
       <div class="total-price-box" style="text-align:right;">
         <div style="font-weight:800;margin-bottom:4px;">✅ בפועל (הזמנות שכבר נשלחו + מכירות מהירות)</div>
-        <div>הכנסה: ${gf.actual.revenue.toFixed(1)} ₪ · עלות סחורה: ${gf.actual.cost.toFixed(1)} ₪ · פרסום: ${gf.actual.marketing.toFixed(1)} ₪ (${gf.actual.count} הזמנות)</div>
+        <div>הכנסה: ${gf.actual.revenue.toFixed(1)} ₪ · עלות סחורה: ${gf.actual.cost.toFixed(1)} ₪ · פרסום: ${gf.actual.marketing.toFixed(1)} ₪ (${gf.actual.count} הזמנות)${gf.actual.otherExpenses ? ' · הוצאות נוספות: '+gf.actual.otherExpenses.toFixed(1)+' ₪' : ''}</div>
         <div style="font-weight:800;color:${gf.actual.profit>=0?'var(--route)':'var(--danger)'};">רווח בפועל: ${gf.actual.profit.toFixed(1)} ₪</div>
         <div style="font-weight:800;margin:10px 0 4px;">⏳ צפוי (הזמנות שטרם נשלחו)</div>
         <div>הכנסה: ${gf.projected.revenue.toFixed(1)} ₪ · עלות סחורה: ${gf.projected.cost.toFixed(1)} ₪ · פרסום: ${gf.projected.marketing.toFixed(1)} ₪ (${gf.projected.count} הזמנות)</div>
@@ -3183,6 +3323,90 @@ function renderAdminTabContent(){
       <div id="adminRevenueByCity"></div>
     `;
     renderAdminRevenueByCity();
+  }else if(adminActiveTab==='expenses'){
+    const ec = computeMonthlyExpenseCategories();
+    const today = new Date().toISOString().slice(0,10);
+    const catRow = (label, icon, total, counts, unitLabel)=>{
+      const countsHtml = Object.keys(counts).length===0 ? '<div style="color:var(--muted);font-size:12.5px;">אין נתונים החודש</div>' :
+        Object.entries(counts).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div style="font-size:12.5px;padding:2px 0;">${k}: ${v} ${unitLabel}</div>`).join('');
+      return `
+        <details style="border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin-bottom:8px;">
+          <summary style="cursor:pointer;font-weight:700;display:flex;justify-content:space-between;">
+            <span>${icon} ${label}</span><span>${total.toFixed(1)} ₪</span>
+          </summary>
+          <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);">${countsHtml}</div>
+        </details>`;
+    };
+    content.innerHTML = `
+      <div style="font-weight:800;margin-bottom:4px;">💸 דוח הוצאות — החודש הנוכחי (${ec.curMonth})</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">מבוסס על ${ec.orderCount} הזמנות שהוזמנו החודש (ללא מבוטלות). לחצו על קטגוריה כדי לראות פירוט כמויות.</div>
+      ${catRow('בעלי חיים', '🐾', ec.animal.total, ec.animal.counts, 'יח\'')}
+      ${catRow('כלובים', '📦', ec.cage.total, ec.cage.counts, 'יח\'')}
+      ${catRow('מזון ונסורת', '🍽️', ec.food.total, ec.food.counts, 'יח\'')}
+      <details style="border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin-bottom:8px;">
+        <summary style="cursor:pointer;font-weight:700;display:flex;justify-content:space-between;">
+          <span>📢 פרסום</span><span>${ec.marketing.total.toFixed(1)} ₪</span>
+        </summary>
+        <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:12.5px;">הערכה לפי ${ec.orderCount} הזמנות (תעריף כללי או לפי עיר, כפי שהוגדר בדוח הכספי)</div>
+      </details>
+
+      <div style="font-weight:800;margin:16px 0 8px;border-top:1px solid var(--border);padding-top:14px;">🧾 הוצאות ידניות (החודש)</div>
+      ${ec.manual.items.length===0 ? '<div style="color:var(--muted);font-size:13px;margin-bottom:8px;">אין הוצאות ידניות החודש.</div>' : ec.manual.items.map(e=>`
+        <div class="row2" style="align-items:center;margin-bottom:6px;">
+          <div style="flex:2;font-size:13px;">${e.name} <span style="color:var(--muted);">(${formatDate(e.date)})</span></div>
+          <div style="flex:1;font-weight:700;">${e.amount.toFixed(1)} ₪</div>
+          <button class="icon-btn" onclick="deleteManualExpense('${e.id}')">🗑️</button>
+        </div>
+      `).join('')}
+      <div style="font-weight:800;margin:10px 0;">סה"כ הוצאות ידניות החודש: ${ec.manual.total.toFixed(1)} ₪</div>
+      <div style="font-weight:800;color:var(--danger);margin-bottom:14px;">💰 סה"כ כל ההוצאות החודש (כולל עלות סחורה ופרסום): ${ec.grandTotal.toFixed(1)} ₪</div>
+
+      <div style="font-weight:700;margin-bottom:6px;">➕ הוספת הוצאה חדשה (למשל: קניית רכב)</div>
+      <div class="row2" style="margin-bottom:8px;">
+        <input id="newExpenseName" placeholder="שם ההוצאה">
+        <input id="newExpenseAmount" type="number" step="0.1" placeholder="סכום (₪)">
+      </div>
+      <input id="newExpenseDate" type="date" value="${today}" style="margin-bottom:8px;">
+      <button class="btn-primary" onclick="addManualExpense()">הוסף הוצאה</button>
+
+      <div style="font-weight:800;margin:22px 0 8px;border-top:1px solid var(--border);padding-top:14px;">🤝 הלוואות מהעסק (מעקב בלבד - לא משפיע על הרווח)</div>
+      ${businessLoans.length===0 ? '<div style="color:var(--muted);font-size:13px;margin-bottom:8px;">אין הלוואות רשומות.</div>' : businessLoans.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(l=>`
+        <div class="row2" style="align-items:center;margin-bottom:6px;">
+          <div style="flex:2;font-size:13px;">${l.name}${l.note?' · '+l.note:''} <span style="color:var(--muted);">(${formatDate(l.date)})</span></div>
+          <div style="flex:1;font-weight:700;">${l.amount.toFixed(1)} ₪</div>
+          <button class="icon-btn" onclick="deleteBusinessLoan('${l.id}')">🗑️</button>
+        </div>
+      `).join('')}
+      <div style="font-weight:800;margin:8px 0;">סה"כ הלוואות פתוחות: ${businessLoans.reduce((s,l)=>s+(l.amount||0),0).toFixed(1)} ₪</div>
+      <div class="row2" style="margin-bottom:8px;">
+        <input id="newLoanName" placeholder="למי/למה ניתנה ההלוואה">
+        <input id="newLoanAmount" type="number" step="0.1" placeholder="סכום (₪)">
+      </div>
+      <div class="row2" style="margin-bottom:8px;">
+        <input id="newLoanDate" type="date" value="${today}">
+        <input id="newLoanNote" placeholder="הערה (אופציונלי)">
+      </div>
+      <button class="btn-primary" onclick="addBusinessLoan()">הוסף הלוואה</button>
+
+      <div style="font-weight:800;margin:22px 0 8px;border-top:1px solid var(--border);padding-top:14px;">📋 חובות של העסק (מעקב בלבד - לא משפיע על הרווח)</div>
+      ${businessDebts.length===0 ? '<div style="color:var(--muted);font-size:13px;margin-bottom:8px;">אין חובות רשומים.</div>' : businessDebts.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(d=>`
+        <div class="row2" style="align-items:center;margin-bottom:6px;">
+          <div style="flex:2;font-size:13px;">${d.name}${d.note?' · '+d.note:''} <span style="color:var(--muted);">(${formatDate(d.date)})</span></div>
+          <div style="flex:1;font-weight:700;">${d.amount.toFixed(1)} ₪</div>
+          <button class="icon-btn" onclick="deleteBusinessDebt('${d.id}')">🗑️</button>
+        </div>
+      `).join('')}
+      <div style="font-weight:800;margin:8px 0;">סה"כ חובות פתוחים: ${businessDebts.reduce((s,d)=>s+(d.amount||0),0).toFixed(1)} ₪</div>
+      <div class="row2" style="margin-bottom:8px;">
+        <input id="newDebtName" placeholder="למי/למה חייב העסק">
+        <input id="newDebtAmount" type="number" step="0.1" placeholder="סכום (₪)">
+      </div>
+      <div class="row2" style="margin-bottom:8px;">
+        <input id="newDebtDate" type="date" value="${today}">
+        <input id="newDebtNote" placeholder="הערה (אופציונלי)">
+      </div>
+      <button class="btn-primary" onclick="addBusinessDebt()">הוסף חוב</button>
+    `;
   }else if(adminActiveTab==='stock'){
     const { animalShortage, cageShortage } = computeProjectedShortage();
     content.innerHTML = `
@@ -4117,6 +4341,7 @@ async function initApp(){
   await loadRoundDepartures();
   await loadDepot();
   await loadTrash();
+  await loadExpensesData();
   renderSummary();
   renderCuFeatureToggleLabel();
   renderInventoryAlertBanner();
