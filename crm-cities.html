@@ -176,6 +176,7 @@
       <span style="font-size:12.5px;color:var(--muted);cursor:pointer;margin-inline-start:auto;" onclick="logout()" id="logoutLink"></span>
     </div>
     <div id="inventoryAlertBanner"></div>
+    <div id="hoursReminderBanner"></div>
   </header>
 
   <div class="tabs">
@@ -183,6 +184,7 @@
     <div class="tab" data-tab="add">הזמנה חדשה</div>
     <div class="tab" data-tab="all">כל ההזמנות</div>
     <div class="tab" data-tab="history">היסטוריית משלוחים</div>
+    <div class="tab" data-tab="hours" id="hoursTabBtn" style="display:none;">⏱️ השעות שלי</div>
   </div>
 
   <div id="tab-summary">
@@ -270,6 +272,10 @@
   <div id="tab-history" style="display:none;">
     <input class="search" id="historySearch" placeholder="חיפוש לקוח / טלפון / עיר בהיסטוריה...">
     <div class="route-list" id="historyList"></div>
+  </div>
+
+  <div id="tab-hours" style="display:none;">
+    <div class="card" id="myHoursCard"></div>
   </div>
 </div>
 
@@ -588,6 +594,7 @@ const STOCK_KEY = 'pet-crm-stock';
 const DEPOT_KEY = 'pet-crm-depot';
 const TRASH_KEY = 'pet-crm-trash';
 const EXPENSES_KEY = 'pet-crm-expenses';
+const HOUR_REPORTS_KEY = 'pet-crm-hour-reports';
 let depot = { city:'', street:'' };
 async function loadDepot(){
   try{
@@ -867,12 +874,30 @@ function roleLabel(role){
 function findUser(username){
   return users.find(u=>u.username===username);
 }
+// Reps can be given an "active period" (activeFrom/activeTo) by the main admin - outside that
+// window they're blocked from logging in entirely. A rep marked isPermanent, or one with no
+// period configured at all, has no such restriction. Only role 'rep' is ever gated this way.
+function isRepCurrentlyActive(u){
+  if(!u || u.role!=='rep') return true;
+  if(u.isPermanent) return true;
+  if(!u.activeFrom && !u.activeTo) return true;
+  const today = todayStr();
+  if(u.activeFrom && today < u.activeFrom) return false;
+  if(u.activeTo && today > u.activeTo) return false;
+  return true;
+}
 async function attemptLogin(){
   const username = document.getElementById('loginUsername').value.trim();
   const password = document.getElementById('loginPassword').value;
   const u = users.find(x=>x.username===username && x.password===password);
-  document.getElementById('loginErr').style.display = u ? 'none' : 'block';
-  if(!u) return;
+  const errEl = document.getElementById('loginErr');
+  if(!u){ errEl.textContent = 'שם משתמש או סיסמה שגויים'; errEl.style.display = 'block'; return; }
+  if(!isRepCurrentlyActive(u)){
+    errEl.textContent = 'התקופה הפעילה שלך אינה כוללת את התאריך הנוכחי - אין גישה למערכת. פנה/י למנהל.';
+    errEl.style.display = 'block';
+    return;
+  }
+  errEl.style.display = 'none';
   currentUser = { username: u.username, role: u.role };
   // sessionStorage (not localStorage) on purpose: it clears automatically when the browser/tab/app
   // is closed, so users are logged out at that point instead of staying signed in forever.
@@ -881,7 +906,9 @@ async function attemptLogin(){
   document.getElementById('appRoot').style.display = '';
   document.getElementById('logoutLink').textContent = `👤 ${u.username} (${roleLabel(u.role)}) · התנתקות`;
   document.getElementById('adminAreaLink').style.display = (u.role==='mainadmin' || u.role==='admin') ? '' : 'none';
+  document.getElementById('hoursTabBtn').style.display = (u.role==='rep') ? '' : 'none';
   renderInventoryAlertBanner();
+  renderHoursReminderBanner();
   resetInactivityTimer();
 }
 function logout(){
@@ -915,11 +942,17 @@ function tryAutoLogin(){
   if(!saved) return false;
   const u = findUser(saved);
   if(!u) return false;
+  if(!isRepCurrentlyActive(u)){
+    try{ sessionStorage.removeItem('pet-crm-current-user'); }catch(e){}
+    return false;
+  }
   currentUser = { username: u.username, role: u.role };
   document.getElementById('loginOverlay').classList.add('hidden');
   document.getElementById('appRoot').style.display = '';
   document.getElementById('logoutLink').textContent = `👤 ${u.username} (${roleLabel(u.role)}) · התנתקות`;
   document.getElementById('adminAreaLink').style.display = (u.role==='mainadmin' || u.role==='admin') ? '' : 'none';
+  document.getElementById('hoursTabBtn').style.display = (u.role==='rep') ? '' : 'none';
+  renderHoursReminderBanner();
   resetInactivityTimer();
   return true;
 }
@@ -1041,6 +1074,17 @@ function renderInventoryAlertBanner(){
   }
   html += '</div>';
   el.innerHTML = html;
+}
+
+// Shown to reps only: a reminder banner if today's hour report hasn't been submitted yet.
+function renderHoursReminderBanner(){
+  const el = document.getElementById('hoursReminderBanner');
+  if(!el) return;
+  if(!currentUser || currentUser.role!=='rep'){ el.innerHTML=''; return; }
+  const today = todayStr();
+  const already = findHourReport(currentUser.username, today);
+  if(already){ el.innerHTML=''; return; }
+  el.innerHTML = `<div class="alert-banner" style="cursor:pointer;" onclick="switchTab('hours')"><div class="alert-title">🕐 תזכורת</div><div>אל תשכח/י להזין את שעות העבודה שלך היום לפני סיום היום (לחצ/י כאן למעבר ל"⏱️ השעות שלי")</div></div>`;
 }
 
 function askRoundChoice(city, activeCount, activeRound, onResolve){
@@ -1812,6 +1856,157 @@ function computeMonthlyExpenseCategories(){
   };
 }
 
+/* ---------- rep hours / wages / payroll ---------- */
+// hourReports: one entry per rep per calendar day they submit hours for.
+// { id, username, date, hours, createdAt, paid, paidAt, paidAmount }
+// Wage settings (hourlyRate / bonusPer10 / bonusPerQuaver / isPermanent / activeFrom / activeTo)
+// live directly on the user object in `users` (set by the main admin), not in a separate table.
+let hourReports = [];
+async function loadHourReports(){
+  try{
+    const res = await window.storage.get(HOUR_REPORTS_KEY, true);
+    hourReports = res && res.value ? JSON.parse(res.value) : [];
+  }catch(e){ hourReports = []; }
+}
+async function saveHourReports(){
+  try{ await window.storage.set(HOUR_REPORTS_KEY, JSON.stringify(hourReports), true); }
+  catch(e){ showToast('שגיאה בשמירת דוחות השעות'); }
+}
+function repWageSettings(username){
+  const u = findUser(username);
+  return {
+    hourlyRate: (u && u.hourlyRate!=null) ? u.hourlyRate : 0,
+    bonusPer10: (u && u.bonusPer10!=null) ? u.bonusPer10 : 0,
+    bonusPerQuaver: (u && u.bonusPerQuaver!=null) ? u.bonusPerQuaver : 0
+  };
+}
+// "Orders closed" on a given day = orders/spot-sales that REP actually entered into the system
+// that day (by created-at timestamp, not the customer's requested delivery date), excluding
+// cancelled orders. quaverCount is the total quantity of קוואקר animals across those orders,
+// used for the per-קוואקר bonus.
+function computeRepDailyActivity(username, dateStr){
+  let ordersCount = 0, quaverCount = 0;
+  orders.forEach(o=>{
+    if(o.createdByUsername!==username || o.cancelled) return;
+    if(!o.createdAt || new Date(o.createdAt).toISOString().slice(0,10)!==dateStr) return;
+    ordersCount += 1;
+    (o.animals||[]).forEach(a=>{ if(ANIMAL_SPECIES_MAP[a.type]==='קוואקר') quaverCount += a.quantity; });
+  });
+  spotSales.forEach(s=>{
+    if(s.createdByUsername!==username) return;
+    if(!s.createdAt || new Date(s.createdAt).toISOString().slice(0,10)!==dateStr) return;
+    ordersCount += 1;
+    if(ANIMAL_SPECIES_MAP[s.product]==='קוואקר') quaverCount += (s.quantity||0);
+  });
+  return { ordersCount, quaverCount };
+}
+// Once a report is marked paid, its amount is frozen (paidAmount) so later wage-setting changes
+// never retroactively alter what was already paid. Unpaid reports are always computed live.
+function computeHourReportAmount(report){
+  if(report.paid && report.paidAmount!=null) return report.paidAmount;
+  const settings = repWageSettings(report.username);
+  const activity = computeRepDailyActivity(report.username, report.date);
+  return (report.hours||0)*settings.hourlyRate + Math.floor(activity.ordersCount/10)*settings.bonusPer10 + activity.quaverCount*settings.bonusPerQuaver;
+}
+function findHourReport(username, date){
+  return hourReports.find(r=>r.username===username && r.date===date);
+}
+function submitHourReport(){
+  if(!currentUser){ return; }
+  const date = document.getElementById('hrDate').value || todayStr();
+  const hours = parseFloat(document.getElementById('hrHours').value);
+  if(isNaN(hours) || hours<0){ showToast('נא להזין מספר שעות תקין'); return; }
+  let report = findHourReport(currentUser.username, date);
+  if(report){
+    report.hours = hours;
+  }else{
+    report = { id: genExpenseId(), username: currentUser.username, date, hours, createdAt: Date.now(), paid:false, paidAt:null, paidAmount:null };
+    hourReports.push(report);
+  }
+  saveHourReports();
+  showToast('דוח השעות נשמר');
+  renderMyHoursTab();
+}
+function toggleHourReportPaid(id, checked){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לסמן תשלום'); return; }
+  const r = hourReports.find(x=>x.id===id);
+  if(!r) return;
+  if(checked){
+    r.paid = true;
+    r.paidAt = Date.now();
+    r.paidAmount = computeHourReportAmount(r); // freeze the amount at the moment it's marked paid
+  }else{
+    r.paid = false;
+    r.paidAt = null;
+    r.paidAmount = null;
+  }
+  saveHourReports();
+  renderAdminTabContent();
+}
+function deleteHourReport(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול למחוק רשומה'); return; }
+  showConfirm('למחוק את דוח השעות הזה?', ()=>{
+    hourReports = hourReports.filter(r=>r.id!==id);
+    saveHourReports(); renderAdminTabContent();
+    showToast('הרשומה נמחקה');
+  });
+}
+function renderMyHoursTab(){
+  const el = document.getElementById('myHoursCard');
+  if(!el || !currentUser) return;
+  const today = todayStr();
+  const existing = findHourReport(currentUser.username, today);
+  const activity = computeRepDailyActivity(currentUser.username, today);
+  const myReports = hourReports.filter(r=>r.username===currentUser.username).sort((a,b)=>b.date.localeCompare(a.date));
+  const totalOwed = myReports.filter(r=>!r.paid).reduce((s,r)=>s+computeHourReportAmount(r), 0);
+  el.innerHTML = `
+    <div style="font-weight:800;margin-bottom:8px;">⏱️ דיווח שעות יומי</div>
+    <div class="field">
+      <label>תאריך</label>
+      <input type="date" id="hrDate" value="${existing?existing.date:today}">
+    </div>
+    <div class="field">
+      <label>כמה שעות עבדת ביום זה?</label>
+      <input type="number" step="0.25" min="0" id="hrHours" value="${existing?existing.hours:''}" placeholder="לדוגמה: 8">
+    </div>
+    <div style="font-size:13px;color:var(--muted);margin-bottom:10px;">📦 הזמנות שסגרת בתאריך זה: <b>${activity.ordersCount}</b>${activity.quaverCount>0?` (כולל ${activity.quaverCount} קוואקרים)`:''}</div>
+    <button class="btn-primary" onclick="submitHourReport()">${existing?'עדכן דיווח':'שמור דיווח'}</button>
+
+    <div style="font-weight:800;margin:20px 0 8px;border-top:1px solid var(--border);padding-top:14px;">📋 היסטוריית הדיווחים שלי</div>
+    ${myReports.length===0 ? '<div style="color:var(--muted);font-size:13px;">עדיין לא הזנת דיווחים.</div>' : myReports.map(r=>{
+      const act = computeRepDailyActivity(r.username, r.date);
+      const amount = computeHourReportAmount(r);
+      return `
+      <div style="border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin-bottom:8px;">
+        <div style="font-weight:700;">${formatDate(r.date)} — ${r.hours} שעות</div>
+        <div style="font-size:12.5px;color:var(--muted);margin-top:2px;">${act.ordersCount} הזמנות${act.quaverCount>0?` · ${act.quaverCount} קוואקרים`:''}</div>
+        <div style="font-weight:700;margin-top:4px;color:${r.paid?'var(--route)':'var(--danger)'};">${amount.toFixed(1)} ₪ ${r.paid?'· שולם ✅':'· ממתין לתשלום'}</div>
+      </div>`;
+    }).join('')}
+    <div style="font-weight:800;color:var(--danger);margin-top:10px;">💰 סה"כ חוב פתוח כלפיך: ${totalOwed.toFixed(1)} ₪</div>
+  `;
+}
+function saveRepWageSettings(username){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לעדכן הגדרות שכר'); return; }
+  const u = findUser(username);
+  if(!u) return;
+  const rate = parseFloat(document.querySelector(`.wage-hourly[data-username="${CSS.escape(username)}"]`).value);
+  const b10 = parseFloat(document.querySelector(`.wage-bonus10[data-username="${CSS.escape(username)}"]`).value);
+  const bq = parseFloat(document.querySelector(`.wage-bonusquaver[data-username="${CSS.escape(username)}"]`).value);
+  const perm = document.querySelector(`.wage-permanent[data-username="${CSS.escape(username)}"]`).checked;
+  const from = document.querySelector(`.wage-from[data-username="${CSS.escape(username)}"]`).value;
+  const to = document.querySelector(`.wage-to[data-username="${CSS.escape(username)}"]`).value;
+  u.hourlyRate = isNaN(rate) ? 0 : rate;
+  u.bonusPer10 = isNaN(b10) ? 0 : b10;
+  u.bonusPerQuaver = isNaN(bq) ? 0 : bq;
+  u.isPermanent = perm;
+  u.activeFrom = from || '';
+  u.activeTo = to || '';
+  saveUsers();
+  showToast('הגדרות השכר נשמרו');
+  renderAdminTabContent();
+}
+
 function migrateOrder(o){
   if(!o.animals){
     o.animals = o.animalType ? [{type:o.animalType, quantity:o.quantity||1}] : [];
@@ -1883,7 +2078,9 @@ function switchTab(name){
   document.getElementById('tab-add').style.display = name==='add' ? '' : 'none';
   document.getElementById('tab-all').style.display = name==='all' ? '' : 'none';
   document.getElementById('tab-history').style.display = name==='history' ? '' : 'none';
+  document.getElementById('tab-hours').style.display = name==='hours' ? '' : 'none';
   if(name==='add' && !editingId){ populateCitySelect(); }
+  if(name==='hours'){ renderMyHoursTab(); }
 }
 document.querySelectorAll('.tab').forEach(t=>{ t.addEventListener('click', ()=>switchTab(t.dataset.tab)); });
 
@@ -1981,7 +2178,8 @@ function pushNewOrder(data, roundNumber){
     id: Date.now().toString(36)+Math.random().toString(36).slice(2,7),
     ...data,
     roundNumber,
-    cancelled:false, delivered:false, deliveryConfirmed:false, customerUpdated:false, deliveryDate:'', createdAt: Date.now()
+    cancelled:false, delivered:false, deliveryConfirmed:false, customerUpdated:false, deliveryDate:'', createdAt: Date.now(),
+    createdByUsername: currentUser ? currentUser.username : ''
   });
   showToast('ההזמנה נוספה');
 }
@@ -2842,7 +3040,8 @@ function submitQuickSale(){
     spotSales.push({
       id: Date.now().toString(36)+Math.random().toString(36).slice(2,7),
       product, quantity: qty, customer, location, date, totalPrice, extraCharge, noCage,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      createdByUsername: currentUser ? currentUser.username : ''
     });
     // a special-delivery sale leaves stock right away - it's not routed through the normal city/shipping flow.
     if(ANIMAL_SPECIES_MAP[product]){
@@ -3291,11 +3490,11 @@ function renderAdminRevenueByCity(){
 /* ---------- admin tabs ---------- */
 let adminActiveTab = 'report';
 function adminTabsForRole(){
-  if(currentUser && currentUser.role==='mainadmin') return ['report','revenue','expenses','stock','depot','trash','users'];
+  if(currentUser && currentUser.role==='mainadmin') return ['report','revenue','expenses','payroll','stock','depot','trash','users'];
   if(currentUser && currentUser.role==='admin') return ['stock','depot'];
   return [];
 }
-const ADMIN_TAB_LABELS = { report:'📊 דוח כספי', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', trash:'🗑️ אשפה', users:'👤 משתמשים' };
+const ADMIN_TAB_LABELS = { report:'📊 דוח כספי', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', trash:'🗑️ אשפה', users:'👤 משתמשים' };
 function renderAdminTabsBar(){
   const bar = document.getElementById('adminTabsBar');
   const tabs = adminTabsForRole();
@@ -3471,6 +3670,85 @@ function renderAdminTabContent(){
         <input id="newDebtNote" placeholder="הערה (אופציונלי)">
       </div>
       <button class="btn-primary" onclick="addBusinessDebt()">הוסף חוב</button>
+    `;
+  }else if(adminActiveTab==='payroll'){
+    const reps = users.filter(u=>u.role==='rep');
+    const grandTotalOwed = hourReports.filter(r=>!r.paid).reduce((s,r)=>s+computeHourReportAmount(r), 0);
+    content.innerHTML = `
+      <div style="font-weight:800;margin-bottom:4px;">🕐 שכר ושעות נציגים</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">לכל נציג: שכר שעתי, תוספת לכל 10 הזמנות שנסגרו ביום, ותוספת לכל קוואקר שנמכר. "נציג קבוע" מבטל את הגבלת תקופת הפעילות - נציג שאינו קבוע וללא תאריכים מוגדרים יכול להתחבר בכל עת; אם הוגדרו תאריכים, הוא יכול להתחבר רק בטווח הזה.</div>
+      <div style="font-weight:800;color:var(--danger);margin-bottom:14px;">💰 סה"כ חוב כולל לכל הנציגים: ${grandTotalOwed.toFixed(1)} ₪</div>
+      ${reps.length===0 ? '<div style="color:var(--muted);">אין נציגים רשומים עדיין.</div>' : reps.map(u=>{
+        const myReports = hourReports.filter(r=>r.username===u.username).sort((a,b)=>b.date.localeCompare(a.date));
+        const unpaid = myReports.filter(r=>!r.paid);
+        const paid = myReports.filter(r=>r.paid);
+        const repOwed = unpaid.reduce((s,r)=>s+computeHourReportAmount(r), 0);
+        return `
+        <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:16px;">
+          <div style="font-weight:800;margin-bottom:8px;">👤 ${u.username}</div>
+          <div class="row2" style="margin-bottom:8px;">
+            <div>
+              <label style="font-size:12px;margin-bottom:3px;">שכר לשעה (₪)</label>
+              <input type="number" step="0.5" class="wage-hourly" data-username="${escAttr(u.username)}" value="${u.hourlyRate??''}">
+            </div>
+            <div>
+              <label style="font-size:12px;margin-bottom:3px;">תוספת לכל 10 הזמנות ביום (₪)</label>
+              <input type="number" step="0.5" class="wage-bonus10" data-username="${escAttr(u.username)}" value="${u.bonusPer10??''}">
+            </div>
+          </div>
+          <div class="row2" style="margin-bottom:8px;">
+            <div>
+              <label style="font-size:12px;margin-bottom:3px;">תוספת לכל קוואקר שנמכר (₪)</label>
+              <input type="number" step="0.5" class="wage-bonusquaver" data-username="${escAttr(u.username)}" value="${u.bonusPerQuaver??''}">
+            </div>
+            <div>
+              <label style="font-size:12px;margin-bottom:3px;display:flex;align-items:center;gap:6px;">
+                <input type="checkbox" class="wage-permanent" data-username="${escAttr(u.username)}" style="width:auto;margin-bottom:0;" ${u.isPermanent?'checked':''}> נציג קבוע (ללא הגבלת תאריכים)
+              </label>
+            </div>
+          </div>
+          <div class="row2" style="margin-bottom:8px;">
+            <div>
+              <label style="font-size:12px;margin-bottom:3px;">פעיל מתאריך</label>
+              <input type="date" class="wage-from" data-username="${escAttr(u.username)}" value="${u.activeFrom||''}">
+            </div>
+            <div>
+              <label style="font-size:12px;margin-bottom:3px;">פעיל עד תאריך</label>
+              <input type="date" class="wage-to" data-username="${escAttr(u.username)}" value="${u.activeTo||''}">
+            </div>
+          </div>
+          <button class="btn-ghost" onclick="saveRepWageSettings('${escAttr(u.username)}')">שמור הגדרות שכר</button>
+
+          <div style="font-weight:700;margin:12px 0 6px;">ימי עבודה שטרם שולמו</div>
+          ${unpaid.length===0 ? '<div style="color:var(--muted);font-size:13px;">אין ימים ממתינים לתשלום.</div>' : unpaid.map(r=>{
+            const act = computeRepDailyActivity(r.username, r.date);
+            const amount = computeHourReportAmount(r);
+            return `
+            <div class="row2" style="align-items:center;margin-bottom:6px;">
+              <div style="flex:2;font-size:13px;">${formatDate(r.date)} · ${r.hours} שעות · ${act.ordersCount} הזמנות${act.quaverCount>0?` (${act.quaverCount} קוואקרים)`:''}</div>
+              <div style="flex:1;font-weight:700;">${amount.toFixed(1)} ₪</div>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12.5px;">
+                <input type="checkbox" onchange="toggleHourReportPaid('${r.id}', this.checked)" style="width:auto;margin-bottom:0;"> שולם
+              </label>
+              <button class="icon-btn" onclick="deleteHourReport('${r.id}')">🗑️</button>
+            </div>`;
+          }).join('')}
+          <div style="font-weight:800;margin:8px 0;">חוב פתוח ל${u.username}: ${repOwed.toFixed(1)} ₪</div>
+
+          ${paid.length>0 ? `
+          <div style="font-weight:700;margin:12px 0 6px;border-top:1px solid var(--border);padding-top:10px;">📜 היסטוריית תשלומים</div>
+          ${paid.map(r=>`
+            <div class="row2" style="align-items:center;margin-bottom:6px;">
+              <div style="flex:2;font-size:13px;">${formatDate(r.date)} · ${r.hours} שעות · שולם ב-${formatDate(new Date(r.paidAt).toISOString().slice(0,10))}</div>
+              <div style="flex:1;font-weight:700;">${r.paidAmount.toFixed(1)} ₪</div>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12.5px;">
+                <input type="checkbox" checked onchange="toggleHourReportPaid('${r.id}', this.checked)" style="width:auto;margin-bottom:0;"> שולם
+              </label>
+              <button class="icon-btn" onclick="deleteHourReport('${r.id}')">🗑️</button>
+            </div>
+          `).join('')}` : ''}
+        </div>`;
+      }).join('')}
     `;
   }else if(adminActiveTab==='stock'){
     const { animalShortage, cageShortage } = computeProjectedShortage();
@@ -4399,6 +4677,7 @@ document.getElementById('historySearch').addEventListener('input', renderHistory
 async function initApp(){
   await loadUsers();
   await loadStock();
+  await loadHourReports();
   const autoLoggedIn = tryAutoLogin();
   await loadOrders();
   await loadSpotSales();
@@ -4410,6 +4689,7 @@ async function initApp(){
   renderSummary();
   renderCuFeatureToggleLabel();
   renderInventoryAlertBanner();
+  renderHoursReminderBanner();
 }
 initApp();
 
