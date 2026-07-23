@@ -2206,6 +2206,7 @@ function renderSummary(){
         <div class="toggle-orders" onclick="toggleCity('${toggleKey}')">${isOpen?'הסתר הזמנות ▲':'הצג הזמנות ▼'}</div>
         <div class="city-orders ${isOpen?'open':''}">${ordersHtml}</div>
         <button class="btn-pack" onclick="openPackModal('${c.city}', ${c.roundNumber})">📋 רשימת ליקוט למשלוח</button>
+        <button class="btn-pack" onclick="copyCityAddresses('${c.city}', ${c.roundNumber})">📍 העתק את כל הכתובות</button>
         <button class="btn-pack" onclick="openDeliveryTrackModal('${c.city}', ${c.roundNumber})">🚚 מעקב מסירה בשטח</button>
         <button class="btn-pack" onclick="openRouteModal('${c.city}', ${c.roundNumber})">🗺️ מסלול אידיאלי</button>
         ${cuButton}
@@ -2264,6 +2265,38 @@ const RODENT_FOOD_TYPES = ['חבילת מזון למכרסמים (1 יח\')','3 
 const BIRD_ANIMAL_TYPES = ['תוכון מותאם לאילוף כולל כלוב','2 תוכונים מותאמים לאילוף כולל כלוב','2 תוכונים לא מותאמים לאילוף כולל כלוב','קוקטייל כולל כלוב','קוואקר כולל כלוב'];
 const RODENT_ANIMAL_TYPES = ['ארנב כולל כלוב נסורת ואוכל','ארנב ננסי הולנדי ישראלי כולל כלוב נסורת ואוכל','2 ארנבות כולל כלוב מוגדל','שרקן כולל כלוב נסורת ואוכל','2 שרקנים כולל כלוב מוגדל','2 אוגרים כולל כלוב'];
 
+// Copies every active order's address in a city/round to the clipboard in one shot, so a rep
+// doesn't need to select and copy each address separately. Falls back to a hidden-textarea +
+// execCommand approach for older WebView browsers (e.g. the kosher-phone app) that may not
+// support the modern navigator.clipboard API.
+async function copyCityAddresses(city, round){
+  const list = computeCitySummary();
+  const cityData = list.find(c=>c.city===city && c.roundNumber===round);
+  if(!cityData){ showToast('לא נמצאו הזמנות'); return; }
+  const lines = cityData.orders
+    .filter(o=>!o.cancelled)
+    .map(o=>`${o.customer||'לקוח'}: ${o.address||'אין כתובת'}`);
+  if(lines.length===0){ showToast('אין כתובות להעתקה'); return; }
+  const text = lines.join('\n');
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(text);
+    }else{
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    showToast(`${lines.length} כתובות הועתקו ללוח`);
+  }catch(e){
+    showToast('שגיאה בהעתקה - נסה שוב');
+  }
+}
 function openPackModal(city, round){
   const list = computeCitySummary();
   const cityData = list.find(c=>c.city===city && c.roundNumber===round);
