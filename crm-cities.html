@@ -1797,7 +1797,7 @@ function postponeOrderToNextRound(id){
   if(o.cancelled){ showToast('לא ניתן לדחות הזמנה מבוטלת'); return; }
   const currentRound = o.roundNumber||0;
   const nextRound = currentRound + 1;
-  showConfirm(`לדחות את ההזמנה של ${o.customer||'הלקוח'} לסבב הבא (${cityDisplayName(o.city, nextRound)})? בטוח?`, ()=>{
+  showConfirm(`האם אתה בטוח שאתה רוצה להעביר את ההזמנה של ${o.customer||'הלקוח'} מ${cityDisplayName(o.city, currentRound)} ל${cityDisplayName(o.city, nextRound)}?`, ()=>{
     o.roundNumber = nextRound;
     saveOrders(); renderAll(); showToast('ההזמנה נדחתה לסבב הבא');
   });
