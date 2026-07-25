@@ -37,7 +37,8 @@
   .stat .lbl{font-size:11px;color:var(--muted);margin-top:2px;}
   label{display:block;font-size:13px;font-weight:600;color:var(--muted);margin-bottom:6px;}
   .field{margin-bottom:14px;}
-  input,select{width:100%;padding:11px 12px;border-radius:10px;border:1.5px solid var(--border);font-family:'Heebo',sans-serif;font-size:15px;background:#fff;color:var(--ink);}
+  input,select,textarea{width:100%;padding:11px 12px;border-radius:10px;border:1.5px solid var(--border);font-family:'Heebo',sans-serif;font-size:15px;background:#fff;color:var(--ink);}
+  textarea{resize:vertical;}
   input:focus,select:focus{outline:none;border-color:var(--accent);}
   .row2{display:flex;gap:10px;}
   .row2>div{flex:1;}
@@ -249,6 +250,14 @@
       <div class="total-price-box" id="totalPriceBox">סה"כ להזמנה: 0 ₪</div>
 
       <div class="field">
+        <label>הערה (בקשות מיוחדות / דברים נוספים שלא כלולים בקטלוג)</label>
+        <textarea id="fNote" rows="2" placeholder="לדוגמה: ביקש/ה גם קערת מים נוספת"></textarea>
+      </div>
+      <div class="field" style="display:flex;align-items:center;gap:6px;">
+        <input type="checkbox" id="fYad2" style="width:auto;margin-bottom:0;">
+        <label style="margin-bottom:0;">הלקוח הגיע מיד 2</label>
+      </div>
+      <div class="field">
         <label>תאריך הזמנה</label>
         <input id="fDate" type="date">
       </div>
@@ -292,12 +301,11 @@
 
 <div class="modal-overlay" id="roundChoiceModal">
   <div class="modal-box">
-    <button class="modal-close-x" onclick="resolveRoundChoice('cancel')">✕</button>
+    <button class="modal-close-x" onclick="resolveRoundChoice(null)">✕</button>
     <p id="roundChoiceMessage"></p>
-    <div class="modal-actions" style="flex-direction:column;gap:8px;">
-      <button class="btn-primary" id="roundChoiceExistingBtn" onclick="resolveRoundChoice('existing')" style="width:100%;"></button>
-      <button class="btn-ghost" id="roundChoiceNewBtn" onclick="resolveRoundChoice('new')" style="width:100%;border-color:var(--danger);color:var(--danger);"></button>
-      <button class="btn-ghost" onclick="resolveRoundChoice('cancel')" style="width:100%;">ביטול</button>
+    <div class="modal-actions" style="flex-direction:column;gap:8px;" id="roundChoiceButtons"></div>
+    <div class="modal-actions" style="margin-top:8px;">
+      <button class="btn-ghost" onclick="resolveRoundChoice(null)" style="width:100%;">ביטול</button>
     </div>
   </div>
 </div>
@@ -646,9 +654,11 @@ const OLD_TO_NEW_ANIMAL_LABEL = {
 const FOOD_OPTIONS = [
   'חבילת מזון לתוכים (1 יח\')',
   '3 חבילות מזון לתוכים',
+  '6 חבילות מזון לתוכים',
   'שק מזון לתוכים (20 ק"ג)',
   'חבילת מזון למכרסמים (1 יח\')',
   '3 חבילות מזון למכרסמים',
+  '6 חבילות מזון למכרסמים',
   'שק מזון למכרסמים (25 ק"ג)',
   'נסורת פשוטה - 1 יח\'',
   'נסורת פשוטה - 2 יח\'',
@@ -659,9 +669,11 @@ const FOOD_OPTIONS = [
 const FOOD_PRICE_MAP = {
   'חבילת מזון לתוכים (1 יח\')': 10,
   '3 חבילות מזון לתוכים': 25,
+  '6 חבילות מזון לתוכים': 50,
   'שק מזון לתוכים (20 ק"ג)': 190,
   'חבילת מזון למכרסמים (1 יח\')': 10,
   '3 חבילות מזון למכרסמים': 25,
+  '6 חבילות מזון למכרסמים': 50,
   'שק מזון למכרסמים (25 ק"ג)': 190,
   'נסורת פשוטה - 1 יח\'': 12,
   'נסורת פשוטה - 2 יח\'': 20,
@@ -685,9 +697,11 @@ const DEFAULT_COST_MAP = {
   '2 שרקנים כולל כלוב מוגדל': { animal:94, cage:35 },
   'חבילת מזון לתוכים (1 יח\')': 3,
   '3 חבילות מזון לתוכים': 9,
+  '6 חבילות מזון לתוכים': 18,
   'שק מזון לתוכים (20 ק"ג)': 75,
   'חבילת מזון למכרסמים (1 יח\')': 2.8,
   '3 חבילות מזון למכרסמים': 8.4,
+  '6 חבילות מזון למכרסמים': 16.8,
   'שק מזון למכרסמים (25 ק"ג)': 70,
   'נסורת פשוטה - 1 יח\'': 2,
   'נסורת פשוטה - 2 יח\'': 4,
@@ -749,7 +763,7 @@ const NO_CAGE_DISCOUNT_MAP = {
   'תוכון מותאם לאילוף כולל כלוב': 40,
   'ארנב כולל כלוב נסורת ואוכל': 70,      // 270-70=200, per מחירון "חסד לישראל"
   'שרקן כולל כלוב נסורת ואוכל': 70,      // 250-70=180, per מחירון "חסד לישראל"
-  '2 אוגרים כולל כלוב': 80,              // 160-80=80 (= 2x40, per מחירון "חסד לישראל")
+  '2 אוגרים כולל כלוב': 60,              // 160-60=100, per עדכון נועם
   '2 תוכונים לא מותאמים לאילוף כולל כלוב': 20  // 200-20=180, per מחירון "חסד לישראל"
 };
 const CAGE_TYPES_LIST = ['כלוב תוכון','כלוב קוקטייל','כלוב קוואקר','כלוב ארנב','כלוב ארנב מוגדל','כלוב שרקן','כלוב שרקן מוגדל','כלוב אוגרים'];
@@ -1097,13 +1111,27 @@ function renderHoursReminderBanner(){
   el.innerHTML = '';
 }
 
-function askRoundChoice(city, activeCount, activeRound, onResolve){
+// Every round for a city that still has at least one active (not delivered, not cancelled)
+// order - a city can easily have several of these at once (e.g. אשדוד 1 AND אשדוד 2 both still
+// waiting to ship), and a new order should be addable to ANY of them, not just whichever one an
+// algorithm happens to guess, plus always the option to open a brand new round.
+function computeCityActiveRounds(city){
+  const map = {};
+  orders.filter(o=>o.city===city && !o.cancelled && !o.delivered).forEach(o=>{
+    const r = o.roundNumber||0;
+    map[r] = (map[r]||0) + 1;
+  });
+  return Object.keys(map).map(Number).sort((a,b)=>a-b).map(roundNumber=>({roundNumber, count:map[roundNumber]}));
+}
+function askRoundChoice(city, activeRounds, onResolve){
   roundChoicePending = onResolve;
   const newRound = computeCityMaxRound(city) + 1;
   document.getElementById('roundChoiceMessage').textContent =
-    `בעיר ${cityDisplayName(city, activeRound)} כבר יש ${activeCount} הזמנות פעילות שטרם נשלחו. להוסיף את ההזמנה החדשה לאותו סבב, או לפתוח סבב חדש (${cityDisplayName(city, newRound)}) — למשל כי השליח כבר יצא לדרך?`;
-  document.getElementById('roundChoiceExistingBtn').textContent = `➕ הוסף לסבב הקיים (${cityDisplayName(city, activeRound)})`;
-  document.getElementById('roundChoiceNewBtn').textContent = `🆕 פתח סבב חדש (${cityDisplayName(city, newRound)})`;
+    `בעיר ${city} יש ${activeRounds.length>1?'כמה סבבים פעילים':'סבב פעיל'} שטרם נשלחו. לאיזה סבב להוסיף את ההזמנה, או לפתוח סבב חדש (${cityDisplayName(city, newRound)}) — למשל כי השליח כבר יצא לדרך?`;
+  const btnsContainer = document.getElementById('roundChoiceButtons');
+  btnsContainer.innerHTML = activeRounds.map(r=>
+    `<button class="btn-primary" style="width:100%;" onclick="resolveRoundChoice(${r.roundNumber})">➕ הוסף ל${cityDisplayName(city, r.roundNumber)} (${r.count} הזמנות)</button>`
+  ).join('') + `<button class="btn-ghost" style="width:100%;border-color:var(--danger);color:var(--danger);" onclick="resolveRoundChoice(${newRound})">🆕 פתח סבב חדש (${cityDisplayName(city, newRound)})</button>`;
   document.getElementById('roundChoiceModal').classList.add('open');
 }
 function resolveRoundChoice(choice){
@@ -1262,7 +1290,10 @@ function updateRowPriceDisplay(rowEl){
   const discount = NO_CAGE_DISCOUNT_MAP[type];
   if(discount!=null){
     noCageWrap.style.display = 'block';
-    rowEl.querySelector('.animalNoCageNote').textContent = `הנחה של ${discount} ₪ ליחידה כשלוקחים ללא כלוב`;
+    const note = rowEl.querySelector('.animalNoCageNote');
+    note.textContent = qty>1
+      ? `הנחה של ${discount} ₪ ליחידה - חלה על כל ${qty} היחידות בשורה זו. כדי להוריד כלוב רק מחלק מהכמות (למשל יחידה אחת בלבד), פצלו לשתי שורות נפרדות מאותו הסוג - אחת עם הסימון ואחת בלעדיו.`
+      : `הנחה של ${discount} ₪ ליחידה כשלוקחים ללא כלוב`;
   }else{
     noCageWrap.style.display = 'none';
     noCageCb.checked = false;
@@ -1624,6 +1655,9 @@ function filterCitySelect(){
 document.getElementById('fCitySelect').addEventListener('change', ()=>{
   const sel = document.getElementById('fCitySelect');
   document.getElementById('fCitySelected').textContent = sel.value ? 'נבחר: ' + sel.value : '';
+  // fill the search box itself with the full city name that was clicked/selected, so it doesn't
+  // stay showing just the partial text that was typed to find it (e.g. "בני" -> "בני ברק").
+  if(sel.value) document.getElementById('fCityFilter').value = sel.value;
 });
 function getSelectedCity(){
   return document.getElementById('fCitySelect').value || '';
@@ -2152,6 +2186,8 @@ function submitOrder(){
   const phone1raw = document.getElementById('fPhone1').value.trim();
   const phone2raw = document.getElementById('fPhone2').value.trim();
   const date = document.getElementById('fDate').value || todayStr();
+  const note = document.getElementById('fNote').value.trim();
+  const fromYad2 = document.getElementById('fYad2').checked;
   const animals = collectAnimalRows();
   const foodItems = collectFoodRows();
   const pairFlags = collectPairFlags();
@@ -2163,12 +2199,8 @@ function submitOrder(){
   if(!city){ showToast('נא לבחור או להזין עיר'); return; }
   if(!customer){ showToast('שם לקוח הוא שדה חובה'); return; }
   if(!phone1raw){ showToast('טלפון 1 הוא שדה חובה'); return; }
-  // an unedited legacy address on an order being edited is grandfathered in as-is;
-  // anything new/changed must start with a street name picked from the government registry.
-  if(address && address!==fAddressOriginalOnEdit && (!fPickedStreet || !address.startsWith(fPickedStreet))){
-    showToast('יש לבחור רחוב מתוך הרשימה המוצעת (לפי מרשם משרד הפנים), ואז להוסיף מספר בית');
-    return;
-  }
+  // addresses no longer need to be picked from the government street registry - free text is fine
+  // (the registry lookup is still offered as a convenience autocomplete, just not enforced).
 
   const v1 = validatePhone(phone1raw);
   if(!v1.ok){ document.getElementById('err1').textContent = v1.msg; document.getElementById('err1').style.display='block'; return; }
@@ -2184,6 +2216,7 @@ function submitOrder(){
       o.city = city; o.customer = customer; o.address = address;
       o.phone1 = phone1; o.phone2 = phone2; o.animals = animals; o.foodItems = foodItems; o.date = date;
       o.pairFlags = pairFlags; o.cageSharing = cageSharing; o.totalPrice = totalPrice;
+      o.note = note; o.fromYad2 = fromYad2;
     }
     editingId = null;
     document.getElementById('editNote').style.display = 'none';
@@ -2193,13 +2226,11 @@ function submitOrder(){
     return;
   }
 
-  const orderData = {city, customer, address, phone1, phone2, animals, foodItems, date, pairFlags, cageSharing, totalPrice};
-  const activeCount = orders.filter(o=>o.city===city && !o.cancelled && !o.delivered).length;
-  if(activeCount > 0){
-    const activeRound = computeCityRoundNumber(city);
-    askRoundChoice(city, activeCount, activeRound, (choice)=>{
-      if(choice==='cancel') return;
-      const roundNumber = choice==='new' ? (computeCityMaxRound(city)+1) : activeRound;
+  const orderData = {city, customer, address, phone1, phone2, animals, foodItems, date, pairFlags, cageSharing, totalPrice, note, fromYad2};
+  const activeRounds = computeCityActiveRounds(city);
+  if(activeRounds.length > 0){
+    askRoundChoice(city, activeRounds, (roundNumber)=>{
+      if(roundNumber==null) return;
       pushNewOrder(orderData, roundNumber);
       finishSubmitOrder();
     });
@@ -2227,6 +2258,8 @@ function finishSubmitOrder(){
   document.getElementById('fPhone1').value='';
   document.getElementById('fPhone2').value='';
   document.getElementById('fDate').value=todayStr();
+  document.getElementById('fNote').value='';
+  document.getElementById('fYad2').checked=false;
   resetAnimalRows();
   resetFoodRows();
   populateCitySelect();
@@ -2249,6 +2282,8 @@ function cancelEdit(){
   document.getElementById('fPhone1').value='';
   document.getElementById('fPhone2').value='';
   document.getElementById('fDate').value=todayStr();
+  document.getElementById('fNote').value='';
+  document.getElementById('fYad2').checked=false;
   resetAnimalRows();
   resetFoodRows();
   populateCitySelect();
@@ -2266,6 +2301,8 @@ function startEdit(id){
   document.getElementById('fPhone1').value = o.phone1||'';
   document.getElementById('fPhone2').value = o.phone2||'';
   document.getElementById('fDate').value = o.date;
+  document.getElementById('fNote').value = o.note||'';
+  document.getElementById('fYad2').checked = !!o.fromYad2;
   document.getElementById('animalRows').innerHTML='';
   animalRowCounter = 0;
   (o.animals && o.animals.length ? o.animals : [{type:ANIMAL_OPTIONS[0],quantity:1,color:''}]).forEach(a=>addAnimalRow(a.type, a.quantity, a.color, a.color2, a.noCage));
@@ -2411,8 +2448,8 @@ function renderSummary(){
     const ordersHtml = c.orders.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(o=>`
       <div class="order-row">
         <div>
-          <div class="order-main">${o.deliveryConfirmed?'✅ ':''}${formatAnimals(o.animals,o.pairFlags,o.cageSharing)} — ${o.customer}</div>
-          <div class="order-sub">${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}</div>
+          <div class="order-main">${o.deliveryConfirmed?'✅ ':''}${o.fromYad2?'🏷️ יד2 · ':''}${formatAnimals(o.animals,o.pairFlags,o.cageSharing)} — ${o.customer}</div>
+          <div class="order-sub">${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+o.note:''}</div>
         </div>
         <div class="order-actions">
           ${o.address ? `<button class="icon-btn" onclick="copySingleAddress('${o.id}')" title="העתק כתובת">📍</button>` : ''}
@@ -2483,8 +2520,8 @@ function renderAllOrders(){
   container.innerHTML = list.map(o=>`
     <div class="order-row ${o.cancelled?'cancelled':''}">
       <div>
-        <div class="order-main">${o.city} — ${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.cancelled?'<span class="badge-cancelled">מבוטלת</span>':''}${(!o.cancelled && o.delivered)?'<span class="badge-shipped">נשלח '+formatDate(o.deliveryDate)+'</span>':''}</div>
-        <div class="order-sub">${o.customer} · ${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}</div>
+        <div class="order-main">${o.fromYad2?'🏷️ יד2 · ':''}${o.city} — ${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.cancelled?'<span class="badge-cancelled">מבוטלת</span>':''}${(!o.cancelled && o.delivered)?'<span class="badge-shipped">נשלח '+formatDate(o.deliveryDate)+'</span>':''}</div>
+        <div class="order-sub">${o.customer} · ${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+o.note:''}</div>
       </div>
       <div class="order-actions">
         <button class="icon-btn" onclick="startEdit('${o.id}')">✏️</button>
@@ -2502,11 +2539,13 @@ function renderAllOrders(){
 const FOOD_PACKAGE_UNITS = {
   'חבילת מזון לתוכים (1 יח\')': 1,
   '3 חבילות מזון לתוכים': 3,
+  '6 חבילות מזון לתוכים': 6,
   'חבילת מזון למכרסמים (1 יח\')': 1,
-  '3 חבילות מזון למכרסמים': 3
+  '3 חבילות מזון למכרסמים': 3,
+  '6 חבילות מזון למכרסמים': 6
 };
-const BIRD_FOOD_TYPES = ['חבילת מזון לתוכים (1 יח\')','3 חבילות מזון לתוכים','שק מזון לתוכים (20 ק"ג)'];
-const RODENT_FOOD_TYPES = ['חבילת מזון למכרסמים (1 יח\')','3 חבילות מזון למכרסמים','שק מזון למכרסמים (25 ק"ג)'];
+const BIRD_FOOD_TYPES = ['חבילת מזון לתוכים (1 יח\')','3 חבילות מזון לתוכים','6 חבילות מזון לתוכים','שק מזון לתוכים (20 ק"ג)'];
+const RODENT_FOOD_TYPES = ['חבילת מזון למכרסמים (1 יח\')','3 חבילות מזון למכרסמים','6 חבילות מזון למכרסמים','שק מזון למכרסמים (25 ק"ג)'];
 const BIRD_ANIMAL_TYPES = ['תוכון מותאם לאילוף כולל כלוב','2 תוכונים מותאמים לאילוף כולל כלוב','2 תוכונים לא מותאמים לאילוף כולל כלוב','קוקטייל כולל כלוב','קוואקר כולל כלוב'];
 const RODENT_ANIMAL_TYPES = ['ארנב כולל כלוב נסורת ואוכל','ארנב ננסי הולנדי ישראלי כולל כלוב נסורת ואוכל','2 ארנבות כולל כלוב מוגדל','שרקן כולל כלוב נסורת ואוכל','2 שרקנים כולל כלוב מוגדל','2 אוגרים כולל כלוב'];
 
@@ -2665,6 +2704,14 @@ function openPackModal(city, round){
   });
   if(foodHtml){
     html += `<div style="font-weight:800;font-size:14px;margin-top:14px;padding-top:10px;border-top:2px solid var(--border);">🍽️ מזון ואביזרים</div>` + foodHtml;
+  }
+
+  const notedOrders = cityData.orders.filter(o=>o.note || o.fromYad2);
+  if(notedOrders.length>0){
+    html += `<div style="font-weight:800;font-size:14px;margin-top:14px;padding-top:10px;border-top:2px solid var(--border);">📝 הערות מיוחדות</div>`;
+    notedOrders.forEach(o=>{
+      html += `<div style="font-size:12.5px;color:var(--muted);padding:6px 4px;">${o.fromYad2?'🏷️ יד2 · ':''}<b>${o.customer}</b>${o.note?' — '+o.note:''}</div>`;
+    });
   }
 
   if(birdNoFoodCount>0 || rodentNoFoodCount>0){
@@ -2833,8 +2880,9 @@ function renderCustomerUpdateContent(){
     <label class="pack-item">
       <input type="checkbox" class="cu-check" data-order-id="${o.id}" ${o.customerUpdated?'checked':''} style="width:19px;height:19px;margin-top:2px;flex-shrink:0;">
       <div style="flex:1;text-align:right;">
-        <div style="font-weight:700;font-size:14px;">${o.customer}</div>
-        <div style="font-size:12.5px;color:var(--muted);margin-top:2px;">${o.address?o.address+' · ':''}${o.phone1||''}${o.phone2?', '+o.phone2:''}</div>
+        <div style="font-weight:700;font-size:14px;">${o.fromYad2?'🏷️ יד2 · ':''}${o.customer}</div>
+        <div style="font-size:12.5px;color:var(--muted);margin-top:2px;">${o.address?o.address+' · ':''}${o.phone1?`<a href="tel:${o.phone1.replace(/-/g,'')}" style="color:var(--accent-dark);font-weight:700;" onclick="event.stopPropagation();">${o.phone1}</a>`:''}${o.phone2?', '+`<a href="tel:${o.phone2.replace(/-/g,'')}" style="color:var(--accent-dark);font-weight:700;" onclick="event.stopPropagation();">${o.phone2}</a>`:''}</div>
+        ${o.note?`<div style="font-size:12px;color:var(--muted);margin-top:2px;">📝 ${o.note}</div>`:''}
       </div>
     </label>
   `).join('');
@@ -2900,8 +2948,8 @@ function renderHistory(){
           <div class="city-name-wrap"><div class="city-name">${o.customer}</div></div>
           <div class="city-last">משלוח: ${formatDate(o.deliveryDate)} · ${relativeTime(o.deliveryDate)}</div>
         </div>
-        <div class="city-totals">${cityDisplayName(o.city, o.roundNumber||0)} · הוזמן ב-${formatDate(o.date)}</div>
-        <div class="order-sub" style="margin-top:6px;">${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.address?' · '+o.address:''}</div>
+        <div class="city-totals">${o.fromYad2?'🏷️ יד2 · ':''}${cityDisplayName(o.city, o.roundNumber||0)} · הוזמן ב-${formatDate(o.date)}</div>
+        <div class="order-sub" style="margin-top:6px;">${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.address?' · '+o.address:''}${o.note?' · 📝 '+o.note:''}</div>
       </div>
     `).join('');
     return;
@@ -2917,8 +2965,8 @@ function renderHistory(){
     const rows = s.orders.slice().sort((a,b)=>a.customer.localeCompare(b.customer,'he')).map(o=>`
       <div class="order-row">
         <div>
-          <div class="order-main">${o.customer} — ${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}</div>
-          <div class="order-sub">הוזמן ב-${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}</div>
+          <div class="order-main">${o.fromYad2?'🏷️ יד2 · ':''}${o.customer} — ${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}</div>
+          <div class="order-sub">הוזמן ב-${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+o.note:''}</div>
         </div>
       </div>
     `).join('');
@@ -2992,6 +3040,7 @@ function renderQsCityOptions(filterText){
 document.getElementById('qsCitySelect').addEventListener('change', ()=>{
   const sel = document.getElementById('qsCitySelect');
   document.getElementById('qsCitySelected').textContent = sel.value ? 'נבחר: ' + sel.value : '';
+  if(sel.value) document.getElementById('qsCityFilter').value = sel.value;
 });
 function updateQsNoCageVisibility(){
   const product = document.getElementById('qsProduct').value;
@@ -3096,10 +3145,7 @@ function submitQuickSale(){
     const address = document.getElementById('qsAddress').value.trim();
     if(!city){ showToast('נא לבחור עיר, או לסמן "משלוח מיוחד"'); return; }
     if(!customer){ showToast('שם לקוח הוא שדה חובה'); return; }
-    if(address && (!qsPickedStreet || !address.startsWith(qsPickedStreet))){
-      showToast('יש לבחור רחוב מתוך הרשימה המוצעת (לפי מרשם משרד הפנים), ואז להוסיף מספר בית');
-      return;
-    }
+    // addresses no longer need to be picked from the government street registry - free text is fine.
     const isAnimal = ANIMAL_OPTIONS.includes(product);
     const animals = isAnimal ? [{type:product, quantity:qty, color:'', color2:'', noCage: !!noCage}] : [];
     const foodItems = isAnimal ? [] : [{type:product, quantity:qty}];
