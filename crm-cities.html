@@ -603,6 +603,7 @@ const DEPOT_KEY = 'pet-crm-depot';
 const TRASH_KEY = 'pet-crm-trash';
 const EXPENSES_KEY = 'pet-crm-expenses';
 const HOUR_REPORTS_KEY = 'pet-crm-hour-reports';
+const AUDIT_LOG_KEY = 'pet-crm-audit-log';
 let depot = { city:'', street:'' };
 async function loadDepot(){
   try{
@@ -1190,6 +1191,7 @@ function closeShipModal(confirmed){
     });
     saveOrders(); saveStock(); renderAll(); renderInventoryAlertBanner();
     showToast(`${count} הזמנות מ-${cityDisplayName(shipCityTarget,shipRoundTarget)} עברו להיסטוריית משלוחים`);
+    logAudit('סמן משלוח כבוצע', `${cityDisplayName(shipCityTarget,shipRoundTarget)} · ${count} הזמנות`);
   }
   shipCityTarget = null;
   shipRoundTarget = null;
@@ -1723,6 +1725,7 @@ function deleteCityToTrash(city){
     });
     saveOrders(); saveTrash(); renderAll(); renderAdminTabContent();
     showToast(`העיר ${city} הועברה לאשפה`);
+    logAudit('מחק עיר לאשפה', `${city} · ${cityOrders.length} הזמנות`);
   });
 }
 // Same idea as deleteCityToTrash but scoped to a single round (one city+roundNumber),
@@ -1742,6 +1745,7 @@ function deleteRoundToTrash(city, roundNumber){
     });
     saveOrders(); saveTrash(); renderAll();
     showToast(`${cityDisplayName(city, roundNumber)} הועבר לאשפה`);
+    logAudit('מחק סבב לאשפה', `${cityDisplayName(city, roundNumber)} · ${roundOrders.length} הזמנות`);
   });
 }
 function isAdminRole(){
@@ -1755,6 +1759,7 @@ function restoreCityFromTrash(id){
     trashedCities = trashedCities.filter(t=>t.id!==id);
     saveOrders(); saveTrash(); renderAll(); renderAdminTabContent();
     showToast(`העיר ${entry.city} שוחזרה`);
+    logAudit('שחזר עיר מהאשפה', `${entry.city} · ${entry.orders.length} הזמנות`);
   });
 }
 function purgeCityFromTrash(id){
@@ -1764,6 +1769,7 @@ function purgeCityFromTrash(id){
     trashedCities = trashedCities.filter(t=>t.id!==id);
     saveTrash(); renderAdminTabContent();
     showToast(`העיר ${entry.city} נמחקה לצמיתות`);
+    logAudit('מחק עיר לצמיתות מהאשפה', `${entry.city} · ${entry.orders.length} הזמנות`);
   });
 }
 
@@ -2076,6 +2082,34 @@ function saveRepWageSettings(username){
   renderAdminTabContent();
 }
 
+/* ---------- audit log (who changed/cancelled/deleted what, and when) ---------- */
+let auditLog = [];
+async function loadAuditLog(){
+  try{
+    const res = await window.storage.get(AUDIT_LOG_KEY, true);
+    auditLog = res && res.value ? JSON.parse(res.value) : [];
+  }catch(e){ auditLog = []; }
+}
+async function saveAuditLog(){
+  try{ await window.storage.set(AUDIT_LOG_KEY, JSON.stringify(auditLog), true); }
+  catch(e){ /* audit log failures shouldn't block the actual action - fail silently */ }
+}
+// Fire-and-forget: called from every meaningful mutation (create/edit/cancel/delete order,
+// round/city deletions, shipping actions) so admins can later see who did what and when.
+// Caps at 2000 entries to avoid unbounded growth of the storage payload.
+function logAudit(action, details){
+  auditLog.push({
+    id: genExpenseId(),
+    timestamp: Date.now(),
+    username: currentUser ? currentUser.username : '(לא מחובר)',
+    role: currentUser ? currentUser.role : '',
+    action,
+    details
+  });
+  if(auditLog.length > 2000) auditLog = auditLog.slice(auditLog.length - 2000);
+  saveAuditLog();
+}
+
 function migrateOrder(o){
   if(!o.animals){
     o.animals = o.animalType ? [{type:o.animalType, quantity:o.quantity||1}] : [];
@@ -2217,6 +2251,7 @@ function submitOrder(){
       o.phone1 = phone1; o.phone2 = phone2; o.animals = animals; o.foodItems = foodItems; o.date = date;
       o.pairFlags = pairFlags; o.cageSharing = cageSharing; o.totalPrice = totalPrice;
       o.note = note; o.fromYad2 = fromYad2;
+      logAudit('ערוך הזמנה', `${o.customer||'לקוח'} · ${cityDisplayName(o.city, o.roundNumber||0)}`);
     }
     editingId = null;
     document.getElementById('editNote').style.display = 'none';
@@ -2240,13 +2275,15 @@ function submitOrder(){
   finishSubmitOrder();
 }
 function pushNewOrder(data, roundNumber){
+  const newId = Date.now().toString(36)+Math.random().toString(36).slice(2,7);
   orders.push({
-    id: Date.now().toString(36)+Math.random().toString(36).slice(2,7),
+    id: newId,
     ...data,
     roundNumber,
     cancelled:false, delivered:false, deliveryConfirmed:false, customerUpdated:false, deliveryDate:'', createdAt: Date.now(),
     createdByUsername: currentUser ? currentUser.username : ''
   });
+  logAudit('צור הזמנה', `${data.customer||'לקוח'} · ${cityDisplayName(data.city, roundNumber)}`);
   showToast('ההזמנה נוספה');
 }
 function finishSubmitOrder(){
@@ -2338,17 +2375,22 @@ function toggleCancel(id){
       // cancelling it now needs to give that stock back, or it's lost permanently.
       if(o.delivered){ restockForOrder(o); saveStock(); renderInventoryAlertBanner(); }
       o.cancelled = true; saveOrders(); renderAll(); showToast('ההזמנה בוטלה');
+      logAudit('בטל הזמנה', `${o.customer||'לקוח'} · ${cityDisplayName(o.city, o.roundNumber||0)}`);
     });
   }else{
     // restoring a cancelled order that was already marked as shipped needs to re-deduct
     // stock, mirroring the restock done when it was cancelled.
     if(o.delivered){ deductStockForOrder(o); saveStock(); renderInventoryAlertBanner(); }
     o.cancelled = false; saveOrders(); renderAll(); showToast('ההזמנה שוחזרה');
+    logAudit('שחזר הזמנה מבוטלת', `${o.customer||'לקוח'} · ${cityDisplayName(o.city, o.roundNumber||0)}`);
   }
 }
 function deleteOrder(id){
   showConfirm('למחוק הזמנה זו לצמיתות? לא ניתן לשחזר לאחר המחיקה.', ()=>{
-    orders = orders.filter(o=>o.id!==id); saveOrders(); renderAll(); showToast('ההזמנה נמחקה');
+    const o = orders.find(x=>x.id===id);
+    const label = o ? `${o.customer||'לקוח'} · ${cityDisplayName(o.city, o.roundNumber||0)}` : id;
+    orders = orders.filter(x=>x.id!==id); saveOrders(); renderAll(); showToast('ההזמנה נמחקה');
+    logAudit('מחק הזמנה לצמיתות', label);
   });
 }
 // Moves a single order to the next round number in the same city (creating that round
@@ -2363,6 +2405,7 @@ function postponeOrderToNextRound(id){
   showConfirm(`האם אתה בטוח שאתה רוצה להעביר את ההזמנה של ${o.customer||'הלקוח'} מ${cityDisplayName(o.city, currentRound)} ל${cityDisplayName(o.city, nextRound)}?`, ()=>{
     o.roundNumber = nextRound;
     saveOrders(); renderAll(); showToast('ההזמנה נדחתה לסבב הבא');
+    logAudit('דחה הזמנה לסבב הבא', `${o.customer||'לקוח'} · ${cityDisplayName(o.city, currentRound)} ← ${cityDisplayName(o.city, nextRound)}`);
   });
 }
 
@@ -3000,6 +3043,7 @@ function restoreShipment(city, roundNumber){
       }
     });
     saveOrders(); saveStock(); renderAll(); renderInventoryAlertBanner(); showToast(`${count} הזמנות הוחזרו לסיכום ערים`);
+    logAudit('בטל סימון משלוח (החזר לפעיל)', `${cityDisplayName(city, roundNumber)} · ${count} הזמנות`);
   });
 }
 
@@ -3571,11 +3615,11 @@ function renderAdminRevenueByCity(){
 /* ---------- admin tabs ---------- */
 let adminActiveTab = 'report';
 function adminTabsForRole(){
-  if(currentUser && currentUser.role==='mainadmin') return ['report','revenue','expenses','payroll','stock','depot','trash','users'];
+  if(currentUser && currentUser.role==='mainadmin') return ['report','revenue','expenses','payroll','stock','depot','trash','users','auditlog'];
   if(currentUser && currentUser.role==='admin') return ['stock','depot'];
   return [];
 }
-const ADMIN_TAB_LABELS = { report:'📊 דוח כספי', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', trash:'🗑️ אשפה', users:'👤 משתמשים' };
+const ADMIN_TAB_LABELS = { report:'📊 דוח כספי', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים' };
 function renderAdminTabsBar(){
   const bar = document.getElementById('adminTabsBar');
   const tabs = adminTabsForRole();
@@ -3980,6 +4024,29 @@ function renderAdminTabContent(){
         </div>
       </div>
       <button class="btn-primary" onclick="addUser()">הוסף משתמש</button>
+    `;
+  }else if(adminActiveTab==='auditlog'){
+    const entries = auditLog.slice().sort((a,b)=>b.timestamp-a.timestamp);
+    content.innerHTML = `
+      <div style="font-weight:800;margin-bottom:4px;">📜 יומן שינויים</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">רשימת כל הפעולות הרגישות שבוצעו במערכת - יצירה, עריכה, ביטול ומחיקה של הזמנות, סבבים וערים. גלוי למנהל הראשי בלבד.</div>
+      ${entries.length===0 ? '<div style="color:var(--muted);font-size:13px;">היומן ריק.</div>' : `
+      <div style="max-height:70vh;overflow-y:auto;">
+        ${entries.map(e=>{
+          const dt = new Date(e.timestamp);
+          const dateLabel = dt.toLocaleDateString('he-IL') + ' ' + dt.toLocaleTimeString('he-IL', {hour:'2-digit', minute:'2-digit'});
+          return `
+          <div class="city-card" style="padding:10px 14px;margin-bottom:6px;">
+            <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+              <div style="font-weight:700;">${e.action}</div>
+              <div style="font-size:12px;color:var(--muted);">${dateLabel}</div>
+            </div>
+            <div style="font-size:13px;margin-top:2px;">${e.details||''}</div>
+            <div style="font-size:12px;color:var(--muted);margin-top:2px;">על ידי ${e.username||'(לא ידוע)'}${e.role?' · '+roleLabel(e.role):''}</div>
+          </div>
+        `;}).join('')}
+      </div>
+      `}
     `;
   }
 }
@@ -4783,6 +4850,7 @@ async function initApp(){
   await loadDepot();
   await loadTrash();
   await loadExpensesData();
+  await loadAuditLog();
   renderSummary();
   renderCuFeatureToggleLabel();
   renderInventoryAlertBanner();
