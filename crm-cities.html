@@ -2116,6 +2116,91 @@ function logAudit(action, details){
   saveAuditLog();
 }
 
+/* ---------- backup / export ---------- */
+function downloadTextFile(filename, content, mime){
+  const blob = new Blob([content], {type: mime});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+}
+// Orders-only export, available to both admin and mainadmin - opens cleanly in Excel/Sheets.
+function ordersToCSV(){
+  const headers = ['שם לקוח','טלפון 1','טלפון 2','עיר','סבב','תאריך הזמנה','כתובת','חיות','מזון','הערה','יד2','סטטוס','תאריך משלוח','מחיר כולל'];
+  const rows = orders.map(o=>{
+    const status = o.cancelled ? 'בוטל' : (o.delivered ? 'נשלח' : 'פעיל');
+    return [
+      o.customer||'', o.phone1||'', o.phone2||'', o.city||'', o.roundNumber||0,
+      o.date||'', o.address||'', formatAnimals(o.animals,o.pairFlags,o.cageSharing),
+      (o.foodItems&&o.foodItems.length)?formatFoodItems(o.foodItems):'',
+      o.note||'', o.fromYad2?'כן':'', status, o.deliveryDate||'', o.totalPrice||0
+    ];
+  });
+  const esc = v => `"${String(v).replace(/"/g,'""')}"`;
+  return [headers, ...rows].map(r=>r.map(esc).join(',')).join('\r\n');
+}
+function exportOrdersCSV(){
+  const csv = '﻿' + ordersToCSV();
+  downloadTextFile(`הזמנות-${todayStr()}.csv`, csv, 'text/csv;charset=utf-8;');
+  logAudit('ייצוא הזמנות לקובץ', `${orders.length} הזמנות`);
+  showToast('הקובץ יורד...');
+}
+// Full-system backup - mainadmin only. Bundles every persisted data collection into one JSON
+// file so it can be restored later via restoreFromBackupFile, e.g. after switching devices or
+// as a safety net before a risky bulk change.
+function exportFullBackup(){
+  const data = {
+    version: 1,
+    exportedAt: Date.now(),
+    orders, spotSales, stock, users,
+    costSettings: { costs: costSettings, marketing: avgMarketingCostPerOrder, cityMarketing: cityMarketingSpend },
+    roundDepartures, depot, trashedCities,
+    expenses: { manualExpenses, businessLoans, businessDebts },
+    hourReports, auditLog
+  };
+  downloadTextFile(`גיבוי-מלא-${todayStr()}.json`, JSON.stringify(data, null, 2), 'application/json');
+  logAudit('ייצוא גיבוי מלא', '');
+  showToast('הקובץ יורד...');
+}
+async function restoreFromBackupFile(input){
+  const file = input.files && input.files[0];
+  if(!file) return;
+  let data;
+  try{
+    const text = await file.text();
+    data = JSON.parse(text);
+  }catch(e){ showToast('קובץ לא תקין - לא ניתן לקרוא אותו'); input.value=''; return; }
+  if(!data || !Array.isArray(data.orders)){ showToast('קובץ הגיבוי לא בפורמט הנכון'); input.value=''; return; }
+  showConfirm('לשחזר מהגיבוי הזה? הפעולה תחליף את כל הנתונים הקיימים במערכת (הזמנות, מלאי, משתמשים, הוצאות ועוד) בנתונים מהקובץ, ואינה הפיכה. מומלץ לייצא גיבוי נוכחי לפני כן.', async ()=>{
+    orders = Array.isArray(data.orders) ? data.orders : []; await saveOrders();
+    spotSales = Array.isArray(data.spotSales) ? data.spotSales : []; await saveSpotSales();
+    stock = data.stock || {animals:{},cages:{}}; await saveStock();
+    if(Array.isArray(data.users) && data.users.length){ users = data.users; await saveUsers(); }
+    if(data.costSettings){
+      costSettings = data.costSettings.costs || {};
+      avgMarketingCostPerOrder = data.costSettings.marketing!=null ? data.costSettings.marketing : 70;
+      cityMarketingSpend = data.costSettings.cityMarketing || {};
+      await saveCostSettings();
+    }
+    roundDepartures = data.roundDepartures || {}; await saveRoundDepartures();
+    depot = data.depot || {city:'',street:''}; await saveDepot();
+    trashedCities = Array.isArray(data.trashedCities) ? data.trashedCities : []; await saveTrash();
+    if(data.expenses){
+      manualExpenses = Array.isArray(data.expenses.manualExpenses) ? data.expenses.manualExpenses : [];
+      businessLoans = Array.isArray(data.expenses.businessLoans) ? data.expenses.businessLoans : [];
+      businessDebts = Array.isArray(data.expenses.businessDebts) ? data.expenses.businessDebts : [];
+      await saveExpensesData();
+    }
+    hourReports = Array.isArray(data.hourReports) ? data.hourReports : []; await saveHourReports();
+    auditLog = Array.isArray(data.auditLog) ? data.auditLog : [];
+    logAudit('שוחזר גיבוי', data.exportedAt ? `גיבוי מתאריך ${new Date(data.exportedAt).toLocaleString('he-IL')}` : '');
+    renderAll(); renderAdminTabsBar(); renderAdminTabContent(); renderInventoryAlertBanner(); renderHoursReminderBanner();
+    showToast('השחזור הושלם בהצלחה');
+  });
+  input.value = '';
+}
+
 function migrateOrder(o){
   if(!o.animals){
     o.animals = o.animalType ? [{type:o.animalType, quantity:o.quantity||1}] : [];
@@ -3679,11 +3764,11 @@ function renderAdminRevenueByCity(){
 /* ---------- admin tabs ---------- */
 let adminActiveTab = 'home';
 function adminTabsForRole(){
-  if(currentUser && currentUser.role==='mainadmin') return ['home','report','revenue','expenses','payroll','stock','depot','trash','users','auditlog'];
-  if(currentUser && currentUser.role==='admin') return ['home','stock','depot'];
+  if(currentUser && currentUser.role==='mainadmin') return ['home','report','revenue','expenses','payroll','stock','depot','trash','users','auditlog','backup'];
+  if(currentUser && currentUser.role==='admin') return ['home','stock','depot','backup'];
   return [];
 }
-const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים' };
+const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא' };
 function renderAdminTabsBar(){
   const bar = document.getElementById('adminTabsBar');
   const tabs = adminTabsForRole();
@@ -4207,6 +4292,19 @@ function renderAdminTabContent(){
         `;}).join('')}
       </div>
       `}
+    `;
+  }else if(adminActiveTab==='backup'){
+    const isMain = currentUser && currentUser.role==='mainadmin';
+    content.innerHTML = `
+      <div style="font-weight:800;margin-bottom:8px;">📥 גיבוי / ייצוא נתונים</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:14px;">${isMain ? 'ייצוא הזמנות לקובץ, או ייצוא/שחזור גיבוי מלא של כל נתוני המערכת.' : 'ייצוא רשימת ההזמנות לקובץ. גיבוי מלא של כל המערכת זמין רק למנהל הראשי.'}</div>
+      <button class="btn-primary" style="margin-bottom:10px;width:100%;" onclick="exportOrdersCSV()">📄 ייצוא הזמנות לקובץ (CSV)</button>
+      ${isMain ? `
+      <button class="btn-primary" style="margin-bottom:10px;width:100%;" onclick="exportFullBackup()">💾 ייצוא גיבוי מלא (JSON)</button>
+      <div style="font-weight:800;margin:18px 0 8px;border-top:1px solid var(--border);padding-top:14px;">שחזור מגיבוי</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">בחירת קובץ גיבוי (JSON) שיוצא בעבר תחליף את כל הנתונים הקיימים במערכת - הזמנות, מלאי, משתמשים, הוצאות ועוד. פעולה בלתי הפיכה - מומלץ לייצא גיבוי נוכחי לפני כן.</div>
+      <input type="file" id="restoreFileInput" accept="application/json" onchange="restoreFromBackupFile(this)">
+      ` : ''}
     `;
   }
 }
