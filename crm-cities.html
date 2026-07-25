@@ -232,7 +232,12 @@
         </div>
       </div>
 
-      <div class="field">
+      <div class="field" style="display:flex;align-items:center;gap:6px;">
+        <input type="checkbox" id="fEquipmentOnly" style="width:auto;margin-bottom:0;" onchange="toggleEquipmentOnly()">
+        <label style="margin-bottom:0;">הזמנת ציוד בלבד (ללא בעל חיים)</label>
+      </div>
+
+      <div class="field" id="animalSectionWrap">
         <label>בעלי חיים בהזמנה</label>
         <div id="animalRows"></div>
         <div class="add-animal" onclick="addAnimalRow()">+ הוסף בעל חיים נוסף</div>
@@ -249,6 +254,12 @@
       </div>
 
       <div class="total-price-box" id="totalPriceBox">סה"כ להזמנה: 0 ₪</div>
+
+      <div class="field">
+        <label>הנחה (בש"ח, לא באחוזים) - לא חובה</label>
+        <input type="number" id="fDiscount" min="0" step="1" placeholder="0" oninput="updateTotalPrice()">
+        <div style="font-size:12px;color:var(--danger);font-weight:700;margin-top:4px;display:none;" id="fDiscountWarning">⚠️ כל הנחה טעונה אישור מנהל מראש</div>
+      </div>
 
       <div class="field">
         <label>הערה (בקשות מיוחדות / דברים נוספים שלא כלולים בקטלוג)</label>
@@ -671,7 +682,18 @@ const FOOD_OPTIONS = [
   'נסורת פשוטה - 2 יח\'',
   'נסורת פשוטה - 4 יח\'',
   'נסורת איכותית (10 ליטר)',
-  'שק נסורת איכותית (15 ק"ג)'
+  'שק נסורת איכותית (15 ק"ג)',
+  'תא הטלה',
+  'כלי אוכל גדול לארנב',
+  'כלי אוכל קטן לארנב',
+  'מתקן שתייה לארנב 250 מ"ל',
+  'מתקן שתייה לארנב 500 מ"ל',
+  'כלי אוכל גדול לתוכי',
+  'כלי אוכל ענק לתוכי',
+  'כלי שתייה קטן',
+  'כלי שתייה גדול לתוכי בינוני',
+  'כלי שתייה גדול לתוכי',
+  'כלי שתייה ענק לתוכי'
 ];
 const FOOD_PRICE_MAP = {
   'חבילת מזון לתוכים (1 יח\')': 10,
@@ -686,7 +708,18 @@ const FOOD_PRICE_MAP = {
   'נסורת פשוטה - 2 יח\'': 20,
   'נסורת פשוטה - 4 יח\'': 40,
   'נסורת איכותית (10 ליטר)': 60,
-  'שק נסורת איכותית (15 ק"ג)': 160
+  'שק נסורת איכותית (15 ק"ג)': 160,
+  'תא הטלה': 20,
+  'כלי אוכל גדול לארנב': 30,
+  'כלי אוכל קטן לארנב': 25,
+  'מתקן שתייה לארנב 250 מ"ל': 30,
+  'מתקן שתייה לארנב 500 מ"ל': 40,
+  'כלי אוכל גדול לתוכי': 30,
+  'כלי אוכל ענק לתוכי': 40,
+  'כלי שתייה קטן': 5,
+  'כלי שתייה גדול לתוכי בינוני': 10,
+  'כלי שתייה גדול לתוכי': 15,
+  'כלי שתייה ענק לתוכי': 25
 };
 
 const VAT_RATE = 0.18;
@@ -714,7 +747,18 @@ const DEFAULT_COST_MAP = {
   'נסורת פשוטה - 2 יח\'': 4,
   'נסורת פשוטה - 4 יח\'': 8,
   'נסורת איכותית (10 ליטר)': 17,
-  'שק נסורת איכותית (15 ק"ג)': 50
+  'שק נסורת איכותית (15 ק"ג)': 50,
+  'תא הטלה': null,
+  'כלי אוכל גדול לארנב': null,
+  'כלי אוכל קטן לארנב': null,
+  'מתקן שתייה לארנב 250 מ"ל': null,
+  'מתקן שתייה לארנב 500 מ"ל': null,
+  'כלי אוכל גדול לתוכי': null,
+  'כלי אוכל ענק לתוכי': null,
+  'כלי שתייה קטן': null,
+  'כלי שתייה גדול לתוכי בינוני': null,
+  'כלי שתייה גדול לתוכי': null,
+  'כלי שתייה ענק לתוכי': null
 };
 let costSettings = JSON.parse(JSON.stringify(DEFAULT_COST_MAP));
 function isAnimalSku(sku){ return ANIMAL_OPTIONS.includes(sku); }
@@ -1346,7 +1390,18 @@ function resetAnimalRows(){
   animalRowCounter=0;
   addAnimalRow();
 }
+// Equipment-only orders (cage/food/accessories with no live animal) skip the animal rows
+// entirely - toggleEquipmentOnly() hides the section, and this makes sure the submitted
+// order actually carries an empty animals list even if stale rows are still in the DOM.
+function toggleEquipmentOnly(){
+  const checked = document.getElementById('fEquipmentOnly').checked;
+  document.getElementById('animalSectionWrap').style.display = checked ? 'none' : '';
+  if(checked) document.getElementById('pairOptionsWrap').style.display = 'none';
+  else updatePairAndCageOptions();
+  updateTotalPrice();
+}
 function collectAnimalRows(){
+  if(document.getElementById('fEquipmentOnly').checked) return [];
   const rows = document.querySelectorAll('#animalRows .animal-item');
   const list = [];
   rows.forEach(r=>{
@@ -1371,7 +1426,7 @@ function aggregateByType(animalRows){
   return map;
 }
 function formatAnimals(animals, pairFlags, cageSharing){
-  if(!animals || !animals.length) return 'לא צוין';
+  if(!animals || !animals.length) return '🧰 ציוד בלבד (ללא בעל חיים)';
   return animals.map(a=>{
     let label = `${a.type}`;
     if(a.color2){
@@ -1447,8 +1502,15 @@ function updateTotalPrice(){
   const rows = collectAnimalRows();
   const foods = collectFoodRows();
   const cageSharing = collectCageSharing();
-  const total = computeOrderPrice(rows, foods, cageSharing);
-  document.getElementById('totalPriceBox').textContent = `סה"כ להזמנה: ${total} ₪`;
+  const gross = computeOrderPrice(rows, foods, cageSharing);
+  const discountInput = document.getElementById('fDiscount');
+  const discount = Math.max(0, parseFloat(discountInput.value) || 0);
+  const total = Math.max(0, gross - discount);
+  const warnEl = document.getElementById('fDiscountWarning');
+  if(warnEl) warnEl.style.display = discount>0 ? 'block' : 'none';
+  document.getElementById('totalPriceBox').textContent = discount>0
+    ? `סה"כ להזמנה: ${total} ₪ (לפני הנחה: ${gross} ₪, הנחה: ${discount} ₪)`
+    : `סה"כ להזמנה: ${total} ₪`;
 }
 
 /* ---------- food / bedding rows ---------- */
@@ -2127,14 +2189,14 @@ function downloadTextFile(filename, content, mime){
 }
 // Orders-only export, available to both admin and mainadmin - opens cleanly in Excel/Sheets.
 function ordersToCSV(){
-  const headers = ['שם לקוח','טלפון 1','טלפון 2','עיר','סבב','תאריך הזמנה','כתובת','חיות','מזון','הערה','יד2','סטטוס','תאריך משלוח','מחיר כולל'];
+  const headers = ['שם לקוח','טלפון 1','טלפון 2','עיר','סבב','תאריך הזמנה','כתובת','חיות','מזון','הערה','יד2','סטטוס','תאריך משלוח','הנחה','מחיר כולל'];
   const rows = orders.map(o=>{
     const status = o.cancelled ? 'בוטל' : (o.delivered ? 'נשלח' : 'פעיל');
     return [
       o.customer||'', o.phone1||'', o.phone2||'', o.city||'', o.roundNumber||0,
       o.date||'', o.address||'', formatAnimals(o.animals,o.pairFlags,o.cageSharing),
       (o.foodItems&&o.foodItems.length)?formatFoodItems(o.foodItems):'',
-      o.note||'', o.fromYad2?'כן':'', status, o.deliveryDate||'', o.totalPrice||0
+      o.note||'', o.fromYad2?'כן':'', status, o.deliveryDate||'', o.discount||0, o.totalPrice||0
     ];
   });
   const esc = v => `"${String(v).replace(/"/g,'""')}"`;
@@ -2335,16 +2397,18 @@ function submitOrder(){
   if(!v2.ok){ document.getElementById('err2').textContent = v2.msg; document.getElementById('err2').style.display='block'; return; }
   const phone1 = v1.formatted;
   const phone2 = v2.empty ? '' : v2.formatted;
-  const totalPrice = computeOrderPrice(animals, foodItems, cageSharing);
+  const grossPrice = computeOrderPrice(animals, foodItems, cageSharing);
+  const discount = Math.max(0, parseFloat(document.getElementById('fDiscount').value) || 0);
+  const totalPrice = Math.max(0, grossPrice - discount);
 
   if(editingId){
     const o = orders.find(x=>x.id===editingId);
     if(o){
       o.city = city; o.customer = customer; o.address = address;
       o.phone1 = phone1; o.phone2 = phone2; o.animals = animals; o.foodItems = foodItems; o.date = date;
-      o.pairFlags = pairFlags; o.cageSharing = cageSharing; o.totalPrice = totalPrice;
+      o.pairFlags = pairFlags; o.cageSharing = cageSharing; o.totalPrice = totalPrice; o.discount = discount;
       o.note = note; o.fromYad2 = fromYad2;
-      logAudit('ערוך הזמנה', `${o.customer||'לקוח'} · ${cityDisplayName(o.city, o.roundNumber||0)}`);
+      logAudit('ערוך הזמנה', `${o.customer||'לקוח'} · ${cityDisplayName(o.city, o.roundNumber||0)}${discount>0?' · הנחה '+discount+'₪':''}`);
     }
     editingId = null;
     document.getElementById('editNote').style.display = 'none';
@@ -2354,7 +2418,7 @@ function submitOrder(){
     return;
   }
 
-  const orderData = {city, customer, address, phone1, phone2, animals, foodItems, date, pairFlags, cageSharing, totalPrice, note, fromYad2};
+  const orderData = {city, customer, address, phone1, phone2, animals, foodItems, date, pairFlags, cageSharing, totalPrice, discount, note, fromYad2};
   const activeRounds = computeCityActiveRounds(city);
   if(activeRounds.length > 0){
     askRoundChoice(city, activeRounds, (roundNumber)=>{
@@ -2376,7 +2440,7 @@ function pushNewOrder(data, roundNumber){
     cancelled:false, delivered:false, deliveryConfirmed:false, customerUpdated:false, deliveryDate:'', createdAt: Date.now(),
     createdByUsername: currentUser ? currentUser.username : ''
   });
-  logAudit('צור הזמנה', `${data.customer||'לקוח'} · ${cityDisplayName(data.city, roundNumber)}`);
+  logAudit('צור הזמנה', `${data.customer||'לקוח'} · ${cityDisplayName(data.city, roundNumber)}${data.discount>0?' · הנחה '+data.discount+'₪':''}`);
   showToast('ההזמנה נוספה');
 }
 function finishSubmitOrder(){
@@ -2390,6 +2454,10 @@ function finishSubmitOrder(){
   document.getElementById('fDate').value=todayStr();
   document.getElementById('fNote').value='';
   document.getElementById('fYad2').checked=false;
+  document.getElementById('fDiscount').value='';
+  document.getElementById('fDiscountWarning').style.display='none';
+  document.getElementById('fEquipmentOnly').checked=false;
+  document.getElementById('animalSectionWrap').style.display='';
   resetAnimalRows();
   resetFoodRows();
   populateCitySelect();
@@ -2453,6 +2521,9 @@ function startEdit(id){
       });
     });
   }
+  document.getElementById('fEquipmentOnly').checked = !(o.animals && o.animals.length);
+  document.getElementById('fDiscount').value = o.discount ? o.discount : '';
+  toggleEquipmentOnly();
   updateTotalPrice();
   document.getElementById('editNote').style.display = 'block';
   document.getElementById('submitBtn').textContent = 'שמור שינויים';
@@ -2585,7 +2656,7 @@ function renderSummary(){
       <div class="order-row">
         <div>
           <div class="order-main">${o.deliveryConfirmed?'✅ ':''}${o.fromYad2?'🏷️ יד2 · ':''}${formatAnimals(o.animals,o.pairFlags,o.cageSharing)} — ${o.customer}</div>
-          <div class="order-sub">${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+o.note:''}</div>
+          <div class="order-sub">${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${(isAdminRole() && o.discount>0)?' · ⚠️ הנחה '+o.discount+'₪ (טעון אישור)':''}${o.note?' · 📝 '+o.note:''}</div>
         </div>
         <div class="order-actions">
           ${o.address ? `<button class="icon-btn" onclick="copySingleAddress('${o.id}')" title="העתק כתובת">📍</button>` : ''}
@@ -2657,7 +2728,7 @@ function renderAllOrders(){
     <div class="order-row ${o.cancelled?'cancelled':''}">
       <div>
         <div class="order-main">${o.fromYad2?'🏷️ יד2 · ':''}${o.city} — ${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.cancelled?'<span class="badge-cancelled">מבוטלת</span>':''}${(!o.cancelled && o.delivered)?'<span class="badge-shipped">נשלח '+formatDate(o.deliveryDate)+'</span>':''}</div>
-        <div class="order-sub">${o.customer} · ${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+o.note:''}</div>
+        <div class="order-sub">${o.customer} · ${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${(isAdminRole() && o.discount>0)?' · ⚠️ הנחה '+o.discount+'₪ (טעון אישור)':''}${o.note?' · 📝 '+o.note:''}</div>
       </div>
       <div class="order-actions">
         <button class="icon-btn" onclick="startEdit('${o.id}')">✏️</button>
@@ -3104,7 +3175,7 @@ function renderCustomerSearch(){
       </div>
       <div class="city-totals">${cityDisplayName(o.city, o.roundNumber||0)} · הוזמן ב-${formatDate(o.date)}</div>
       <div class="order-sub" style="margin-top:6px;">${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}</div>
-      <div class="order-sub" style="margin-top:2px;">${o.address?o.address+' · ':''}${o.phone1?`<a href="tel:${o.phone1.replace(/-/g,'')}" style="color:var(--accent-dark);font-weight:700;">${o.phone1}</a>`:''}${o.phone2?', '+`<a href="tel:${o.phone2.replace(/-/g,'')}" style="color:var(--accent-dark);font-weight:700;">${o.phone2}</a>`:''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+o.note:''}</div>
+      <div class="order-sub" style="margin-top:2px;">${o.address?o.address+' · ':''}${o.phone1?`<a href="tel:${o.phone1.replace(/-/g,'')}" style="color:var(--accent-dark);font-weight:700;">${o.phone1}</a>`:''}${o.phone2?', '+`<a href="tel:${o.phone2.replace(/-/g,'')}" style="color:var(--accent-dark);font-weight:700;">${o.phone2}</a>`:''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${(isAdminRole() && o.discount>0)?' · ⚠️ הנחה '+o.discount+'₪ (טעון אישור)':''}${o.note?' · 📝 '+o.note:''}</div>
     </div>
   `).join('');
 
@@ -3158,7 +3229,7 @@ function renderHistory(){
       <div class="order-row">
         <div>
           <div class="order-main">${o.fromYad2?'🏷️ יד2 · ':''}${o.customer} — ${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}</div>
-          <div class="order-sub">הוזמן ב-${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+o.note:''}</div>
+          <div class="order-sub">הוזמן ב-${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${(isAdminRole() && o.discount>0)?' · ⚠️ הנחה '+o.discount+'₪ (טעון אישור)':''}${o.note?' · 📝 '+o.note:''}</div>
         </div>
       </div>
     `).join('');
