@@ -185,6 +185,7 @@
     <div class="tab" data-tab="add">הזמנה חדשה</div>
     <div class="tab" data-tab="all">כל ההזמנות</div>
     <div class="tab" data-tab="history">היסטוריית משלוחים</div>
+    <div class="tab" data-tab="customer">🔍 חיפוש לקוח</div>
     <div class="tab" data-tab="hours" id="hoursTabBtn" style="display:none;">⏱️ השעות שלי</div>
   </div>
 
@@ -281,6 +282,11 @@
   <div id="tab-history" style="display:none;">
     <input class="search" id="historySearch" placeholder="חיפוש לקוח / טלפון / עיר בהיסטוריה...">
     <div class="route-list" id="historyList"></div>
+  </div>
+
+  <div id="tab-customer" style="display:none;">
+    <input class="search" id="customerSearchInput" placeholder="חיפוש לפי טלפון או שם לקוח...">
+    <div id="customerSearchResults"></div>
   </div>
 
   <div id="tab-hours" style="display:none;">
@@ -2181,9 +2187,11 @@ function switchTab(name){
   document.getElementById('tab-add').style.display = name==='add' ? '' : 'none';
   document.getElementById('tab-all').style.display = name==='all' ? '' : 'none';
   document.getElementById('tab-history').style.display = name==='history' ? '' : 'none';
+  document.getElementById('tab-customer').style.display = name==='customer' ? '' : 'none';
   document.getElementById('tab-hours').style.display = name==='hours' ? '' : 'none';
   if(name==='add' && !editingId){ populateCitySelect(); }
   if(name==='hours'){ renderMyHoursTab(); }
+  if(name==='customer'){ renderCustomerSearch(); }
 }
 document.querySelectorAll('.tab').forEach(t=>{ t.addEventListener('click', ()=>switchTab(t.dataset.tab)); });
 
@@ -2973,6 +2981,62 @@ function computeShipments(){
     (o.animals||[]).forEach(a=> map[key].totalQty += a.quantity);
   });
   return Object.values(map).sort((a,b)=> b.deliveryDate.localeCompare(a.deliveryDate));
+}
+// Cross-status customer lookup by phone or name - unlike the per-tab searches (summary/all
+// orders/history), this searches EVERY order regardless of status (active, delivered or
+// cancelled) plus quick sales, so a rep or admin can pull up a customer's full history in one
+// place when they call in, e.g. to check what they ordered last time.
+function renderCustomerSearch(){
+  const container = document.getElementById('customerSearchResults');
+  const search = document.getElementById('customerSearchInput').value.trim();
+  if(!search){
+    container.innerHTML = `<div class="empty"><div class="big">🔍</div>הזינו מספר טלפון או שם לקוח כדי לראות את כל ההיסטוריה שלו - כולל הזמנות פעילות, שנשלחו וגם שבוטלו.</div>`;
+    return;
+  }
+  const matchingOrders = orders.filter(o=>
+    (o.customer||'').includes(search) || (o.phone1||'').includes(search) || (o.phone2||'').includes(search)
+  ).sort((a,b)=> (b.createdAt||0)-(a.createdAt||0));
+  const matchingSpot = spotSales.filter(s=> (s.customer||'').includes(search)).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+
+  if(matchingOrders.length===0 && matchingSpot.length===0){
+    container.innerHTML = `<div class="empty"><div class="big">🔍</div>לא נמצאו תוצאות עבור "${search}".</div>`;
+    return;
+  }
+
+  function statusBadge(o){
+    if(o.cancelled) return `<span style="color:var(--danger);font-weight:700;">בוטל</span>`;
+    if(o.delivered) return `<span style="color:var(--route);font-weight:700;">נשלח ${o.deliveryDate?'ב-'+formatDate(o.deliveryDate):''}</span>`;
+    return `<span style="color:var(--accent-dark);font-weight:700;">פעיל</span>`;
+  }
+
+  let html = `<div style="font-size:12.5px;color:var(--muted);margin-bottom:10px;">${matchingOrders.length + matchingSpot.length} תוצאות</div>`;
+
+  html += matchingOrders.map(o=>`
+    <div class="city-card">
+      <div class="city-head">
+        <div class="city-name-wrap"><div class="city-name">${o.fromYad2?'🏷️ יד2 · ':''}${o.customer}</div></div>
+        <div class="city-last">${statusBadge(o)}</div>
+      </div>
+      <div class="city-totals">${cityDisplayName(o.city, o.roundNumber||0)} · הוזמן ב-${formatDate(o.date)}</div>
+      <div class="order-sub" style="margin-top:6px;">${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}</div>
+      <div class="order-sub" style="margin-top:2px;">${o.address?o.address+' · ':''}${o.phone1?`<a href="tel:${o.phone1.replace(/-/g,'')}" style="color:var(--accent-dark);font-weight:700;">${o.phone1}</a>`:''}${o.phone2?', '+`<a href="tel:${o.phone2.replace(/-/g,'')}" style="color:var(--accent-dark);font-weight:700;">${o.phone2}</a>`:''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+o.note:''}</div>
+    </div>
+  `).join('');
+
+  if(matchingSpot.length){
+    html += `<div style="font-weight:800;margin:14px 0 8px;border-top:1px solid var(--border);padding-top:12px;">💵 מכירות מהירות</div>`;
+    html += matchingSpot.map(s=>`
+      <div class="city-card">
+        <div class="city-head">
+          <div class="city-name-wrap"><div class="city-name">${s.customer||'(ללא שם)'}</div></div>
+          <div class="city-last">${formatDate(s.date)}</div>
+        </div>
+        <div class="order-sub" style="margin-top:6px;">${s.product} ×${s.quantity}${s.location?' · '+s.location:''}${isAdminRole()?' · 💰 '+(s.totalPrice||0)+' ₪':''}</div>
+      </div>
+    `).join('');
+  }
+
+  container.innerHTML = html;
 }
 function renderHistory(){
   const search = document.getElementById('historySearch').value.trim();
@@ -4934,6 +4998,7 @@ document.getElementById('citySearch').addEventListener('input', renderSummary);
 document.getElementById('orderSearch').addEventListener('input', renderAllOrders);
 document.getElementById('orderSort').addEventListener('change', renderAllOrders);
 document.getElementById('historySearch').addEventListener('input', renderHistory);
+document.getElementById('customerSearchInput').addEventListener('input', renderCustomerSearch);
 
 async function initApp(){
   await loadUsers();
