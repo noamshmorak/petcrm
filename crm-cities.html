@@ -3613,13 +3613,13 @@ function renderAdminRevenueByCity(){
 }
 
 /* ---------- admin tabs ---------- */
-let adminActiveTab = 'report';
+let adminActiveTab = 'home';
 function adminTabsForRole(){
-  if(currentUser && currentUser.role==='mainadmin') return ['report','revenue','expenses','payroll','stock','depot','trash','users','auditlog'];
-  if(currentUser && currentUser.role==='admin') return ['stock','depot'];
+  if(currentUser && currentUser.role==='mainadmin') return ['home','report','revenue','expenses','payroll','stock','depot','trash','users','auditlog'];
+  if(currentUser && currentUser.role==='admin') return ['home','stock','depot'];
   return [];
 }
-const ADMIN_TAB_LABELS = { report:'📊 דוח כספי', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים' };
+const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים' };
 function renderAdminTabsBar(){
   const bar = document.getElementById('adminTabsBar');
   const tabs = adminTabsForRole();
@@ -3630,13 +3630,109 @@ function switchAdminTab(name){
   renderAdminTabsBar();
   renderAdminTabContent();
 }
+// Consolidated "home" landing screen for the admin panel - a quick-glance snapshot of
+// everything that needs attention, with click-through links into the relevant tab, so an
+// admin doesn't have to click through every tab just to see what's going on today.
+function renderAdminHomeContent(){
+  const isMain = currentUser && currentUser.role==='mainadmin';
+  const citySummary = computeCitySummary();
+  const activeOrders = orders.filter(o=>!o.cancelled && !o.delivered);
+  const today = todayStr();
+  const ordersToday = orders.filter(o=>!o.cancelled && (o.createdAt ? new Date(o.createdAt).toISOString().slice(0,10)===today : false)).length;
+  const overdueCities = citySummary.filter(c=>c.isOverdue);
+  const { lowAnimals, lowCages, missingAnimals, missingCages } = computeInventoryAlerts();
+  const hasStockAlerts = lowAnimals.length || lowCages.length || missingAnimals.length || missingCages.length;
+
+  let html = `
+    <div style="font-weight:800;margin-bottom:10px;">🏠 סקירה כללית</div>
+    <div class="stats-row" style="margin-bottom:14px;">
+      <div class="stat"><div class="num">${citySummary.length}</div><div class="lbl">ערים פעילות</div></div>
+      <div class="stat"><div class="num">${activeOrders.length}</div><div class="lbl">הזמנות פעילות</div></div>
+      <div class="stat"><div class="num">${ordersToday}</div><div class="lbl">הזמנות היום</div></div>
+    </div>
+  `;
+
+  if(overdueCities.length){
+    html += `
+      <div class="alert-banner" style="cursor:pointer;margin-bottom:10px;" onclick="closeAdminPanel();switchTab('summary');">
+        <div class="alert-title">⏰ ${overdueCities.length} ערים ממתינות מעל 10 ימים</div>
+        ${overdueCities.slice(0,5).map(c=>`<div>${c.displayName} - ${c.daysWaiting} ימים</div>`).join('')}
+        ${overdueCities.length>5 ? `<div>ועוד ${overdueCities.length-5}...</div>` : ''}
+      </div>
+    `;
+  }
+
+  if(hasStockAlerts){
+    html += `
+      <div class="alert-banner" style="cursor:pointer;margin-bottom:10px;" onclick="switchAdminTab('stock');">
+        <div class="alert-title">⚠️ התראת מלאי - לחצ/י למעבר לטאב מלאי</div>
+        ${lowAnimals.map(a=>`<div>🐦 ${a.species}: נשארו ${a.qty} יח'</div>`).join('')}
+        ${lowCages.map(c=>`<div>📦 ${c.type}: נשארו ${c.qty} יח'</div>`).join('')}
+        ${missingAnimals.map(a=>`<div>❗ חסר ${a.qty} ${a.species} להזמנות שטרם נשלחו</div>`).join('')}
+        ${missingCages.map(c=>`<div>❗ חסר ${c.qty} ${c.type} להזמנות שטרם נשלחו</div>`).join('')}
+      </div>
+    `;
+  }
+
+  if(!isMain){
+    // Regular admins only have access to the stock/depot tabs, so the home screen stays
+    // scoped to what's actually relevant to them - no financials, payroll or audit data.
+    if(!overdueCities.length && !hasStockAlerts){
+      html += `<div style="color:var(--muted);font-size:13px;">הכל תקין כרגע - אין התראות מלאי או ערים שממתינות זמן רב.</div>`;
+    }
+    return html;
+  }
+
+  const pendingHourReports = hourReports.filter(r=>r.pendingApproval);
+  const grandTotalOwed = hourReports.filter(r=>!r.paid && !r.pendingApproval).reduce((s,r)=>s+computeHourReportAmount(r), 0);
+  if(pendingHourReports.length){
+    html += `
+      <div class="alert-banner" style="cursor:pointer;margin-bottom:10px;" onclick="switchAdminTab('payroll');">
+        <div class="alert-title">⏳ ${pendingHourReports.length} דיווחי שעות ממתינים לאישור</div>
+        <div>לחצ/י למעבר לטאב "שכר ושעות"</div>
+      </div>
+    `;
+  }
+
+  const gfMonth = computeGeneralFinancials('month');
+  const totalDebts = businessDebts.reduce((s,d)=>s+(d.amount||0),0);
+  const totalLoans = businessLoans.reduce((s,l)=>s+(l.amount||0),0);
+  html += `
+    <div class="total-price-box" style="text-align:right;cursor:pointer;margin-bottom:10px;" onclick="switchAdminTab('report');">
+      <div style="font-weight:800;margin-bottom:4px;">🧾 החודש הנוכחי</div>
+      <div>רווח בפועל: ${gfMonth.actual.profit.toFixed(1)} ₪ · רווח צפוי: ${gfMonth.projected.profit.toFixed(1)} ₪</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:2px;">לחצ/י לפירוט מלא בטאב "דוח כספי"</div>
+    </div>
+    <div class="row2" style="margin-bottom:10px;">
+      <div class="stat" style="cursor:pointer;" onclick="switchAdminTab('payroll');"><div class="num">${grandTotalOwed.toFixed(0)}₪</div><div class="lbl">חוב לנציגים</div></div>
+      <div class="stat" style="cursor:pointer;" onclick="switchAdminTab('expenses');"><div class="num">${totalDebts.toFixed(0)}₪</div><div class="lbl">חובות העסק</div></div>
+    </div>
+    ${totalLoans ? `<div style="font-size:12.5px;color:var(--muted);margin-bottom:10px;cursor:pointer;" onclick="switchAdminTab('expenses');">הלוואות פתוחות מהעסק: ${totalLoans.toFixed(0)} ₪</div>` : ''}
+  `;
+
+  const recentAudit = auditLog.slice().sort((a,b)=>b.timestamp-a.timestamp).slice(0,5);
+  if(recentAudit.length){
+    html += `
+      <div style="font-weight:800;margin:14px 0 8px;border-top:1px solid var(--border);padding-top:12px;cursor:pointer;" onclick="switchAdminTab('auditlog');">📜 פעילות אחרונה</div>
+      ${recentAudit.map(e=>{
+        const dt = new Date(e.timestamp);
+        const dateLabel = dt.toLocaleDateString('he-IL') + ' ' + dt.toLocaleTimeString('he-IL', {hour:'2-digit', minute:'2-digit'});
+        return `<div style="font-size:13px;margin-bottom:4px;"><b>${e.action}</b> - ${e.details||''} <span style="color:var(--muted);font-size:12px;">(${e.username||''}, ${dateLabel})</span></div>`;
+      }).join('')}
+    `;
+  }
+
+  return html;
+}
 function renderAdminTabContent(){
   const content = document.getElementById('adminContent');
   const tabs = adminTabsForRole();
   if(!tabs.includes(adminActiveTab)) adminActiveTab = tabs[0];
   if(!adminActiveTab){ content.innerHTML = '<div style="color:var(--muted);">אין לך הרשאה לתוכן כלשהו כאן.</div>'; return; }
 
-  if(adminActiveTab==='report'){
+  if(adminActiveTab==='home'){
+    content.innerHTML = renderAdminHomeContent();
+  }else if(adminActiveTab==='report'){
     const gf = computeGeneralFinancials(adminGeneralScope);
     content.innerHTML = `
       <div style="font-weight:800;margin-bottom:8px;">🧾 רווח כללי</div>
@@ -4109,6 +4205,7 @@ function saveStockSettings(){
   renderAdminTabContent();
 }
 function openAdminPanel(){
+  adminActiveTab = 'home';
   renderAdminTabsBar();
   renderAdminTabContent();
   document.getElementById('adminPanelModal').classList.add('open');
