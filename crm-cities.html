@@ -258,7 +258,13 @@
       <div class="field">
         <label>הנחה (בש"ח, לא באחוזים) - רק באישור מנהל מראש! - לא חובה</label>
         <input type="number" id="fDiscount" min="0" step="1" placeholder="0" oninput="updateTotalPrice()">
-        <div style="font-size:12px;color:var(--danger);font-weight:700;margin-top:4px;display:none;" id="fDiscountWarning">⚠️ הנחה ניתנת רק באישור מנהל מראש! ההנחה תירשם אוטומטית בהערת ההזמנה</div>
+        <div style="margin-top:6px;display:none;" id="fDiscountWarning">
+          <div style="font-size:12px;color:var(--danger);font-weight:700;margin-bottom:4px;">⚠️ הנחה ניתנת רק באישור מנהל מראש! ההנחה תירשם אוטומטית בהערת ההזמנה</div>
+          <label style="display:flex;align-items:center;gap:6px;margin-bottom:0;">
+            <input type="checkbox" id="fDiscountApproved" style="width:auto;margin-bottom:0;">
+            <span style="font-size:13px;font-weight:700;">קיבלתי אישור מנהל להנחה זו</span>
+          </label>
+        </div>
       </div>
 
       <div class="field">
@@ -1914,11 +1920,48 @@ function addBusinessDebt(){
 }
 function deleteBusinessDebt(id){
   if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול למחוק חוב'); return; }
-  showConfirm('למחוק את רשומת החוב הזו?', ()=>{
+  showConfirm('למחוק את רשומת החוב הזו לצמיתות? אם החוב כבר שולם, אפשר במקום זאת פשוט לסמן אותו כ"שולם" - הרשומה תישאר בתיעוד.', ()=>{
     businessDebts = businessDebts.filter(e=>e.id!==id);
     saveExpensesData(); renderAdminTabContent();
     showToast('הרשומה נמחקה');
   });
+}
+// Marking a debt as paid keeps the record (moved into a separate "paid" list below the open
+// ones) instead of deleting it, so there's a paper trail of what was owed and when it was
+// settled - mirrors the same pattern used for rep hour-report payments.
+function toggleBusinessDebtPaid(id, checked){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לסמן חוב כשולם'); return; }
+  const d = businessDebts.find(x=>x.id===id);
+  if(!d) return;
+  if(checked){ d.paid = true; d.paidDate = todayStr(); }
+  else{ d.paid = false; d.paidDate = null; }
+  saveExpensesData();
+  renderAdminTabContent();
+}
+let editingDebtId = null;
+function startEditDebt(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך חוב'); return; }
+  editingDebtId = id;
+  renderAdminTabContent();
+}
+function cancelEditDebt(){
+  editingDebtId = null;
+  renderAdminTabContent();
+}
+function saveEditDebt(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך חוב'); return; }
+  const d = businessDebts.find(x=>x.id===id);
+  if(!d) return;
+  const name = document.getElementById('editDebtName_'+id).value.trim();
+  const amount = parseFloat(document.getElementById('editDebtAmount_'+id).value);
+  const date = document.getElementById('editDebtDate_'+id).value;
+  const note = document.getElementById('editDebtNote_'+id).value.trim();
+  if(!name || !amount){ showToast('יש למלא שם וסכום'); return; }
+  d.name = name; d.amount = amount; if(date) d.date = date; d.note = note;
+  saveExpensesData();
+  editingDebtId = null;
+  renderAdminTabContent();
+  showToast('החוב עודכן');
 }
 // Breaks down the current month's cost-of-goods into categories (animals / cages / food / marketing),
 // each with a quantity breakdown for drill-down, plus this month's manual expenses listed individually.
@@ -2399,6 +2442,8 @@ function submitOrder(){
   const phone2 = v2.empty ? '' : v2.formatted;
   const grossPrice = computeOrderPrice(animals, foodItems, cageSharing);
   const discount = Math.max(0, parseFloat(document.getElementById('fDiscount').value) || 0);
+  const discountApproved = document.getElementById('fDiscountApproved').checked;
+  if(discount>0 && !discountApproved){ showToast('יש לסמן שקיבלת אישור מנהל להנחה לפני שמירת ההזמנה'); return; }
   const totalPrice = Math.max(0, grossPrice - discount);
 
   if(editingId){
@@ -2406,7 +2451,7 @@ function submitOrder(){
     if(o){
       o.city = city; o.customer = customer; o.address = address;
       o.phone1 = phone1; o.phone2 = phone2; o.animals = animals; o.foodItems = foodItems; o.date = date;
-      o.pairFlags = pairFlags; o.cageSharing = cageSharing; o.totalPrice = totalPrice; o.discount = discount;
+      o.pairFlags = pairFlags; o.cageSharing = cageSharing; o.totalPrice = totalPrice; o.discount = discount; o.discountApproved = discount>0 ? discountApproved : false;
       o.note = note; o.fromYad2 = fromYad2;
       logAudit('ערוך הזמנה', `${o.customer||'לקוח'} · ${cityDisplayName(o.city, o.roundNumber||0)}${discount>0?' · הנחה '+discount+'₪':''}`);
     }
@@ -2418,7 +2463,7 @@ function submitOrder(){
     return;
   }
 
-  const orderData = {city, customer, address, phone1, phone2, animals, foodItems, date, pairFlags, cageSharing, totalPrice, discount, note, fromYad2};
+  const orderData = {city, customer, address, phone1, phone2, animals, foodItems, date, pairFlags, cageSharing, totalPrice, discount, discountApproved: discount>0 ? discountApproved : false, note, fromYad2};
   const activeRounds = computeCityActiveRounds(city);
   if(activeRounds.length > 0){
     askRoundChoice(city, activeRounds, (roundNumber)=>{
@@ -2455,6 +2500,7 @@ function finishSubmitOrder(){
   document.getElementById('fNote').value='';
   document.getElementById('fYad2').checked=false;
   document.getElementById('fDiscount').value='';
+  document.getElementById('fDiscountApproved').checked=false;
   document.getElementById('fDiscountWarning').style.display='none';
   document.getElementById('fEquipmentOnly').checked=false;
   document.getElementById('animalSectionWrap').style.display='';
@@ -2523,6 +2569,7 @@ function startEdit(id){
   }
   document.getElementById('fEquipmentOnly').checked = !(o.animals && o.animals.length);
   document.getElementById('fDiscount').value = o.discount ? o.discount : '';
+  document.getElementById('fDiscountApproved').checked = !!o.discountApproved;
   toggleEquipmentOnly();
   updateTotalPrice();
   document.getElementById('editNote').style.display = 'block';
@@ -3916,7 +3963,7 @@ function renderAdminHomeContent(){
   }
 
   const gfMonth = computeGeneralFinancials('month');
-  const totalDebts = businessDebts.reduce((s,d)=>s+(d.amount||0),0);
+  const totalDebts = businessDebts.filter(d=>!d.paid).reduce((s,d)=>s+(d.amount||0),0);
   const totalLoans = businessLoans.reduce((s,l)=>s+(l.amount||0),0);
   html += `
     <div class="total-price-box" style="text-align:right;cursor:pointer;margin-bottom:10px;" onclick="switchAdminTab('report');">
@@ -4095,15 +4142,47 @@ function renderAdminTabContent(){
       <button class="btn-primary" onclick="addBusinessLoan()">הוסף הלוואה</button>
 
       <div style="font-weight:800;margin:22px 0 8px;border-top:1px solid var(--border);padding-top:14px;">📋 חובות של העסק (מעקב בלבד - לא משפיע על הרווח)</div>
-      ${businessDebts.length===0 ? '<div style="color:var(--muted);font-size:13px;margin-bottom:8px;">אין חובות רשומים.</div>' : businessDebts.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(d=>`
-        <div class="row2" style="align-items:center;margin-bottom:6px;">
-          <div style="flex:2;font-size:13px;">${d.name}${d.note?' · '+d.note:''} <span style="color:var(--muted);">(${formatDate(d.date)})</span></div>
-          <div style="flex:1;font-weight:700;">${d.amount.toFixed(1)} ₪</div>
-          <button class="icon-btn" onclick="deleteBusinessDebt('${d.id}')">🗑️</button>
-        </div>
-      `).join('')}
-      <div style="font-weight:800;margin:8px 0;">סה"כ חובות פתוחים: ${businessDebts.reduce((s,d)=>s+(d.amount||0),0).toFixed(1)} ₪</div>
-      <div class="row2" style="margin-bottom:8px;">
+      ${(()=>{
+        const openDebts = businessDebts.filter(d=>!d.paid).slice().sort((a,b)=>b.date.localeCompare(a.date));
+        const paidDebts = businessDebts.filter(d=>d.paid).slice().sort((a,b)=>(b.paidDate||'').localeCompare(a.paidDate||''));
+        function debtRow(d){
+          if(editingDebtId===d.id){
+            return `
+            <div class="row2" style="margin-bottom:6px;">
+              <input id="editDebtName_${d.id}" value="${escAttr(d.name)}" placeholder="למי/למה חייב העסק">
+              <input id="editDebtAmount_${d.id}" type="number" step="0.1" value="${d.amount}" placeholder="סכום (₪)">
+            </div>
+            <div class="row2" style="margin-bottom:6px;">
+              <input id="editDebtDate_${d.id}" type="date" value="${d.date}">
+              <input id="editDebtNote_${d.id}" value="${escAttr(d.note||'')}" placeholder="הערה (אופציונלי)">
+            </div>
+            <div class="modal-actions" style="margin-bottom:10px;">
+              <button class="btn-primary" style="flex:1;" onclick="saveEditDebt('${d.id}')">💾 שמור</button>
+              <button class="btn-ghost" style="flex:1;" onclick="cancelEditDebt()">ביטול</button>
+            </div>
+            `;
+          }
+          return `
+          <div class="row2" style="align-items:center;margin-bottom:6px;">
+            <label style="display:flex;align-items:center;gap:6px;flex:0;">
+              <input type="checkbox" style="width:auto;margin-bottom:0;" ${d.paid?'checked':''} onchange="toggleBusinessDebtPaid('${d.id}', this.checked)">
+            </label>
+            <div style="flex:2;font-size:13px;">${d.name}${d.note?' · '+d.note:''} <span style="color:var(--muted);">(${formatDate(d.date)})</span>${d.paid?' <span style="color:var(--route);font-weight:700;">· שולם ב-'+formatDate(d.paidDate)+'</span>':''}</div>
+            <div style="flex:1;font-weight:700;">${d.amount.toFixed(1)} ₪</div>
+            <button class="icon-btn" onclick="startEditDebt('${d.id}')">✏️</button>
+            <button class="icon-btn" onclick="deleteBusinessDebt('${d.id}')">🗑️</button>
+          </div>
+          `;
+        }
+        let html = openDebts.length===0 ? '<div style="color:var(--muted);font-size:13px;margin-bottom:8px;">אין חובות פתוחים.</div>' : openDebts.map(debtRow).join('');
+        html += `<div style="font-weight:800;margin:8px 0;">סה"כ חובות פתוחים: ${openDebts.reduce((s,d)=>s+(d.amount||0),0).toFixed(1)} ₪</div>`;
+        if(paidDebts.length){
+          html += `<div style="font-weight:700;margin:14px 0 6px;color:var(--muted);">✅ חובות ששולמו</div>`;
+          html += paidDebts.map(debtRow).join('');
+        }
+        return html;
+      })()}
+      <div class="row2" style="margin-bottom:8px;margin-top:10px;">
         <input id="newDebtName" placeholder="למי/למה חייב העסק">
         <input id="newDebtAmount" type="number" step="0.1" placeholder="סכום (₪)">
       </div>
