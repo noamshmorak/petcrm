@@ -378,6 +378,21 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="managerInquiryModal">
+  <div class="modal-box" style="text-align:right;max-width:420px;">
+    <button class="modal-close-x" onclick="closeManagerInquiryModal()">✕</button>
+    <p style="text-align:center;font-weight:800;">🚩 פתיחת פנייה למנהל</p>
+    <div class="field">
+      <label>מה הבעיה של הלקוח?</label>
+      <textarea id="miNoteInput" rows="4" placeholder="לדוגמה: הלקוח מתלונן שהתוכי הגיע חולה"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-primary" style="flex:1;" onclick="submitManagerInquiry()">שלח למנהל</button>
+      <button class="btn-ghost" style="flex:1;" onclick="closeManagerInquiryModal()">ביטול</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="customerUpdateModal">
   <div class="modal-box" style="text-align:right;max-width:420px;">
     <button class="modal-close-x" onclick="closeCustomerUpdateModal()">✕</button>
@@ -3242,6 +3257,72 @@ function renderCustomerSearch(){
 
   container.innerHTML = html;
 }
+// Lets a rep flag a customer complaint on an already-delivered order for the manager's
+// attention, without needing a separate ticketing system. Stays attached to the order itself
+// (not a standalone list) so context (customer/city/what was ordered) is never lost. Turns red
+// once 48 hours pass unresolved, both on the order row and in the admin home dashboard.
+function inquiryIsOverdue(inq){
+  return !!(inq && !inq.resolved && (Date.now() - inq.openedAt) > 48*60*60*1000);
+}
+function managerInquiryHtml(o){
+  if(!o.managerInquiry || o.managerInquiry.resolved){
+    return `<button class="icon-btn" onclick="openManagerInquiryModal('${o.id}')" title="פתח פנייה למנהל">🚩</button>`;
+  }
+  const overdue = inquiryIsOverdue(o.managerInquiry);
+  return `<div style="margin-top:6px;padding:6px 8px;border-radius:8px;background:${overdue?'#FBEAEA':'var(--new-badge-light)'};color:${overdue?'var(--danger)':'var(--new-badge)'};font-size:12px;font-weight:700;">
+    ${overdue?'⚠️ פנייה פתוחה מעל 48 שעות':'🚩 פנייה פתוחה למנהל'}${o.managerInquiry.openedBy?' ('+o.managerInquiry.openedBy+')':''}: ${o.managerInquiry.note}
+    ${isAdminRole() ? `<span style="cursor:pointer;text-decoration:underline;margin-inline-start:8px;" onclick="resolveManagerInquiry('${o.id}')">סמן כטופל</span>` : ''}
+  </div>`;
+}
+let miOrderTarget = null;
+function openManagerInquiryModal(orderId){
+  miOrderTarget = orderId;
+  document.getElementById('miNoteInput').value = '';
+  document.getElementById('managerInquiryModal').classList.add('open');
+}
+function closeManagerInquiryModal(){
+  document.getElementById('managerInquiryModal').classList.remove('open');
+  miOrderTarget = null;
+}
+function submitManagerInquiry(){
+  const note = document.getElementById('miNoteInput').value.trim();
+  if(!note){ showToast('יש לכתוב מה הבעיה'); return; }
+  const o = orders.find(x=>x.id===miOrderTarget);
+  if(!o) return;
+  o.managerInquiry = {
+    note, openedAt: Date.now(),
+    openedBy: currentUser ? currentUser.username : '',
+    resolved: false, resolvedAt: null, resolvedBy: null
+  };
+  saveOrders();
+  renderAll();
+  renderAdminHomeIfOpen();
+  logAudit('פתח פנייה למנהל', `${o.customer||'לקוח'} · ${note}`);
+  closeManagerInquiryModal();
+  showToast('הפנייה נפתחה ותוצג למנהל');
+}
+function resolveManagerInquiry(orderId){
+  if(!isAdminRole()){ showToast('רק מנהל יכול לסגור פנייה'); return; }
+  const o = orders.find(x=>x.id===orderId);
+  if(!o || !o.managerInquiry) return;
+  showConfirm('לסמן את הפנייה הזו כטופלה?', ()=>{
+    o.managerInquiry.resolved = true;
+    o.managerInquiry.resolvedAt = Date.now();
+    o.managerInquiry.resolvedBy = currentUser.username;
+    saveOrders();
+    renderAll();
+    renderAdminHomeIfOpen();
+    logAudit('סגר פנייה למנהל', `${o.customer||'לקוח'}`);
+    showToast('הפנייה סומנה כטופלה');
+  });
+}
+// Best-effort refresh of the admin home tab if it happens to be open right now, so the
+// open-inquiries alert updates immediately without requiring the admin to switch tabs and back.
+function renderAdminHomeIfOpen(){
+  if(document.getElementById('adminPanelModal').classList.contains('open') && adminActiveTab==='home'){
+    renderAdminTabContent();
+  }
+}
 function renderHistory(){
   const search = document.getElementById('historySearch').value.trim();
   const container = document.getElementById('historyList');
@@ -3261,6 +3342,7 @@ function renderHistory(){
         </div>
         <div class="city-totals">${o.fromYad2?'🏷️ יד2 · ':''}${cityDisplayName(o.city, o.roundNumber||0)} · הוזמן ב-${formatDate(o.date)}</div>
         <div class="order-sub" style="margin-top:6px;">${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.address?' · '+o.address:''}${o.note?' · 📝 '+o.note:''}</div>
+        ${managerInquiryHtml(o)}
       </div>
     `).join('');
     return;
@@ -3275,9 +3357,10 @@ function renderHistory(){
     const isOpen = openShipments.has(s.key);
     const rows = s.orders.slice().sort((a,b)=>a.customer.localeCompare(b.customer,'he')).map(o=>`
       <div class="order-row">
-        <div>
+        <div style="flex:1;">
           <div class="order-main">${o.fromYad2?'🏷️ יד2 · ':''}${o.customer} — ${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}</div>
           <div class="order-sub">הוזמן ב-${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+o.note:''}${o.discount>0?' · 🏷️ ניתנה הנחה של '+o.discount+'₪':''}</div>
+          ${managerInquiryHtml(o)}
         </div>
       </div>
     `).join('');
@@ -3910,6 +3993,8 @@ function renderAdminHomeContent(){
   const overdueCities = citySummary.filter(c=>c.isOverdue);
   const { lowAnimals, lowCages, missingAnimals, missingCages } = computeInventoryAlerts();
   const hasStockAlerts = lowAnimals.length || lowCages.length || missingAnimals.length || missingCages.length;
+  const openInquiries = orders.filter(o=>o.managerInquiry && !o.managerInquiry.resolved);
+  const overdueInquiries = openInquiries.filter(o=>inquiryIsOverdue(o.managerInquiry));
 
   let html = `
     <div style="font-weight:800;margin-bottom:10px;">🏠 סקירה כללית</div>
@@ -3942,10 +4027,24 @@ function renderAdminHomeContent(){
     `;
   }
 
+  if(openInquiries.length){
+    html += `
+      <div class="alert-banner" style="margin-bottom:10px;background:${overdueInquiries.length?'#FBEAEA':''};">
+        <div class="alert-title" style="color:${overdueInquiries.length?'var(--danger)':''};">🚩 ${openInquiries.length} פניות פתוחות למנהל${overdueInquiries.length?' (⚠️ '+overdueInquiries.length+' מהן מעל 48 שעות!)':''}</div>
+        ${openInquiries.slice().sort((a,b)=>a.managerInquiry.openedAt-b.managerInquiry.openedAt).slice(0,5).map(o=>{
+          const overdue = inquiryIsOverdue(o.managerInquiry);
+          return `<div style="${overdue?'color:var(--danger);font-weight:700;':''}">${o.customer||'לקוח'} (${o.city}) - ${o.managerInquiry.note}</div>`;
+        }).join('')}
+        ${openInquiries.length>5 ? `<div>ועוד ${openInquiries.length-5}...</div>` : ''}
+        <div style="font-size:12px;color:var(--muted);margin-top:4px;">אפשר לסגור פנייה מתוך "היסטוריית משלוחים" ליד ההזמנה הרלוונטית.</div>
+      </div>
+    `;
+  }
+
   if(!isMain){
     // Regular admins only have access to the stock/depot tabs, so the home screen stays
     // scoped to what's actually relevant to them - no financials, payroll or audit data.
-    if(!overdueCities.length && !hasStockAlerts){
+    if(!overdueCities.length && !hasStockAlerts && !openInquiries.length){
       html += `<div style="color:var(--muted);font-size:13px;">הכל תקין כרגע - אין התראות מלאי או ערים שממתינות זמן רב.</div>`;
     }
     return html;
