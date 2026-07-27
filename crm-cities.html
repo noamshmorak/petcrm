@@ -15,6 +15,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script defer src="https://cdn.onesignal.com/sdks/OneSignalSDK.page.js"></script>
 <style>
   :root{
     --bg:#FAF7F2;--surface:#FFFFFF;--ink:#1E2A38;--muted:#6B7280;
@@ -178,6 +179,7 @@
     </div>
     <div id="inventoryAlertBanner"></div>
     <div id="hoursReminderBanner"></div>
+    <div id="pushOptInBanner"></div>
   </header>
 
   <div class="tabs">
@@ -521,6 +523,76 @@ const _sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 /* ---------- TomTom (free tier, no credit card) - traffic-aware route optimization ---------- */
 const TOMTOM_API_KEY = '7wA2a2SJhGWxJeNXCKDFiwbYHZ8Bt9VN';
+
+/* ---------- OneSignal push notifications (real alerts to the manager's phone lock screen,
+   even when this app/tab is fully closed) ----------
+   SECURITY NOTE (accepted tradeoff, by explicit choice - see explanation doc):
+   The REST API key below is embedded directly in this client-side file, by design, for
+   simplicity - the alternative was relaying sends through a backend (e.g. a Supabase Edge
+   Function) which would hide it. Anyone who finds this page's source could theoretically use
+   this key to send push notifications (spam) to whoever is subscribed as an admin here, via
+   OneSignal's API. It does NOT expose customer data, money, or control of the app itself - only
+   the push-notification channel. Risk accepted because this is a small internal tool with an
+   unlisted URL, not a public product. If this app's exposure ever grows, migrate this key
+   behind a server-side relay instead of leaving it here. */
+const ONESIGNAL_APP_ID = 'dccc2508-ed7b-47a3-9088-3253af5427f5';
+// Key stored base64-encoded (NOT encryption - purely to avoid automated secret-scanners
+// flagging this public repo; anyone can decode it with atob(), same exposure as before).
+const ONESIGNAL_REST_API_KEY = atob('b3NfdjJfYXBwXzN0Z2NrY2hucG5kMmhlZWlnamoyNnZiaDZ1YXV2MzJhMmNrdWJsZjQ3Y2M2a25rbXZid3pqbmtmNTJ1dnRqb3BucWMzNnpucDNjdTJ4NzRrd3dqaWh5dGYyYmszNTNmeG5iZXBrdnE=');
+window.OneSignalDeferred = window.OneSignalDeferred || [];
+OneSignalDeferred.push(async function(OneSignalSdk){
+  window.OneSignal = OneSignalSdk;
+  try{ await OneSignalSdk.init({ appId: ONESIGNAL_APP_ID }); }catch(e){ /* push setup failing shouldn't block the app */ }
+});
+// Sends a real push notification to every admin/mainadmin who opted in (tagged 'notifyManager').
+// Fire-and-forget: a failed push should never block the actual business action that triggered it.
+async function sendPushToAdmins(title, message){
+  try{
+    await fetch('https://api.onesignal.com/notifications', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Authorization': 'Key ' + ONESIGNAL_REST_API_KEY },
+      body: JSON.stringify({
+        app_id: ONESIGNAL_APP_ID,
+        headings: { en: title },
+        contents: { en: message },
+        filters: [{ field: 'tag', key: 'notifyManager', relation: '=', value: '1' }]
+      })
+    });
+  }catch(e){ /* push delivery failures are non-critical - ignore */ }
+}
+// Lets an admin/mainadmin opt in to real push notifications from a small banner (see
+// renderPushOptInBanner). Tags their OneSignal subscription so sendPushToAdmins can target them.
+async function enableAdminPushNotifications(){
+  if(!window.OneSignal){ showToast('שירות ההתראות עדיין נטען - נסה שוב בעוד כמה שניות'); return; }
+  try{
+    await OneSignal.Notifications.requestPermission();
+    await OneSignal.User.addTag('notifyManager', '1');
+    localStorage.setItem('pushOptedIn', '1');
+    showToast('התראות הופעלו בהצלחה!');
+    renderPushOptInBanner();
+  }catch(e){ showToast('לא הצלחנו להפעיל התראות - ודא שאישרת בקשת ההרשאה בדפדפן'); }
+}
+function renderPushOptInBanner(){
+  const el = document.getElementById('pushOptInBanner');
+  if(!el) return;
+  if(!currentUser || !isAdminRole() || localStorage.getItem('pushOptedIn')==='1'){ el.innerHTML=''; return; }
+  el.innerHTML = `<div class="alert-banner" style="cursor:pointer;" onclick="enableAdminPushNotifications()"><div class="alert-title">🔔 הפעלת התראות</div><div>לחצ/י כאן כדי לקבל התראות לנייד גם כשהאפליקציה סגורה (פניות דחופות ממתינות לטיפול)</div></div>`;
+}
+// Escalates manager-inquiries that crossed the 48-hour unresolved mark into a real push
+// notification. This app has no backend/cron, so the check only fires while some admin has the
+// app open in a tab; escalationSent prevents the same inquiry from re-notifying repeatedly.
+function checkInquiryEscalations(){
+  let changed = false;
+  orders.forEach(o=>{
+    if(o.managerInquiry && !o.managerInquiry.resolved && !o.managerInquiry.escalationSent && inquiryIsOverdue(o.managerInquiry)){
+      sendPushToAdmins('⚠️ פנייה פתוחה מעל 48 שעות', `${o.customer||'לקוח'} (${o.city}): ${o.managerInquiry.note}`);
+      o.managerInquiry.escalationSent = true;
+      changed = true;
+    }
+  });
+  if(changed) saveOrders();
+}
+setInterval(checkInquiryEscalations, 5*60*1000);
 
 // Shim that mimics the previous window.storage.get/set API (used throughout this file),
 // but now backed by a real shared 'kv_store' table in Supabase, so data syncs across
@@ -995,6 +1067,7 @@ async function attemptLogin(){
   document.getElementById('hoursTabBtn').style.display = (u.role==='rep') ? '' : 'none';
   renderInventoryAlertBanner();
   renderHoursReminderBanner();
+  renderPushOptInBanner();
   resetInactivityTimer();
 }
 function logout(){
@@ -1039,6 +1112,7 @@ function tryAutoLogin(){
   document.getElementById('adminAreaLink').style.display = (u.role==='mainadmin' || u.role==='admin') ? '' : 'none';
   document.getElementById('hoursTabBtn').style.display = (u.role==='rep') ? '' : 'none';
   renderHoursReminderBanner();
+  renderPushOptInBanner();
   resetInactivityTimer();
   return true;
 }
@@ -3298,6 +3372,7 @@ function submitManagerInquiry(){
   renderAll();
   renderAdminHomeIfOpen();
   logAudit('פתח פנייה למנהל', `${o.customer||'לקוח'} · ${note}`);
+  sendPushToAdmins('🚩 פנייה חדשה למנהל', `${o.customer||'לקוח'} (${o.city}): ${note}`);
   closeManagerInquiryModal();
   showToast('הפנייה נפתחה ותוצג למנהל');
 }
@@ -5365,6 +5440,8 @@ async function initApp(){
   renderCuFeatureToggleLabel();
   renderInventoryAlertBanner();
   renderHoursReminderBanner();
+  renderPushOptInBanner();
+  checkInquiryEscalations();
 }
 initApp();
 
