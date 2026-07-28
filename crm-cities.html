@@ -562,11 +562,14 @@ async function sendPushToAdmins(title, message){
 }
 // Lets an admin/mainadmin opt in to real push notifications from a small banner (see
 // renderPushOptInBanner). Tags their OneSignal subscription so sendPushToAdmins can target them.
+// Shared push opt-in: admins/mainadmins get tagged 'notifyManager' (urgent inquiries),
+// reps get tagged 'notifyRepHours' (daily reminder to log their hours - see renderPushOptInBanner).
 async function enableAdminPushNotifications(){
   if(!window.OneSignal){ showToast('שירות ההתראות עדיין נטען - נסה שוב בעוד כמה שניות'); return; }
+  const tag = isAdminRole() ? 'notifyManager' : 'notifyRepHours';
   try{
     await OneSignal.Notifications.requestPermission();
-    await OneSignal.User.addTag('notifyManager', '1');
+    await OneSignal.User.addTag(tag, '1');
     localStorage.setItem('pushOptedIn', '1');
     showToast('התראות הופעלו בהצלחה!');
     renderPushOptInBanner();
@@ -575,8 +578,14 @@ async function enableAdminPushNotifications(){
 function renderPushOptInBanner(){
   const el = document.getElementById('pushOptInBanner');
   if(!el) return;
-  if(!currentUser || !isAdminRole() || localStorage.getItem('pushOptedIn')==='1'){ el.innerHTML=''; return; }
-  el.innerHTML = `<div class="alert-banner" style="cursor:pointer;" onclick="enableAdminPushNotifications()"><div class="alert-title">🔔 הפעלת התראות</div><div>לחצ/י כאן כדי לקבל התראות לנייד גם כשהאפליקציה סגורה (פניות דחופות ממתינות לטיפול)</div></div>`;
+  if(!currentUser || localStorage.getItem('pushOptedIn')==='1'){ el.innerHTML=''; return; }
+  if(isAdminRole()){
+    el.innerHTML = `<div class="alert-banner" style="cursor:pointer;" onclick="enableAdminPushNotifications()"><div class="alert-title">🔔 הפעלת התראות</div><div>לחצ/י כאן כדי לקבל התראות לנייד גם כשהאפליקציה סגורה (פניות דחופות ממתינות לטיפול)</div></div>`;
+  }else if(currentUser.role==='rep' && repHourReminderSettings.enabled){
+    el.innerHTML = `<div class="alert-banner" style="cursor:pointer;" onclick="enableAdminPushNotifications()"><div class="alert-title">🔔 הפעלת התראות</div><div>לחצ/י כאן כדי לקבל תזכורת לנייד להזין שעות עבודה (בשעה ${repHourReminderSettings.time})</div></div>`;
+  }else{
+    el.innerHTML = '';
+  }
 }
 // Escalates manager-inquiries that crossed the 48-hour unresolved mark into a real push
 // notification. This app has no backend/cron, so the check only fires while some admin has the
@@ -714,6 +723,7 @@ const TRASH_KEY = 'pet-crm-trash';
 const EXPENSES_KEY = 'pet-crm-expenses';
 const HOUR_REPORTS_KEY = 'pet-crm-hour-reports';
 const AUDIT_LOG_KEY = 'pet-crm-audit-log';
+const REP_HOUR_REMINDER_KEY = 'pet-crm-rep-hour-reminder'; // {enabled, time:'HH:MM'} - admin-editable, read by an external GitHub Actions cron job that sends the actual push
 let depot = { city:'', street:'' };
 async function loadDepot(){
   try{
@@ -3726,6 +3736,26 @@ async function saveCostSettings(){
   try{ await window.storage.set(COST_SETTINGS_KEY, JSON.stringify({costs:costSettings, marketing:avgMarketingCostPerOrder, cityMarketing:cityMarketingSpend}), true); }
   catch(e){ showToast('שגיאה בשמירת ההגדרות'); }
 }
+let repHourReminderSettings = { enabled:false, time:'20:00' };
+async function loadRepHourReminderSettings(){
+  try{
+    const res = await window.storage.get(REP_HOUR_REMINDER_KEY, true);
+    if(res && res.value){
+      const parsed = JSON.parse(res.value);
+      repHourReminderSettings = { enabled: !!parsed.enabled, time: parsed.time || '20:00' };
+    }
+  }catch(e){ /* use defaults */ }
+}
+async function saveRepHourReminderSettings(){
+  const enabled = document.getElementById('repReminderEnabled').checked;
+  const time = document.getElementById('repReminderTime').value || '20:00';
+  repHourReminderSettings = { enabled, time };
+  try{
+    await window.storage.set(REP_HOUR_REMINDER_KEY, JSON.stringify(repHourReminderSettings), true);
+    logAudit('עדכון תזכורת שעות לנציגים', `${enabled?'הופעל':'כובה'} · שעה ${time}`);
+    showToast('הגדרות התזכורת נשמרו');
+  }catch(e){ showToast('שגיאה בשמירת ההגדרות'); }
+}
 
 function openAdminGate(){
   if(!currentUser || (currentUser.role!=='mainadmin' && currentUser.role!=='admin')){
@@ -3797,6 +3827,66 @@ function computeGeneralFinancials(scope){
   return { actual, projected };
 }
 
+// Builds a month-by-month revenue/cost/profit trend between two dates (inclusive), for the
+// admin "מגמה לאורך זמן" tab. Unlike computeGeneralFinancials, this doesn't split actual vs
+// projected - it just totals everything dated within each month, which is what a trend view needs.
+function computeMonthlyTrend(fromDate, toDate){
+  const months = {};
+  function monthLabel(key){
+    const [y,m] = key.split('-');
+    const names = ['ינואר','פברואר','מרץ','אפריל','מאי','יוני','יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'];
+    return `${names[parseInt(m,10)-1]} ${y}`;
+  }
+  function ensureMonth(key){
+    if(!months[key]) months[key] = { key, label: monthLabel(key), revenue:0, cost:0, marketing:0, manualExpenses:0, orderCount:0, profit:0 };
+    return months[key];
+  }
+  // seed every month in range so gaps show as zero instead of just being missing
+  if(fromDate && toDate && fromDate<=toDate){
+    let cur = new Date(fromDate+'-01T00:00:00');
+    const end = new Date(toDate+'-01T00:00:00');
+    while(cur<=end){
+      ensureMonth(cur.getFullYear()+'-'+String(cur.getMonth()+1).padStart(2,'0'));
+      cur.setMonth(cur.getMonth()+1);
+    }
+  }
+  orders.forEach(o=>{
+    if(o.cancelled || !o.date) return;
+    if(fromDate && o.date<fromDate) return;
+    if(toDate && o.date>toDate) return;
+    const key = o.date.slice(0,7);
+    const m = ensureMonth(key);
+    m.revenue += (o.totalPrice||0);
+    m.cost += computeOrderCost(o);
+    m.orderCount += 1;
+  });
+  spotSales.forEach(s=>{
+    if(!s.date) return;
+    if(fromDate && s.date<fromDate) return;
+    if(toDate && s.date>toDate) return;
+    const key = s.date.slice(0,7);
+    const m = ensureMonth(key);
+    const c = getSkuUnitCost(s.product);
+    m.revenue += (s.totalPrice||0);
+    m.cost += (c!=null ? c*s.quantity : 0);
+    m.orderCount += 1;
+  });
+  manualExpenses.forEach(e=>{
+    if(!e.date) return;
+    if(fromDate && e.date<fromDate) return;
+    if(toDate && e.date>toDate) return;
+    const key = e.date.slice(0,7);
+    const m = ensureMonth(key);
+    m.manualExpenses += (e.amount||0);
+  });
+  const list = Object.values(months).sort((a,b)=>a.key.localeCompare(b.key));
+  list.forEach(m=>{
+    m.marketing = m.orderCount * avgMarketingCostPerOrder;
+    m.profit = m.revenue - m.cost - m.marketing - m.manualExpenses;
+  });
+  return list;
+}
+
 /* ---------- per-city financial report (all rounds merged, actual vs expected, month/year filter) ---------- */
 let adminReportPeriod = 'all';
 let adminGeneralScope = 'all'; // 'month' | 'all' - scope for the "רווח כללי" header block
@@ -3807,6 +3897,20 @@ function setAdminGeneralScope(scope){
 let adminRepActivityScope = 'all'; // 'month' | 'all' - scope for the "פעילות נציגים" tab
 function setAdminRepActivityScope(scope){
   adminRepActivityScope = scope;
+  renderAdminTabContent();
+}
+// Default range for the "מגמה לאורך זמן" tab: the last 12 months, editable via date inputs.
+function defaultTrendFrom(){
+  const d = new Date(); d.setMonth(d.getMonth()-11);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-01';
+}
+let adminTrendFrom = defaultTrendFrom();
+let adminTrendTo = todayStr();
+function setAdminTrendRange(){
+  const f = document.getElementById('adminTrendFrom').value;
+  const t = document.getElementById('adminTrendTo').value;
+  if(f) adminTrendFrom = f;
+  if(t) adminTrendTo = t;
   renderAdminTabContent();
 }
 // Cost for the animal lines of an order, accounting for shared cages
@@ -4084,11 +4188,11 @@ function renderAdminRevenueByCity(){
 /* ---------- admin tabs ---------- */
 let adminActiveTab = 'home';
 function adminTabsForRole(){
-  if(currentUser && currentUser.role==='mainadmin') return ['home','report','revenue','expenses','payroll','repactivity','stock','depot','trash','users','auditlog','backup'];
+  if(currentUser && currentUser.role==='mainadmin') return ['home','report','trend','revenue','expenses','payroll','repactivity','stock','depot','trash','users','auditlog','backup'];
   if(currentUser && currentUser.role==='admin') return ['home','stock','depot','backup'];
   return [];
 }
-const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', repactivity:'📅 פעילות נציגים', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא' };
+const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', trend:'📈 מגמה לאורך זמן', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', repactivity:'📅 פעילות נציגים', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא' };
 function renderAdminTabsBar(){
   const bar = document.getElementById('adminTabsBar');
   const tabs = adminTabsForRole();
@@ -4287,6 +4391,39 @@ function renderAdminTabContent(){
       <button class="btn-primary" onclick="saveAdminSettings()">שמור הגדרות</button>
     `;
     renderAdminCityReport();
+  }else if(adminActiveTab==='trend'){
+    const trend = computeMonthlyTrend(adminTrendFrom, adminTrendTo);
+    const maxRevenue = Math.max(1, ...trend.map(m=>m.revenue));
+    const totals = trend.reduce((s,m)=>({ revenue:s.revenue+m.revenue, cost:s.cost+m.cost, marketing:s.marketing+m.marketing, manualExpenses:s.manualExpenses+m.manualExpenses, profit:s.profit+m.profit, orderCount:s.orderCount+m.orderCount }), {revenue:0,cost:0,marketing:0,manualExpenses:0,profit:0,orderCount:0});
+    content.innerHTML = `
+      <div style="font-weight:800;margin-bottom:8px;">📈 מגמה לאורך זמן</div>
+      <div class="row2" style="margin-bottom:10px;">
+        <div>
+          <label style="font-size:12px;margin-bottom:3px;">מתאריך</label>
+          <input type="date" id="adminTrendFrom" value="${adminTrendFrom}" onchange="setAdminTrendRange()">
+        </div>
+        <div>
+          <label style="font-size:12px;margin-bottom:3px;">עד תאריך</label>
+          <input type="date" id="adminTrendTo" value="${adminTrendTo}" onchange="setAdminTrendRange()">
+        </div>
+      </div>
+      <div class="total-price-box" style="text-align:right;margin-bottom:14px;">
+        <div>💰 סה"כ הכנסה בטווח: ${totals.revenue.toFixed(1)} ₪ (${totals.orderCount} הזמנות/מכירות)</div>
+        <div>📦 עלות כוללת (סחורה + פרסום + הוצאות ידניות): ${(totals.cost+totals.marketing+totals.manualExpenses).toFixed(1)} ₪</div>
+        <div style="font-weight:800;color:${totals.profit>=0?'var(--route)':'var(--danger)'};">🧾 רווח כולל בטווח: ${totals.profit.toFixed(1)} ₪</div>
+      </div>
+      ${trend.length===0 ? '<div style="color:var(--muted);font-size:13px;">אין נתונים בטווח שנבחר.</div>' : trend.map(m=>`
+        <div style="margin-bottom:12px;">
+          <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px;">
+            <span style="font-weight:700;">${m.label}</span>
+            <span>${m.revenue.toFixed(0)} ₪ הכנסה · <span style="color:${m.profit>=0?'var(--route)':'var(--danger)'};font-weight:700;">${m.profit.toFixed(0)} ₪ רווח</span> · ${m.orderCount} הזמנות</span>
+          </div>
+          <div style="background:var(--border);border-radius:6px;height:14px;overflow:hidden;">
+            <div style="background:var(--accent-dark);height:100%;width:${Math.max(2, m.revenue/maxRevenue*100)}%;"></div>
+          </div>
+        </div>
+      `).join('')}
+    `;
   }else if(adminActiveTab==='revenue'){
     content.innerHTML = `
       <div style="font-weight:800;margin-bottom:8px;">💰 הכנסות לפי עיר — סה"כ ופירוט כל משלוח בנפרד</div>
@@ -4417,6 +4554,19 @@ function renderAdminTabContent(){
       <div style="font-weight:800;margin-bottom:4px;">🕐 שכר ושעות נציגים</div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">לכל נציג: שכר שעתי, תוספת לכל 10 הזמנות שנסגרו ביום, ותוספת לכל קוואקר שנמכר. "נציג קבוע" מבטל את הגבלת תקופת הפעילות - נציג שאינו קבוע וללא תאריכים מוגדרים יכול להתחבר בכל עת; אם הוגדרו תאריכים, הוא יכול להתחבר רק בטווח הזה. דיווח על שלשום ואילך אחורה ממתין לאישורך לפני שהוא נספר בחוב.</div>
       ${allPending.length>0 ? `<div class="alert-banner" style="margin-bottom:14px;"><div class="alert-title">⏳ ${allPending.length} דיווחי שעות ממתינים לאישורך</div><div>גללו למטה לכל נציג כדי לאשר או לדחות.</div></div>` : ''}
+
+      <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:16px;">
+        <div style="font-weight:800;margin-bottom:6px;">🔔 תזכורת יומית לנציגים להזין שעות</div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">כשמופעל, נציג שהצטרף להתראות (דרך הכפתור שמופיע לו בכניסה לאפליקציה) יקבל התראת Push לנייד בשעה שתבחרו כאן, גם כשהאפליקציה סגורה. השליחה בפועל מתבצעת אוטומטית כל יום דרך GitHub - לא צריך שהאפליקציה תהיה פתוחה.</div>
+        <div class="row2" style="align-items:center;">
+          <label style="display:flex;align-items:center;gap:6px;flex:1;">
+            <input type="checkbox" id="repReminderEnabled" style="width:auto;margin-bottom:0;" ${repHourReminderSettings.enabled?'checked':''}> מופעל
+          </label>
+          <input type="time" id="repReminderTime" style="flex:1;" value="${repHourReminderSettings.time}">
+        </div>
+        <button class="btn-ghost" style="margin-top:8px;" onclick="saveRepHourReminderSettings()">שמור הגדרות תזכורת</button>
+      </div>
+
       <div style="font-weight:800;color:var(--danger);margin-bottom:14px;">💰 סה"כ חוב כולל לכל הנציגים: ${grandTotalOwed.toFixed(1)} ₪</div>
       ${reps.length===0 ? '<div style="color:var(--muted);">אין נציגים רשומים עדיין.</div>' : reps.map(u=>{
         const myReports = hourReports.filter(r=>r.username===u.username).sort((a,b)=>b.date.localeCompare(a.date));
@@ -5506,6 +5656,7 @@ async function initApp(){
   await loadTrash();
   await loadExpensesData();
   await loadAuditLog();
+  await loadRepHourReminderSettings();
   renderSummary();
   renderCuFeatureToggleLabel();
   renderInventoryAlertBanner();
