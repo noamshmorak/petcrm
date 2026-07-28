@@ -560,16 +560,16 @@ async function sendPushToAdmins(title, message){
     });
   }catch(e){ /* push delivery failures are non-critical - ignore */ }
 }
-// Lets an admin/mainadmin opt in to real push notifications from a small banner (see
-// renderPushOptInBanner). Tags their OneSignal subscription so sendPushToAdmins can target them.
-// Shared push opt-in: admins/mainadmins get tagged 'notifyManager' (urgent inquiries),
-// reps get tagged 'notifyRepHours' (daily reminder to log their hours - see renderPushOptInBanner).
+// Lets any user opt in to real push notifications from a small banner (see renderPushOptInBanner).
+// Tags their OneSignal subscription both by role (role_rep / role_admin / role_mainadmin - used by
+// the admin-configurable custom reminders) and, for admins/mainadmins, also 'notifyManager' (used
+// by the urgent manager-inquiry escalation push, unrelated to the custom reminders feature).
 async function enableAdminPushNotifications(){
   if(!window.OneSignal){ showToast('שירות ההתראות עדיין נטען - נסה שוב בעוד כמה שניות'); return; }
-  const tag = isAdminRole() ? 'notifyManager' : 'notifyRepHours';
   try{
     await OneSignal.Notifications.requestPermission();
-    await OneSignal.User.addTag(tag, '1');
+    await OneSignal.User.addTag('role_'+currentUser.role, '1');
+    if(isAdminRole()) await OneSignal.User.addTag('notifyManager', '1');
     localStorage.setItem('pushOptedIn', '1');
     showToast('התראות הופעלו בהצלחה!');
     renderPushOptInBanner();
@@ -579,10 +579,11 @@ function renderPushOptInBanner(){
   const el = document.getElementById('pushOptInBanner');
   if(!el) return;
   if(!currentUser || localStorage.getItem('pushOptedIn')==='1'){ el.innerHTML=''; return; }
+  const hasReminder = customReminders.some(r=>r.enabled && r.targetRole===currentUser.role);
   if(isAdminRole()){
-    el.innerHTML = `<div class="alert-banner" style="cursor:pointer;" onclick="enableAdminPushNotifications()"><div class="alert-title">🔔 הפעלת התראות</div><div>לחצ/י כאן כדי לקבל התראות לנייד גם כשהאפליקציה סגורה (פניות דחופות ממתינות לטיפול)</div></div>`;
-  }else if(currentUser.role==='rep' && repHourReminderSettings.enabled){
-    el.innerHTML = `<div class="alert-banner" style="cursor:pointer;" onclick="enableAdminPushNotifications()"><div class="alert-title">🔔 הפעלת התראות</div><div>לחצ/י כאן כדי לקבל תזכורת לנייד להזין שעות עבודה (בשעה ${repHourReminderSettings.time})</div></div>`;
+    el.innerHTML = `<div class="alert-banner" style="cursor:pointer;" onclick="enableAdminPushNotifications()"><div class="alert-title">🔔 הפעלת התראות</div><div>לחצ/י כאן כדי לקבל התראות לנייד גם כשהאפליקציה סגורה (פניות דחופות ממתינות לטיפול${hasReminder?', ותזכורות שהוגדרו':''})</div></div>`;
+  }else if(currentUser.role==='rep' && hasReminder){
+    el.innerHTML = `<div class="alert-banner" style="cursor:pointer;" onclick="enableAdminPushNotifications()"><div class="alert-title">🔔 הפעלת התראות</div><div>לחצ/י כאן כדי לקבל לנייד תזכורות שהמנהל הגדיר, גם כשהאפליקציה סגורה</div></div>`;
   }else{
     el.innerHTML = '';
   }
@@ -723,7 +724,7 @@ const TRASH_KEY = 'pet-crm-trash';
 const EXPENSES_KEY = 'pet-crm-expenses';
 const HOUR_REPORTS_KEY = 'pet-crm-hour-reports';
 const AUDIT_LOG_KEY = 'pet-crm-audit-log';
-const REP_HOUR_REMINDER_KEY = 'pet-crm-rep-hour-reminder'; // {enabled, time:'HH:MM'} - admin-editable, read by an external GitHub Actions cron job that sends the actual push
+const CUSTOM_REMINDERS_KEY = 'pet-crm-custom-reminders'; // array of {id, enabled, time, targetRole, title, message} - admin-editable, read by an external GitHub Actions cron job that sends the actual push
 let depot = { city:'', street:'' };
 async function loadDepot(){
   try{
@@ -3736,25 +3737,66 @@ async function saveCostSettings(){
   try{ await window.storage.set(COST_SETTINGS_KEY, JSON.stringify({costs:costSettings, marketing:avgMarketingCostPerOrder, cityMarketing:cityMarketingSpend}), true); }
   catch(e){ showToast('שגיאה בשמירת ההגדרות'); }
 }
-let repHourReminderSettings = { enabled:false, time:'20:00' };
-async function loadRepHourReminderSettings(){
+// Free-form scheduled reminders the main admin builds themselves: any message, any daily time,
+// sent to whichever role they pick (rep / admin / mainadmin). The actual sending happens outside
+// this app (GitHub Actions cron, see rep-hour-reminder.yml) since there's no backend here - this
+// just stores the list that job reads. ROLE_LABELS/roleLabel() already exist for role display text.
+const REMINDER_ROLE_LABELS = { rep:'נציגים', admin:'מנהלים', mainadmin:'מנהל ראשי' };
+let customReminders = [];
+async function loadCustomReminders(){
   try{
-    const res = await window.storage.get(REP_HOUR_REMINDER_KEY, true);
-    if(res && res.value){
-      const parsed = JSON.parse(res.value);
-      repHourReminderSettings = { enabled: !!parsed.enabled, time: parsed.time || '20:00' };
-    }
-  }catch(e){ /* use defaults */ }
+    const res = await window.storage.get(CUSTOM_REMINDERS_KEY, true);
+    customReminders = res && res.value ? JSON.parse(res.value) : [];
+    if(!Array.isArray(customReminders)) customReminders = [];
+  }catch(e){ customReminders = []; }
 }
-async function saveRepHourReminderSettings(){
-  const enabled = document.getElementById('repReminderEnabled').checked;
-  const time = document.getElementById('repReminderTime').value || '20:00';
-  repHourReminderSettings = { enabled, time };
-  try{
-    await window.storage.set(REP_HOUR_REMINDER_KEY, JSON.stringify(repHourReminderSettings), true);
-    logAudit('עדכון תזכורת שעות לנציגים', `${enabled?'הופעל':'כובה'} · שעה ${time}`);
-    showToast('הגדרות התזכורת נשמרו');
-  }catch(e){ showToast('שגיאה בשמירת ההגדרות'); }
+async function saveCustomReminders(){
+  try{ await window.storage.set(CUSTOM_REMINDERS_KEY, JSON.stringify(customReminders), true); }
+  catch(e){ showToast('שגיאה בשמירת התזכורות'); }
+}
+let editingReminderId = null;
+function startEditReminder(id){
+  editingReminderId = id;
+  renderAdminTabContent();
+}
+function cancelEditReminder(){
+  editingReminderId = null;
+  renderAdminTabContent();
+}
+async function addOrSaveReminder(id){
+  const title = document.getElementById('reminderTitleInput').value.trim();
+  const message = document.getElementById('reminderMessageInput').value.trim();
+  const time = document.getElementById('reminderTimeInput').value || '20:00';
+  const targetRole = document.getElementById('reminderRoleInput').value;
+  if(!message){ showToast('צריך להזין טקסט לתזכורת'); return; }
+  if(id){
+    const r = customReminders.find(x=>x.id===id);
+    if(r){ r.title=title; r.message=message; r.time=time; r.targetRole=targetRole; }
+    logAudit('עריכת תזכורת', `${title||message} · ${REMINDER_ROLE_LABELS[targetRole]} · ${time}`);
+    editingReminderId = null;
+  }else{
+    customReminders.push({ id: Date.now().toString(36)+Math.random().toString(36).slice(2,7), enabled:true, title, message, time, targetRole });
+    logAudit('הוספת תזכורת', `${title||message} · ${REMINDER_ROLE_LABELS[targetRole]} · ${time}`);
+  }
+  await saveCustomReminders();
+  showToast('התזכורת נשמרה');
+  renderAdminTabContent();
+}
+async function toggleReminderEnabled(id, checked){
+  const r = customReminders.find(x=>x.id===id);
+  if(!r) return;
+  r.enabled = checked;
+  await saveCustomReminders();
+  logAudit(checked?'הפעלת תזכורת':'כיבוי תזכורת', r.title||r.message);
+}
+async function deleteReminder(id){
+  const r = customReminders.find(x=>x.id===id);
+  if(!r) return;
+  customReminders = customReminders.filter(x=>x.id!==id);
+  await saveCustomReminders();
+  logAudit('מחיקת תזכורת', r.title||r.message);
+  showToast('התזכורת נמחקה');
+  renderAdminTabContent();
 }
 
 function openAdminGate(){
@@ -4188,11 +4230,11 @@ function renderAdminRevenueByCity(){
 /* ---------- admin tabs ---------- */
 let adminActiveTab = 'home';
 function adminTabsForRole(){
-  if(currentUser && currentUser.role==='mainadmin') return ['home','report','trend','revenue','expenses','payroll','repactivity','stock','depot','trash','users','auditlog','backup'];
+  if(currentUser && currentUser.role==='mainadmin') return ['home','report','trend','revenue','expenses','payroll','reminders','repactivity','stock','depot','trash','users','auditlog','backup'];
   if(currentUser && currentUser.role==='admin') return ['home','stock','depot','backup'];
   return [];
 }
-const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', trend:'📈 מגמה לאורך זמן', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', repactivity:'📅 פעילות נציגים', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא' };
+const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', trend:'📈 מגמה לאורך זמן', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', reminders:'🔔 תזכורות', repactivity:'📅 פעילות נציגים', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא' };
 function renderAdminTabsBar(){
   const bar = document.getElementById('adminTabsBar');
   const tabs = adminTabsForRole();
@@ -4393,11 +4435,11 @@ function renderAdminTabContent(){
     renderAdminCityReport();
   }else if(adminActiveTab==='trend'){
     const trend = computeMonthlyTrend(adminTrendFrom, adminTrendTo);
-    const maxRevenue = Math.max(1, ...trend.map(m=>m.revenue));
+    const maxScale = Math.max(1, ...trend.map(m=>Math.max(m.revenue, Math.abs(m.profit))));
     const totals = trend.reduce((s,m)=>({ revenue:s.revenue+m.revenue, cost:s.cost+m.cost, marketing:s.marketing+m.marketing, manualExpenses:s.manualExpenses+m.manualExpenses, profit:s.profit+m.profit, orderCount:s.orderCount+m.orderCount }), {revenue:0,cost:0,marketing:0,manualExpenses:0,profit:0,orderCount:0});
     content.innerHTML = `
-      <div style="font-weight:800;margin-bottom:8px;">📈 מגמה לאורך זמן</div>
-      <div class="row2" style="margin-bottom:10px;">
+      <div style="font-weight:800;margin-bottom:8px;">📈 מגמה לאורך זמן - כמה נכנס וכמה הרווחת בכל חודש</div>
+      <div class="row2" style="margin-bottom:14px;">
         <div>
           <label style="font-size:12px;margin-bottom:3px;">מתאריך</label>
           <input type="date" id="adminTrendFrom" value="${adminTrendFrom}" onchange="setAdminTrendRange()">
@@ -4407,22 +4449,25 @@ function renderAdminTabContent(){
           <input type="date" id="adminTrendTo" value="${adminTrendTo}" onchange="setAdminTrendRange()">
         </div>
       </div>
-      <div class="total-price-box" style="text-align:right;margin-bottom:14px;">
-        <div>💰 סה"כ הכנסה בטווח: ${totals.revenue.toFixed(1)} ₪ (${totals.orderCount} הזמנות/מכירות)</div>
-        <div>📦 עלות כוללת (סחורה + פרסום + הוצאות ידניות): ${(totals.cost+totals.marketing+totals.manualExpenses).toFixed(1)} ₪</div>
-        <div style="font-weight:800;color:${totals.profit>=0?'var(--route)':'var(--danger)'};">🧾 רווח כולל בטווח: ${totals.profit.toFixed(1)} ₪</div>
-      </div>
       ${trend.length===0 ? '<div style="color:var(--muted);font-size:13px;">אין נתונים בטווח שנבחר.</div>' : trend.map(m=>`
-        <div style="margin-bottom:12px;">
-          <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px;">
-            <span style="font-weight:700;">${m.label}</span>
-            <span>${m.revenue.toFixed(0)} ₪ הכנסה · <span style="color:${m.profit>=0?'var(--route)':'var(--danger)'};font-weight:700;">${m.profit.toFixed(0)} ₪ רווח</span> · ${m.orderCount} הזמנות</span>
+        <div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:10px;">
+          <div style="font-weight:800;margin-bottom:8px;">${m.label} <span style="font-weight:400;color:var(--muted);font-size:12px;">(${m.orderCount} הזמנות)</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:2px;"><span>💰 הכנסה</span><span style="font-weight:700;">${m.revenue.toFixed(0)} ₪</span></div>
+          <div style="background:var(--border);border-radius:6px;height:14px;overflow:hidden;margin-bottom:8px;">
+            <div style="background:var(--accent-dark);height:100%;width:${m.revenue<=0?0:Math.max(2, m.revenue/maxScale*100)}%;"></div>
           </div>
+          <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:2px;"><span>🧾 רווח</span><span style="font-weight:700;color:${m.profit>=0?'var(--route)':'var(--danger)'};">${m.profit.toFixed(0)} ₪</span></div>
           <div style="background:var(--border);border-radius:6px;height:14px;overflow:hidden;">
-            <div style="background:var(--accent-dark);height:100%;width:${Math.max(2, m.revenue/maxRevenue*100)}%;"></div>
+            <div style="background:${m.profit>=0?'var(--route)':'var(--danger)'};height:100%;width:${m.profit===0?0:Math.max(2, Math.abs(m.profit)/maxScale*100)}%;"></div>
           </div>
         </div>
       `).join('')}
+      <div class="total-price-box" style="text-align:right;margin-top:14px;">
+        <div style="font-weight:800;margin-bottom:4px;">📊 סה"כ לכל התקופה שנבחרה (${trend.length} חודשים)</div>
+        <div>💰 סה"כ הכנסה: ${totals.revenue.toFixed(1)} ₪ (${totals.orderCount} הזמנות/מכירות)</div>
+        <div>📦 עלות כוללת (סחורה + פרסום + הוצאות ידניות): ${(totals.cost+totals.marketing+totals.manualExpenses).toFixed(1)} ₪</div>
+        <div style="font-weight:800;color:${totals.profit>=0?'var(--route)':'var(--danger)'};">🧾 רווח כולל: ${totals.profit.toFixed(1)} ₪</div>
+      </div>
     `;
   }else if(adminActiveTab==='revenue'){
     content.innerHTML = `
@@ -4555,18 +4600,6 @@ function renderAdminTabContent(){
       <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">לכל נציג: שכר שעתי, תוספת לכל 10 הזמנות שנסגרו ביום, ותוספת לכל קוואקר שנמכר. "נציג קבוע" מבטל את הגבלת תקופת הפעילות - נציג שאינו קבוע וללא תאריכים מוגדרים יכול להתחבר בכל עת; אם הוגדרו תאריכים, הוא יכול להתחבר רק בטווח הזה. דיווח על שלשום ואילך אחורה ממתין לאישורך לפני שהוא נספר בחוב.</div>
       ${allPending.length>0 ? `<div class="alert-banner" style="margin-bottom:14px;"><div class="alert-title">⏳ ${allPending.length} דיווחי שעות ממתינים לאישורך</div><div>גללו למטה לכל נציג כדי לאשר או לדחות.</div></div>` : ''}
 
-      <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:16px;">
-        <div style="font-weight:800;margin-bottom:6px;">🔔 תזכורת יומית לנציגים להזין שעות</div>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">כשמופעל, נציג שהצטרף להתראות (דרך הכפתור שמופיע לו בכניסה לאפליקציה) יקבל התראת Push לנייד בשעה שתבחרו כאן, גם כשהאפליקציה סגורה. השליחה בפועל מתבצעת אוטומטית כל יום דרך GitHub - לא צריך שהאפליקציה תהיה פתוחה.</div>
-        <div class="row2" style="align-items:center;">
-          <label style="display:flex;align-items:center;gap:6px;flex:1;">
-            <input type="checkbox" id="repReminderEnabled" style="width:auto;margin-bottom:0;" ${repHourReminderSettings.enabled?'checked':''}> מופעל
-          </label>
-          <input type="time" id="repReminderTime" style="flex:1;" value="${repHourReminderSettings.time}">
-        </div>
-        <button class="btn-ghost" style="margin-top:8px;" onclick="saveRepHourReminderSettings()">שמור הגדרות תזכורת</button>
-      </div>
-
       <div style="font-weight:800;color:var(--danger);margin-bottom:14px;">💰 סה"כ חוב כולל לכל הנציגים: ${grandTotalOwed.toFixed(1)} ₪</div>
       ${reps.length===0 ? '<div style="color:var(--muted);">אין נציגים רשומים עדיין.</div>' : reps.map(u=>{
         const myReports = hourReports.filter(r=>r.username===u.username).sort((a,b)=>b.date.localeCompare(a.date));
@@ -4653,6 +4686,53 @@ function renderAdminTabContent(){
           `).join('')}` : ''}
         </div>`;
       }).join('')}
+    `;
+  }else if(adminActiveTab==='reminders'){
+    const editing = editingReminderId ? customReminders.find(r=>r.id===editingReminderId) : null;
+    content.innerHTML = `
+      <div style="font-weight:800;margin-bottom:4px;">🔔 תזכורות מתוזמנות</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">כל תזכורת שתגדירו כאן תישלח כהתראת Push לנייד בשעה שנבחרה, כל יום, לכל מי שמהקבוצה שבחרתם ולחץ על "הפעלת התראות" בכניסה לאפליקציה - גם כשהאפליקציה סגורה. השליחה בפועל מתבצעת אוטומטית דרך GitHub, ולא דורשת שהאפליקציה תהיה פתוחה.</div>
+
+      <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:16px;">
+        <div style="font-weight:700;margin-bottom:8px;">${editing?'✏️ עריכת תזכורת':'➕ תזכורת חדשה'}</div>
+        <div class="field">
+          <label>כותרת (אופציונלי)</label>
+          <input id="reminderTitleInput" placeholder="לדוגמה: תזכורת שעות" value="${escAttr(editing?editing.title||'':'')}">
+        </div>
+        <div class="field">
+          <label>טקסט התזכורת</label>
+          <textarea id="reminderMessageInput" rows="2" placeholder="הטקסט שיופיע בהתראה">${editing?editing.message:''}</textarea>
+        </div>
+        <div class="row2" style="margin-bottom:8px;">
+          <div>
+            <label style="font-size:12px;margin-bottom:3px;">שעה יומית</label>
+            <input type="time" id="reminderTimeInput" value="${editing?editing.time:'20:00'}">
+          </div>
+          <div>
+            <label style="font-size:12px;margin-bottom:3px;">למי לשלוח</label>
+            <select id="reminderRoleInput">
+              <option value="rep" ${editing&&editing.targetRole==='rep'?'selected':''}>נציגים</option>
+              <option value="admin" ${editing&&editing.targetRole==='admin'?'selected':''}>מנהלים</option>
+              <option value="mainadmin" ${editing&&editing.targetRole==='mainadmin'?'selected':''}>מנהל ראשי</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn-primary" style="flex:1;" onclick="addOrSaveReminder(${editing?`'${editing.id}'`:'null'})">${editing?'💾 שמור שינויים':'➕ הוסף תזכורת'}</button>
+          ${editing?'<button class="btn-ghost" style="flex:1;" onclick="cancelEditReminder()">ביטול</button>':''}
+        </div>
+      </div>
+
+      ${customReminders.length===0 ? '<div style="color:var(--muted);font-size:13px;">אין תזכורות מוגדרות עדיין.</div>' : customReminders.map(r=>`
+        <div class="row2" style="align-items:center;margin-bottom:8px;">
+          <label style="display:flex;align-items:center;gap:6px;flex:0;">
+            <input type="checkbox" style="width:auto;margin-bottom:0;" ${r.enabled?'checked':''} onchange="toggleReminderEnabled('${r.id}', this.checked)">
+          </label>
+          <div style="flex:2;font-size:13px;">${r.title?'<b>'+r.title+'</b> - ':''}${r.message} <span style="color:var(--muted);">(${REMINDER_ROLE_LABELS[r.targetRole]} · בשעה ${r.time})</span></div>
+          <button class="icon-btn" onclick="startEditReminder('${r.id}')">✏️</button>
+          <button class="icon-btn" onclick="deleteReminder('${r.id}')">🗑️</button>
+        </div>
+      `).join('')}
     `;
   }else if(adminActiveTab==='repactivity'){
     const scopeToggleHtml = `
@@ -5656,7 +5736,7 @@ async function initApp(){
   await loadTrash();
   await loadExpensesData();
   await loadAuditLog();
-  await loadRepHourReminderSettings();
+  await loadCustomReminders();
   renderSummary();
   renderCuFeatureToggleLabel();
   renderInventoryAlertBanner();
