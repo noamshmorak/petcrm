@@ -1,0 +1,68 @@
+name: Rep Hour Reminder
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  check-and-send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check settings and send reminder if due
+        env:
+          SUPABASE_URL: https://vraxhwrirrrptawxgztf.supabase.co
+          SUPABASE_ANON_KEY: sb_publishable_-729QUM1pXlABgVUWijGiw_Xf0GTspj
+          ONESIGNAL_APP_ID: dccc2508-ed7b-47a3-9088-3253af5427f5
+          ONESIGNAL_REST_API_KEY: ${{ secrets.ONESIGNAL_REST_API_KEY }}
+        run: |
+          set -e
+
+          SETTINGS=$(curl -s "$SUPABASE_URL/rest/v1/kv_store?key=eq.pet-crm-rep-hour-reminder&select=value" \
+            -H "apikey: $SUPABASE_ANON_KEY" -H "Authorization: Bearer $SUPABASE_ANON_KEY")
+          ENABLED=$(echo "$SETTINGS" | jq -r '.[0].value.enabled // false')
+          TIME=$(echo "$SETTINGS" | jq -r '.[0].value.time // "20:00"')
+          echo "enabled=$ENABLED time=$TIME"
+
+          if [ "$ENABLED" != "true" ]; then
+            echo "Reminder disabled - exiting."
+            exit 0
+          fi
+
+          NOW_HM=$(TZ=Asia/Jerusalem date +%H:%M)
+          NOW_DATE=$(TZ=Asia/Jerusalem date +%F)
+          NOW_MIN=$(( 10#$(echo "$NOW_HM" | cut -d: -f1) * 60 + 10#$(echo "$NOW_HM" | cut -d: -f2) ))
+          TARGET_MIN=$(( 10#$(echo "$TIME" | cut -d: -f1) * 60 + 10#$(echo "$TIME" | cut -d: -f2) ))
+          DIFF=$(( NOW_MIN - TARGET_MIN ))
+          if [ $DIFF -lt 0 ]; then DIFF=$(( -DIFF )); fi
+          echo "now=$NOW_HM target=$TIME diff=$DIFF minutes"
+
+          if [ $DIFF -gt 20 ]; then
+            echo "Not the configured time yet - exiting."
+            exit 0
+          fi
+
+          LASTSENT=$(curl -s "$SUPABASE_URL/rest/v1/kv_store?key=eq.pet-crm-rep-hour-reminder-lastsent&select=value" \
+            -H "apikey: $SUPABASE_ANON_KEY" -H "Authorization: Bearer $SUPABASE_ANON_KEY")
+          LASTDATE=$(echo "$LASTSENT" | jq -r '.[0].value.date // ""')
+          echo "lastSentDate=$LASTDATE today=$NOW_DATE"
+
+          if [ "$LASTDATE" == "$NOW_DATE" ]; then
+            echo "Already sent today - exiting."
+            exit 0
+          fi
+
+          echo "Sending push via OneSignal..."
+          curl -s -X POST "https://api.onesignal.com/notifications" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            -H "Authorization: Key $ONESIGNAL_REST_API_KEY" \
+            -d "{\"app_id\":\"$ONESIGNAL_APP_ID\",\"headings\":{\"en\":\"⏰ תזכורת שעות עבודה\"},\"contents\":{\"en\":\"אל תשכח/י להזין את שעות העבודה של היום באפליקציה\"},\"filters\":[{\"field\":\"tag\",\"key\":\"notifyRepHours\",\"relation\":\"=\",\"value\":\"1\"}]}"
+
+          echo ""
+          echo "Recording that we sent today's reminder..."
+          curl -s -X POST "$SUPABASE_URL/rest/v1/kv_store" \
+            -H "apikey: $SUPABASE_ANON_KEY" -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
+            -H "Content-Type: application/json" -H "Prefer: resolution=merge-duplicates" \
+            -d "[{\"key\":\"pet-crm-rep-hour-reminder-lastsent\",\"value\":{\"date\":\"$NOW_DATE\"}}]"
+
+          echo "Done."
