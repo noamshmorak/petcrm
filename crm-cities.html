@@ -2150,6 +2150,44 @@ function computeRepDailyActivity(username, dateStr){
   });
   return { ordersCount, quaverCount };
 }
+const WEEKDAY_LABELS = ['ראשון','שני','שלישי','רביעי','חמישי','שישי','שבת'];
+// For each rep, groups every order/spot-sale they entered (createdAt) by weekday (0=Sunday..6=Saturday),
+// counting them the same way payroll's "orders closed" bonus does (non-cancelled orders + spot sales).
+// scope 'month' restricts to the current calendar month; 'all' looks across all recorded activity.
+function computeRepActivityByWeekday(scope){
+  const now = new Date();
+  const curMonthKey = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+  function inScope(ts){
+    if(scope!=='month') return true;
+    const d = new Date(ts);
+    return (d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))===curMonthKey;
+  }
+  const reps = users.filter(u=>u.role==='rep');
+  return reps.map(u=>{
+    const days = WEEKDAY_LABELS.map((label,idx)=>({ weekday: idx, label, count: 0, items: [] }));
+    orders.forEach(o=>{
+      if(o.createdByUsername!==u.username || o.cancelled || !o.createdAt || !inScope(o.createdAt)) return;
+      const d = new Date(o.createdAt);
+      days[d.getDay()].count += 1;
+      days[d.getDay()].items.push({
+        type:'order', createdAt:o.createdAt,
+        label: `${o.customer||'לקוח'} · ${cityDisplayName(o.city, o.roundNumber||0)}${isAdminRole()?' · '+(o.totalPrice||0)+' ₪':''}`
+      });
+    });
+    spotSales.forEach(s=>{
+      if(s.createdByUsername!==u.username || !s.createdAt || !inScope(s.createdAt)) return;
+      const d = new Date(s.createdAt);
+      days[d.getDay()].count += 1;
+      days[d.getDay()].items.push({
+        type:'spot', createdAt:s.createdAt,
+        label: `⚡ מכירה מהירה: ${s.product} ×${s.quantity}${s.customer?' · '+s.customer:''}${isAdminRole()?' · '+(s.totalPrice||0)+' ₪':''}`
+      });
+    });
+    days.forEach(day=>day.items.sort((a,b)=>b.createdAt-a.createdAt));
+    const totalCount = days.reduce((s,day)=>s+day.count,0);
+    return { username: u.username, totalCount, days };
+  });
+}
 // Once a report is marked paid, its amount is frozen (paidAmount) so later wage-setting changes
 // never retroactively alter what was already paid. Unpaid reports are always computed live.
 function computeHourReportAmount(report){
@@ -3766,6 +3804,11 @@ function setAdminGeneralScope(scope){
   adminGeneralScope = scope;
   renderAdminTabContent();
 }
+let adminRepActivityScope = 'all'; // 'month' | 'all' - scope for the "פעילות נציגים" tab
+function setAdminRepActivityScope(scope){
+  adminRepActivityScope = scope;
+  renderAdminTabContent();
+}
 // Cost for the animal lines of an order, accounting for shared cages
 // (2 single-unit animals sharing one cage cost only 1 cage, not 2).
 function computeOrderAnimalCost(o){
@@ -4041,11 +4084,11 @@ function renderAdminRevenueByCity(){
 /* ---------- admin tabs ---------- */
 let adminActiveTab = 'home';
 function adminTabsForRole(){
-  if(currentUser && currentUser.role==='mainadmin') return ['home','report','revenue','expenses','payroll','stock','depot','trash','users','auditlog','backup'];
+  if(currentUser && currentUser.role==='mainadmin') return ['home','report','revenue','expenses','payroll','repactivity','stock','depot','trash','users','auditlog','backup'];
   if(currentUser && currentUser.role==='admin') return ['home','stock','depot','backup'];
   return [];
 }
-const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא' };
+const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', repactivity:'📅 פעילות נציגים', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא' };
 function renderAdminTabsBar(){
   const bar = document.getElementById('adminTabsBar');
   const tabs = adminTabsForRole();
@@ -4460,6 +4503,33 @@ function renderAdminTabContent(){
           `).join('')}` : ''}
         </div>`;
       }).join('')}
+    `;
+  }else if(adminActiveTab==='repactivity'){
+    const scopeToggleHtml = `
+      <div class="cage-toggle" style="margin-bottom:10px;">
+        <button type="button" class="${adminRepActivityScope==='month'?'active':''}" onclick="setAdminRepActivityScope('month')">החודש</button>
+        <button type="button" class="${adminRepActivityScope==='all'?'active':''}" onclick="setAdminRepActivityScope('all')">כל הזמן</button>
+      </div>`;
+    const repActivity = computeRepActivityByWeekday(adminRepActivityScope);
+    content.innerHTML = `
+      <div style="font-weight:800;margin-bottom:4px;">📅 פעילות נציגים לפי יום בשבוע</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">לכל נציג: כמה הזמנות (ומכירות מהירות) הוא הזין בכל יום בשבוע, לפי התאריך שבו ההזמנה הוזנה בפועל. לחצו על יום כדי לראות בדיוק אילו הזמנות הוזנו בו.</div>
+      ${scopeToggleHtml}
+      ${repActivity.length===0 ? '<div style="color:var(--muted);">אין נציגים רשומים עדיין.</div>' : repActivity.map(r=>`
+        <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:14px;">
+          <div style="font-weight:800;margin-bottom:8px;">👤 ${r.username} — ${r.totalCount} הזמנות סה"כ</div>
+          ${r.totalCount===0 ? '<div style="color:var(--muted);font-size:13px;">אין הזמנות בתקופה זו.</div>' : r.days.filter(d=>d.count>0).map(d=>`
+            <details style="border-top:1px solid var(--border);padding-top:6px;margin-top:6px;">
+              <summary style="cursor:pointer;font-weight:700;display:flex;justify-content:space-between;">
+                <span>יום ${d.label}</span><span>${d.count} הזמנות</span>
+              </summary>
+              <div style="margin-top:6px;padding-top:6px;">
+                ${d.items.map(it=>`<div style="font-size:12.5px;padding:3px 0;">${it.label} <span style="color:var(--muted);">(${new Date(it.createdAt).toLocaleDateString('he-IL')} ${new Date(it.createdAt).toLocaleTimeString('he-IL',{hour:'2-digit',minute:'2-digit'})})</span></div>`).join('')}
+              </div>
+            </details>
+          `).join('')}
+        </div>
+      `).join('')}
     `;
   }else if(adminActiveTab==='stock'){
     const { animalShortage, cageShortage } = computeProjectedShortage();
