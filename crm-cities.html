@@ -1027,19 +1027,30 @@ let roundChoicePending = null;
 let currentUser = null; // {username, role} role: 'mainadmin' | 'admin' | 'rep'
 let users = [];
 function defaultUsers(){
-  return [{ username: MAIN_ADMIN_USERNAME, password: MAIN_ADMIN_DEFAULT_PASSWORD, role: 'mainadmin' }];
+  return [{ username: MAIN_ADMIN_USERNAME, role: 'mainadmin' }];
+}
+// Passwords are never stored in plaintext (locally or in the public users list) - they live only
+// as bcrypt hashes in a separate, read-protected kv_store key, written/verified via SECURITY
+// DEFINER Postgres functions (set_user_password / verify_login) so the hash never reaches the browser.
+async function ensureCredentials(username, password){
+  try{ await _sb.rpc('set_user_password', { p_username: username, p_new_password: password }); }
+  catch(e){ console.error('[ensureCredentials]', e); }
 }
 async function loadUsers(){
   try{
     const res = await window.storage.get(USERS_KEY, true);
     users = res && res.value ? JSON.parse(res.value) : [];
   }catch(e){ users = []; }
-  if(!Array.isArray(users) || users.length===0) users = defaultUsers();
+  let needsBootstrapPassword = false;
+  if(!Array.isArray(users) || users.length===0){ users = defaultUsers(); needsBootstrapPassword = true; }
   // always guarantee the protected main admin account exists
   if(!users.some(u=>u.role==='mainadmin')){
-    users.unshift({ username: MAIN_ADMIN_USERNAME, password: MAIN_ADMIN_DEFAULT_PASSWORD, role: 'mainadmin' });
+    users.unshift({ username: MAIN_ADMIN_USERNAME, role: 'mainadmin' });
+    needsBootstrapPassword = true;
   }
   await saveUsers();
+  // only relevant on a brand-new/empty install where no credentials row exists yet at all
+  if(needsBootstrapPassword) await ensureCredentials(MAIN_ADMIN_USERNAME, MAIN_ADMIN_DEFAULT_PASSWORD);
 }
 async function saveUsers(){
   try{ await window.storage.set(USERS_KEY, JSON.stringify(users), true); }
@@ -1068,8 +1079,15 @@ function isRepCurrentlyActive(u){
 async function attemptLogin(){
   const username = document.getElementById('loginUsername').value.trim();
   const password = document.getElementById('loginPassword').value;
-  const u = users.find(x=>x.username===username && x.password===password);
   const errEl = document.getElementById('loginErr');
+  let u = null;
+  try{
+    // password check happens server-side inside verify_login (SECURITY DEFINER) - the hash
+    // itself is never sent to or compared in the browser.
+    const { data, error } = await _sb.rpc('verify_login', { p_username: username, p_password: password });
+    if(error){ console.error('[verify_login]', error); }
+    else if(data && data.length){ u = findUser(data[0].username) || { username: data[0].username, role: data[0].role }; }
+  }catch(e){ console.error('[verify_login]', e); }
   if(!u){ errEl.textContent = 'שם משתמש או סיסמה שגויים'; errEl.style.display = 'block'; return; }
   if(!isRepCurrentlyActive(u)){
     errEl.textContent = 'התקופה הפעילה שלך אינה כוללת את התאריך הנוכחי - אין גישה למערכת. פנה/י למנהל.';
@@ -5384,25 +5402,27 @@ function renderAdminTabContent(){
     `;
   }
 }
-function addUser(){
+async function addUser(){
   const username = document.getElementById('newUserUsername').value.trim();
   const password = document.getElementById('newUserPassword').value;
   const role = document.getElementById('newUserRole').value;
   if(!username || !password){ showToast('יש למלא שם משתמש וסיסמה'); return; }
   if(findUser(username)){ showToast('שם משתמש כבר קיים'); return; }
-  users.push({ username, password, role });
-  saveUsers();
+  users.push({ username, role });
+  await saveUsers();
+  await ensureCredentials(username, password);
   showToast('המשתמש נוסף');
   renderAdminTabContent();
 }
-function updateUser(username){
+async function updateUser(username){
   const u = findUser(username);
   if(!u || u.role==='mainadmin') return;
   const pwInput = document.querySelector(`.user-reset-password[data-username="${CSS.escape(username)}"]`);
   const roleSelect = document.querySelector(`.user-role-select[data-username="${CSS.escape(username)}"]`);
-  if(pwInput && pwInput.value.trim()) u.password = pwInput.value.trim();
+  const newPassword = pwInput && pwInput.value.trim() ? pwInput.value.trim() : null;
   if(roleSelect) u.role = roleSelect.value;
-  saveUsers();
+  await saveUsers();
+  if(newPassword) await ensureCredentials(username, newPassword);
   showToast('המשתמש עודכן');
   renderAdminTabContent();
 }
@@ -5410,20 +5430,21 @@ function deleteUser(username){
   if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול למחוק משתמשים'); return; }
   const u = findUser(username);
   if(!u || u.role==='mainadmin') return;
-  showConfirm(`למחוק את המשתמש "${username}"?`, ()=>{
+  showConfirm(`למחוק את המשתמש "${username}"?`, async ()=>{
     users = users.filter(x=>x.username!==username);
-    saveUsers();
+    await saveUsers();
+    try{ await _sb.rpc('delete_user_credentials', { p_username: username }); }catch(e){ console.error('[delete_user_credentials]', e); }
     showToast('המשתמש נמחק');
     renderAdminTabContent();
   });
 }
-function changeMainAdminPassword(){
+async function changeMainAdminPassword(){
   if(!currentUser || currentUser.role!=='mainadmin') return;
   const input = document.querySelector('.mainadmin-new-password');
   const val = input ? input.value.trim() : '';
   if(!val){ showToast('לא הוזנה סיסמה חדשה'); return; }
-  const u = findUser(currentUser.username);
-  if(u){ u.password = val; saveUsers(); showToast('הסיסמה עודכנה'); }
+  await ensureCredentials(currentUser.username, val);
+  showToast('הסיסמה עודכנה');
   if(input) input.value = '';
 }
 function saveStockSettings(){
