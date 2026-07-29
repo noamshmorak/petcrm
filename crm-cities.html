@@ -277,6 +277,10 @@
         <input type="checkbox" id="fYad2" style="width:auto;margin-bottom:0;">
         <label style="margin-bottom:0;">הלקוח הגיע מיד 2</label>
       </div>
+      <div class="field" id="fAdChannelWrap" style="display:none;">
+        <label>מאיפה הלקוח הגיע? (אופציונלי - עוזר להשוות ערוצי פרסום)</label>
+        <select id="fAdChannel"><option value="">לא ידוע / אחר</option></select>
+      </div>
       <div class="field">
         <label>תאריך הזמנה</label>
         <input id="fDate" type="date">
@@ -725,6 +729,10 @@ const EXPENSES_KEY = 'pet-crm-expenses';
 const HOUR_REPORTS_KEY = 'pet-crm-hour-reports';
 const AUDIT_LOG_KEY = 'pet-crm-audit-log';
 const CUSTOM_REMINDERS_KEY = 'pet-crm-custom-reminders'; // array of {id, enabled, time, targetRole, title, message} - admin-editable, read by an external GitHub Actions cron job that sends the actual push
+const AD_CHANNELS_KEY = 'pet-crm-ad-channels'; // array of {id, city, name, defaultWeeklyCost, weekOverrides:{weekStart:amount}}
+const STRONG_AD_ROUNDS_KEY = 'pet-crm-strong-ad-rounds'; // {'city|round': true} - rounds opened during a nationwide "strong ad" week
+const STRONG_AD_CAMPAIGN_KEY = 'pet-crm-strong-ad-campaign'; // {defaultWeeklyCost, weekOverrides:{weekStart:amount}} - shared cost of the nationwide campaign
+const STRONG_AD_BUCKET = '🔥 פרסום חזק';
 let depot = { city:'', street:'' };
 async function loadDepot(){
   try{
@@ -1806,6 +1814,7 @@ function populateCitySelect(selectedCity){
   }else{
     document.getElementById('fCitySelected').textContent = '';
   }
+  renderAdChannelSelect();
 }
 function renderCityOptions(filterText){
   const sel = document.getElementById('fCitySelect');
@@ -1834,6 +1843,7 @@ document.getElementById('fCitySelect').addEventListener('change', ()=>{
   // fill the search box itself with the full city name that was clicked/selected, so it doesn't
   // stay showing just the partial text that was typed to find it (e.g. "בני" -> "בני ברק").
   if(sel.value) document.getElementById('fCityFilter').value = sel.value;
+  renderAdChannelSelect();
 });
 function getSelectedCity(){
   return document.getElementById('fCitySelect').value || '';
@@ -2558,6 +2568,7 @@ function submitOrder(){
   const date = document.getElementById('fDate').value || todayStr();
   const note = document.getElementById('fNote').value.trim();
   const fromYad2 = document.getElementById('fYad2').checked;
+  const adChannelId = document.getElementById('fAdChannel').value || '';
   const animals = collectAnimalRows();
   const foodItems = collectFoodRows();
   const pairFlags = collectPairFlags();
@@ -2590,7 +2601,7 @@ function submitOrder(){
       o.city = city; o.customer = customer; o.address = address;
       o.phone1 = phone1; o.phone2 = phone2; o.animals = animals; o.foodItems = foodItems; o.date = date;
       o.pairFlags = pairFlags; o.cageSharing = cageSharing; o.totalPrice = totalPrice; o.discount = discount; o.discountApproved = discount>0 ? discountApproved : false;
-      o.note = note; o.fromYad2 = fromYad2;
+      o.note = note; o.fromYad2 = fromYad2; o.adChannelId = adChannelId;
       logAudit('ערוך הזמנה', `${o.customer||'לקוח'} · ${cityDisplayName(o.city, o.roundNumber||0)}${discount>0?' · הנחה '+discount+'₪':''}`);
     }
     editingId = null;
@@ -2601,7 +2612,7 @@ function submitOrder(){
     return;
   }
 
-  const orderData = {city, customer, address, phone1, phone2, animals, foodItems, date, pairFlags, cageSharing, totalPrice, discount, discountApproved: discount>0 ? discountApproved : false, note, fromYad2};
+  const orderData = {city, customer, address, phone1, phone2, animals, foodItems, date, pairFlags, cageSharing, totalPrice, discount, discountApproved: discount>0 ? discountApproved : false, note, fromYad2, adChannelId};
   const activeRounds = computeCityActiveRounds(city);
   if(activeRounds.length > 0){
     askRoundChoice(city, activeRounds, (roundNumber)=>{
@@ -2637,6 +2648,7 @@ function finishSubmitOrder(){
   document.getElementById('fDate').value=todayStr();
   document.getElementById('fNote').value='';
   document.getElementById('fYad2').checked=false;
+  document.getElementById('fAdChannel').value='';
   document.getElementById('fDiscount').value='';
   document.getElementById('fDiscountApproved').checked=false;
   document.getElementById('fDiscountWarning').style.display='none';
@@ -2685,6 +2697,7 @@ function startEdit(id){
   document.getElementById('fDate').value = o.date;
   document.getElementById('fNote').value = o.note||'';
   document.getElementById('fYad2').checked = !!o.fromYad2;
+  document.getElementById('fAdChannel').value = o.adChannelId || '';
   document.getElementById('animalRows').innerHTML='';
   animalRowCounter = 0;
   (o.animals && o.animals.length ? o.animals : [{type:ANIMAL_OPTIONS[0],quantity:1,color:''}]).forEach(a=>addAnimalRow(a.type, a.quantity, a.color, a.color2, a.noCage));
@@ -2876,6 +2889,10 @@ function renderSummary(){
         <div class="city-breakdown">${chips}</div>
         <div class="city-totals">${c.count} הזמנות · ${c.totalQty} בעלי חיים בסה"כ · 📦 ${cages} כלובים נדרשים למשלוח</div>
         ${isAdminRole() ? `<div class="city-totals" style="color:var(--accent-dark);font-weight:700;margin-top:4px;">💰 ${c.totalRevenue} ₪ סה"כ מכירות בעיר</div>` : ''}
+        ${isAdminRole() ? `<label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12.5px;">
+          <input type="checkbox" style="width:auto;margin-bottom:0;" ${isStrongAdRound(c.city, c.roundNumber)?'checked':''} onchange="toggleStrongAdRound('${escAttr(c.city)}', ${c.roundNumber}, this.checked)">
+          🔥 פרסום חזק השבוע (יספר בדוחות הרווחיות בנפרד מהעיר, המשלוח עצמו לא משתנה)
+        </label>` : ''}
         <div class="city-totals" style="margin-top:4px;">🚚 מסירה בשטח: ${confirmedCount} מתוך ${c.count} סומנו כנמסרו</div>
         <div class="toggle-orders" onclick="toggleCity('${toggleKey}')">${isOpen?'הסתר הזמנות ▲':'הצג הזמנות ▼'}</div>
         <div class="city-orders ${isOpen?'open':''}">${ordersHtml}</div>
@@ -3999,6 +4016,203 @@ function getAvailablePeriods(){
     years: Array.from(yearSet).sort().reverse()
   };
 }
+
+/* ---------- advertising channels (per-city comparison) + "strong ad" nationwide weeks ----------
+   Two separate concepts:
+   1. adChannels: named local channels per city (e.g. two competing מקומונים) an order can be
+      optionally tagged with (fAdChannel on the order form), so you can compare orders-count and
+      cost-per-order between them. Doesn't change which city an order's revenue is counted under.
+   2. strongAdRounds: marks a specific city+round as part of a nationwide campaign - orders in a
+      flagged round still ship to their real city (dispatch/courier view unaffected) but are counted
+      under the synthetic STRONG_AD_BUCKET instead of their real city in the city-profitability
+      reports only (computeCityFinancials / computeCityRevenueBreakdown). */
+let adChannels = [];
+async function loadAdChannels(){
+  try{
+    const res = await window.storage.get(AD_CHANNELS_KEY, true);
+    adChannels = res && res.value ? JSON.parse(res.value) : [];
+    if(!Array.isArray(adChannels)) adChannels = [];
+  }catch(e){ adChannels = []; }
+}
+async function saveAdChannels(){
+  try{ await window.storage.set(AD_CHANNELS_KEY, JSON.stringify(adChannels), true); }
+  catch(e){ showToast('שגיאה בשמירת ערוצי הפרסום'); }
+}
+let strongAdRounds = {};
+async function loadStrongAdRounds(){
+  try{
+    const res = await window.storage.get(STRONG_AD_ROUNDS_KEY, true);
+    strongAdRounds = res && res.value ? JSON.parse(res.value) : {};
+  }catch(e){ strongAdRounds = {}; }
+}
+async function saveStrongAdRounds(){
+  try{ await window.storage.set(STRONG_AD_ROUNDS_KEY, JSON.stringify(strongAdRounds), true); }
+  catch(e){ showToast('שגיאה בשמירה'); }
+}
+let strongAdCampaign = { defaultWeeklyCost:0, weekOverrides:{} };
+async function loadStrongAdCampaign(){
+  try{
+    const res = await window.storage.get(STRONG_AD_CAMPAIGN_KEY, true);
+    if(res && res.value){
+      const parsed = JSON.parse(res.value);
+      strongAdCampaign = { defaultWeeklyCost: parsed.defaultWeeklyCost||0, weekOverrides: parsed.weekOverrides||{} };
+    }
+  }catch(e){ /* use defaults */ }
+}
+async function saveStrongAdCampaign(){
+  try{ await window.storage.set(STRONG_AD_CAMPAIGN_KEY, JSON.stringify(strongAdCampaign), true); }
+  catch(e){ showToast('שגיאה בשמירה'); }
+}
+// Returns the Sunday (YYYY-MM-DD) that starts the week containing dateStr - ads in this business go out Sundays.
+function weekStartOf(dateStr){
+  const d = new Date(dateStr+'T00:00:00');
+  d.setDate(d.getDate()-d.getDay());
+  return d.toISOString().slice(0,10);
+}
+function weeklyCostFor(def, weekStart){
+  if(def && def.weekOverrides && def.weekOverrides[weekStart]!=null) return def.weekOverrides[weekStart];
+  return (def && def.defaultWeeklyCost) || 0;
+}
+// Sums a weekly-cost definition (default + per-week overrides) across every week between two dates.
+function sumWeeklyCostInRange(def, fromDate, toDate){
+  if(!fromDate || !toDate || !def) return 0;
+  let total = 0;
+  let cur = weekStartOf(fromDate);
+  const end = weekStartOf(toDate);
+  let guard = 0;
+  while(cur<=end && guard<600){
+    total += weeklyCostFor(def, cur);
+    const d = new Date(cur+'T00:00:00'); d.setDate(d.getDate()+7);
+    cur = d.toISOString().slice(0,10);
+    guard++;
+  }
+  return total;
+}
+function isStrongAdRound(city, round){ return !!strongAdRounds[city+'|'+(round||0)]; }
+// The "bucket" an order's revenue counts under in the city-profitability reports: its real city,
+// unless it belongs to a round flagged as a nationwide "strong ad" week, in which case it's grouped
+// under STRONG_AD_BUCKET instead. Dispatch/courier views never use this - they always use o.city.
+function orderCityBucket(o){ return isStrongAdRound(o.city, o.roundNumber) ? STRONG_AD_BUCKET : o.city; }
+async function toggleStrongAdRound(city, round, checked){
+  const key = city+'|'+(round||0);
+  if(checked) strongAdRounds[key] = true; else delete strongAdRounds[key];
+  await saveStrongAdRounds();
+  logAudit(checked?'סימון פרסום חזק':'ביטול פרסום חזק', cityDisplayName(city, round));
+  renderSummary();
+}
+function adChannelsForCity(city){ return adChannels.filter(c=>c.city===city); }
+async function addAdChannel(){
+  const city = document.getElementById('newAdChannelCity').value.trim();
+  const name = document.getElementById('newAdChannelName').value.trim();
+  const cost = parseFloat(document.getElementById('newAdChannelCost').value) || 0;
+  if(!city || !name){ showToast('צריך למלא עיר ושם ערוץ'); return; }
+  adChannels.push({ id: Date.now().toString(36)+Math.random().toString(36).slice(2,7), city, name, defaultWeeklyCost:cost, weekOverrides:{} });
+  await saveAdChannels();
+  logAudit('הוספת ערוץ פרסום', `${name} · ${city}`);
+  showToast('הערוץ נוסף');
+  renderAdminTabContent();
+}
+async function deleteAdChannel(id){
+  const ch = adChannels.find(c=>c.id===id);
+  if(!ch) return;
+  adChannels = adChannels.filter(c=>c.id!==id);
+  await saveAdChannels();
+  logAudit('מחיקת ערוץ פרסום', `${ch.name} · ${ch.city}`);
+  showToast('הערוץ נמחק');
+  renderAdminTabContent();
+}
+async function updateAdChannelDefaultCost(id, value){
+  const ch = adChannels.find(c=>c.id===id);
+  if(!ch) return;
+  ch.defaultWeeklyCost = parseFloat(value) || 0;
+  await saveAdChannels();
+}
+async function addAdChannelWeekOverride(id){
+  const ch = adChannels.find(c=>c.id===id);
+  if(!ch) return;
+  const dateVal = document.getElementById('adChOverrideDate_'+id).value;
+  const amount = parseFloat(document.getElementById('adChOverrideAmount_'+id).value);
+  if(!dateVal || isNaN(amount)){ showToast('יש למלא תאריך וסכום'); return; }
+  const weekStart = weekStartOf(dateVal);
+  ch.weekOverrides = ch.weekOverrides || {};
+  ch.weekOverrides[weekStart] = amount;
+  await saveAdChannels();
+  showToast('נשמר');
+  renderAdminTabContent();
+}
+async function deleteAdChannelWeekOverride(id, weekStart){
+  const ch = adChannels.find(c=>c.id===id);
+  if(!ch || !ch.weekOverrides) return;
+  delete ch.weekOverrides[weekStart];
+  await saveAdChannels();
+  renderAdminTabContent();
+}
+async function updateStrongAdDefaultCost(value){
+  strongAdCampaign.defaultWeeklyCost = parseFloat(value) || 0;
+  await saveStrongAdCampaign();
+}
+async function addStrongAdWeekOverride(){
+  const dateVal = document.getElementById('strongAdOverrideDate').value;
+  const amount = parseFloat(document.getElementById('strongAdOverrideAmount').value);
+  if(!dateVal || isNaN(amount)){ showToast('יש למלא תאריך וסכום'); return; }
+  const weekStart = weekStartOf(dateVal);
+  strongAdCampaign.weekOverrides = strongAdCampaign.weekOverrides || {};
+  strongAdCampaign.weekOverrides[weekStart] = amount;
+  await saveStrongAdCampaign();
+  showToast('נשמר');
+  renderAdminTabContent();
+}
+async function deleteStrongAdWeekOverride(weekStart){
+  if(strongAdCampaign.weekOverrides) delete strongAdCampaign.weekOverrides[weekStart];
+  await saveStrongAdCampaign();
+  renderAdminTabContent();
+}
+async function unflagStrongAdRoundByKey(key){
+  delete strongAdRounds[key];
+  await saveStrongAdRounds();
+  logAudit('ביטול פרסום חזק', key);
+  showToast('בוטל');
+  renderAdminTabContent();
+}
+function defaultAdReportFrom(){ const d=new Date(); d.setDate(1); return d.toISOString().slice(0,10); }
+let adminAdFrom = defaultAdReportFrom();
+let adminAdTo = todayStr();
+function setAdminAdRange(){
+  const f = document.getElementById('adminAdFrom').value;
+  const t = document.getElementById('adminAdTo').value;
+  if(f) adminAdFrom = f;
+  if(t) adminAdTo = t;
+  renderAdminTabContent();
+}
+function computeAdChannelReport(fromDate, toDate){
+  return adChannels.map(ch=>{
+    const count = orders.filter(o=>!o.cancelled && o.adChannelId===ch.id && o.date>=fromDate && o.date<=toDate).length;
+    const cost = sumWeeklyCostInRange(ch, fromDate, toDate);
+    return { ...ch, count, cost, costPerOrder: count>0 ? cost/count : null };
+  }).sort((a,b)=>{
+    if(a.costPerOrder==null) return 1;
+    if(b.costPerOrder==null) return -1;
+    return a.costPerOrder-b.costPerOrder;
+  });
+}
+function computeStrongAdReport(fromDate, toDate){
+  const count = orders.filter(o=>!o.cancelled && orderCityBucket(o)===STRONG_AD_BUCKET && o.date>=fromDate && o.date<=toDate).length;
+  const cost = sumWeeklyCostInRange(strongAdCampaign, fromDate, toDate);
+  return { count, cost, costPerOrder: count>0 ? cost/count : null };
+}
+function renderAdChannelSelect(){
+  const wrap = document.getElementById('fAdChannelWrap');
+  const sel = document.getElementById('fAdChannel');
+  if(!wrap || !sel) return;
+  const city = getSelectedCity();
+  const list = city ? adChannelsForCity(city) : [];
+  if(list.length===0){ wrap.style.display='none'; sel.innerHTML='<option value="">לא ידוע / אחר</option>'; return; }
+  wrap.style.display='';
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">לא ידוע / אחר</option>' + list.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
+  if(list.some(c=>c.id===cur)) sel.value = cur;
+}
+
 // Per-order marketing cost for a city: if an admin entered a total ad-spend for that city
 // (cityMarketingSpend), it's divided by the city's all-time order count for a stable rate;
 // otherwise falls back to the global avgMarketingCostPerOrder.
@@ -4017,10 +4231,11 @@ function computeCityFinancials(period){
       if(period.length===4){ if(d.slice(0,4)!==period) return; }
       else{ if(d.slice(0,7)!==period) return; }
     }
-    if(!map[o.city]){
-      map[o.city] = { city:o.city, ordersCount:0, deliveredRevenue:0, deliveredCost:0, expectedRevenue:0, expectedCost:0 };
+    const bucket = orderCityBucket(o);
+    if(!map[bucket]){
+      map[bucket] = { city:bucket, ordersCount:0, deliveredRevenue:0, deliveredCost:0, expectedRevenue:0, expectedCost:0 };
     }
-    const c = map[o.city];
+    const c = map[bucket];
     c.ordersCount += 1;
     const orderCost = computeOrderCost(o);
     if(o.delivered){
@@ -4058,7 +4273,7 @@ function computeCityFinancials(period){
 // used by the "drill into one city, see all its months" report view.
 function computeCityMonthlyBreakdown(city){
   const map = {};
-  orders.filter(o=>!o.cancelled && o.city===city && o.date).forEach(o=>{
+  orders.filter(o=>!o.cancelled && orderCityBucket(o)===city && o.date).forEach(o=>{
     const month = o.date.slice(0,7);
     if(!map[month]){
       map[month] = { month, ordersCount:0, deliveredRevenue:0, deliveredCost:0, expectedRevenue:0, expectedCost:0 };
@@ -4101,8 +4316,9 @@ function computeCityMonthlyBreakdown(city){
 function computeCityRevenueBreakdown(){
   const cityMap = {};
   orders.filter(o=>!o.cancelled).forEach(o=>{
-    if(!cityMap[o.city]) cityMap[o.city] = { city:o.city, totalRevenue:0, rounds:{} };
-    const cm = cityMap[o.city];
+    const bucket = orderCityBucket(o);
+    if(!cityMap[bucket]) cityMap[bucket] = { city:bucket, totalRevenue:0, rounds:{} };
+    const cm = cityMap[bucket];
     cm.totalRevenue += (o.totalPrice||0);
     const round = o.roundNumber||0;
     if(!cm.rounds[round]) cm.rounds[round] = { roundNumber:round, revenue:0, count:0, delivered:o.delivered, deliveryDate:o.deliveryDate };
@@ -4147,6 +4363,7 @@ function renderAdminCityReport(){
   if(!container) return;
   const periods = getAvailablePeriods();
   const cities = getKnownCities().slice().sort();
+  if(Object.keys(strongAdRounds).length>0 && !cities.includes(STRONG_AD_BUCKET)) cities.unshift(STRONG_AD_BUCKET);
 
   const modeToggleHtml = `
     <div class="cage-toggle" style="margin-bottom:10px;">
@@ -4230,11 +4447,11 @@ function renderAdminRevenueByCity(){
 /* ---------- admin tabs ---------- */
 let adminActiveTab = 'home';
 function adminTabsForRole(){
-  if(currentUser && currentUser.role==='mainadmin') return ['home','report','trend','revenue','expenses','payroll','reminders','repactivity','stock','depot','trash','users','auditlog','backup'];
+  if(currentUser && currentUser.role==='mainadmin') return ['home','report','trend','revenue','expenses','payroll','reminders','advertising','repactivity','stock','depot','trash','users','auditlog','backup'];
   if(currentUser && currentUser.role==='admin') return ['home','stock','depot','backup'];
   return [];
 }
-const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', trend:'📈 מגמה לאורך זמן', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', reminders:'🔔 תזכורות', repactivity:'📅 פעילות נציגים', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא' };
+const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', trend:'📈 מגמה לאורך זמן', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', reminders:'🔔 תזכורות', advertising:'📣 פרסום', repactivity:'📅 פעילות נציגים', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא' };
 function renderAdminTabsBar(){
   const bar = document.getElementById('adminTabsBar');
   const tabs = adminTabsForRole();
@@ -4733,6 +4950,103 @@ function renderAdminTabContent(){
           <button class="icon-btn" onclick="deleteReminder('${r.id}')">🗑️</button>
         </div>
       `).join('')}
+    `;
+  }else if(adminActiveTab==='advertising'){
+    const cityReport = computeAdChannelReport(adminAdFrom, adminAdTo);
+    const strongReport = computeStrongAdReport(adminAdFrom, adminAdTo);
+    const flaggedKeys = Object.keys(strongAdRounds);
+    const weekOverrideRow = (weekStart, amount, onDelete)=>`
+      <div class="row2" style="align-items:center;margin-bottom:4px;">
+        <div style="flex:1;font-size:12.5px;">שבוע ${formatDate(weekStart)}</div>
+        <div style="flex:1;font-weight:700;font-size:12.5px;">${amount} ₪</div>
+        <button class="icon-btn" onclick="${onDelete}">🗑️</button>
+      </div>`;
+    content.innerHTML = `
+      <div style="font-weight:800;margin-bottom:4px;">📣 פרסום - השוואת ערוצים ועלות להזמנה</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">קבעו כמה עולה כל ערוץ פרסום בשבוע (עלות רגילה + אפשרות לחריגה בשבוע ספציפי, למשל חצי עמוד), ושייכו הזמנות לערוץ שממנו הגיע הלקוח בטופס ההזמנה. הדוח למטה מחשב עלות-להזמנה = עלות הפרסום בטווח חלקי מספר ההזמנות שסומנו.</div>
+
+      <div class="row2" style="margin-bottom:16px;">
+        <div>
+          <label style="font-size:12px;margin-bottom:3px;">מתאריך</label>
+          <input type="date" id="adminAdFrom" value="${adminAdFrom}" onchange="setAdminAdRange()">
+        </div>
+        <div>
+          <label style="font-size:12px;margin-bottom:3px;">עד תאריך</label>
+          <input type="date" id="adminAdTo" value="${adminAdTo}" onchange="setAdminAdRange()">
+        </div>
+      </div>
+
+      <div style="font-weight:800;margin:10px 0 8px;">🏙️ ערוצי פרסום מקומיים (לפי עיר)</div>
+      <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:14px;">
+        <div style="font-weight:700;margin-bottom:8px;">➕ ערוץ חדש</div>
+        <div class="row2" style="margin-bottom:8px;">
+          <input id="newAdChannelCity" placeholder="עיר (למשל: בני ברק)" list="adCityDatalist">
+          <input id="newAdChannelName" placeholder="שם הערוץ (למשל: מקומון השבת)">
+        </div>
+        <datalist id="adCityDatalist">${getKnownCities().map(c=>`<option value="${escAttr(c)}">`).join('')}</datalist>
+        <div class="row2" style="margin-bottom:8px;">
+          <input id="newAdChannelCost" type="number" step="1" placeholder="עלות שבועית רגילה (₪)">
+        </div>
+        <button class="btn-primary" onclick="addAdChannel()">➕ הוסף ערוץ</button>
+      </div>
+
+      ${cityReport.length===0 ? '<div style="color:var(--muted);font-size:13px;margin-bottom:14px;">אין ערוצי פרסום מוגדרים עדיין.</div>' : cityReport.map(ch=>`
+        <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:10px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <div style="font-weight:800;">${ch.name} <span style="font-weight:400;color:var(--muted);font-size:12.5px;">(${ch.city})</span></div>
+            <button class="icon-btn" onclick="deleteAdChannel('${ch.id}')">🗑️</button>
+          </div>
+          <div class="row2" style="align-items:center;margin-bottom:8px;">
+            <label style="font-size:12px;margin-bottom:0;flex:1;">עלות שבועית רגילה:</label>
+            <input type="number" step="1" style="flex:1;" value="${ch.defaultWeeklyCost}" onchange="updateAdChannelDefaultCost('${ch.id}', this.value)">
+          </div>
+          <details style="margin-bottom:8px;">
+            <summary style="cursor:pointer;font-size:12.5px;color:var(--muted);">שבועות עם עלות שונה מהרגיל (${Object.keys(ch.weekOverrides||{}).length})</summary>
+            <div style="margin-top:8px;">
+              ${Object.entries(ch.weekOverrides||{}).sort((a,b)=>b[0].localeCompare(a[0])).map(([ws,amt])=>weekOverrideRow(ws, amt, `deleteAdChannelWeekOverride('${ch.id}','${ws}')`)).join('') || '<div style="color:var(--muted);font-size:12px;">אין חריגות.</div>'}
+              <div class="row2" style="margin-top:8px;">
+                <input type="date" id="adChOverrideDate_${ch.id}">
+                <input type="number" step="1" id="adChOverrideAmount_${ch.id}" placeholder="עלות לשבוע זה (₪)">
+              </div>
+              <button class="btn-ghost" style="margin-top:6px;" onclick="addAdChannelWeekOverride('${ch.id}')">שמור חריגה</button>
+            </div>
+          </details>
+          <div class="total-price-box" style="text-align:right;">
+            <div>📅 בטווח שנבחר: ${ch.count} הזמנות · עלות פרסום: ${ch.cost.toFixed(0)} ₪</div>
+            <div style="font-weight:800;">${ch.costPerOrder!=null ? '💰 עלות להזמנה: '+ch.costPerOrder.toFixed(1)+' ₪' : 'אין עדיין הזמנות בטווח זה'}</div>
+          </div>
+        </div>
+      `).join('')}
+
+      <div style="font-weight:800;margin:22px 0 8px;border-top:1px solid var(--border);padding-top:14px;">🔥 פרסום חזק ארצי (מסומן על סבבים ממסך הבית הראשי)</div>
+      <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:10px;">
+        <div class="row2" style="align-items:center;margin-bottom:8px;">
+          <label style="font-size:12px;margin-bottom:0;flex:1;">עלות קמפיין שבועית רגילה:</label>
+          <input type="number" step="1" style="flex:1;" value="${strongAdCampaign.defaultWeeklyCost}" onchange="updateStrongAdDefaultCost(this.value)">
+        </div>
+        <details style="margin-bottom:8px;">
+          <summary style="cursor:pointer;font-size:12.5px;color:var(--muted);">שבועות עם עלות שונה מהרגיל (${Object.keys(strongAdCampaign.weekOverrides||{}).length})</summary>
+          <div style="margin-top:8px;">
+            ${Object.entries(strongAdCampaign.weekOverrides||{}).sort((a,b)=>b[0].localeCompare(a[0])).map(([ws,amt])=>weekOverrideRow(ws, amt, `deleteStrongAdWeekOverride('${ws}')`)).join('') || '<div style="color:var(--muted);font-size:12px;">אין חריגות.</div>'}
+            <div class="row2" style="margin-top:8px;">
+              <input type="date" id="strongAdOverrideDate">
+              <input type="number" step="1" id="strongAdOverrideAmount" placeholder="עלות לשבוע זה (₪)">
+            </div>
+            <button class="btn-ghost" style="margin-top:6px;" onclick="addStrongAdWeekOverride()">שמור חריגה</button>
+          </div>
+        </details>
+        <div class="total-price-box" style="text-align:right;">
+          <div>📅 בטווח שנבחר: ${strongReport.count} הזמנות · עלות פרסום: ${strongReport.cost.toFixed(0)} ₪</div>
+          <div style="font-weight:800;">${strongReport.costPerOrder!=null ? '💰 עלות להזמנה: '+strongReport.costPerOrder.toFixed(1)+' ₪' : 'אין עדיין הזמנות בטווח זה'}</div>
+        </div>
+      </div>
+      ${flaggedKeys.length>0 ? `
+        <div style="font-size:12.5px;color:var(--muted);margin-bottom:4px;">סבבים המסומנים כרגע כ"פרסום חזק":</div>
+        ${flaggedKeys.map(k=>{
+          const [city, round] = k.split('|');
+          return `<div class="row2" style="align-items:center;margin-bottom:4px;"><div style="flex:1;font-size:12.5px;">${cityDisplayName(city, parseInt(round,10))}</div><button class="icon-btn" onclick="unflagStrongAdRoundByKey('${k}')">🗑️</button></div>`;
+        }).join('')}
+      ` : ''}
     `;
   }else if(adminActiveTab==='repactivity'){
     const scopeToggleHtml = `
@@ -5737,6 +6051,9 @@ async function initApp(){
   await loadExpensesData();
   await loadAuditLog();
   await loadCustomReminders();
+  await loadAdChannels();
+  await loadStrongAdRounds();
+  await loadStrongAdCampaign();
   renderSummary();
   renderCuFeatureToggleLabel();
   renderInventoryAlertBanner();
