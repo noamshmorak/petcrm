@@ -201,6 +201,7 @@
     <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
       <span id="cuFeatureToggle" onclick="toggleCustomerUpdateFeature()" style="font-size:12.5px;color:var(--muted);cursor:pointer;user-select:none;"></span>
     </div>
+    <div id="strongAdActivateBar"></div>
     <div class="route-list" id="cityList"></div>
   </div>
 
@@ -732,6 +733,7 @@ const CUSTOM_REMINDERS_KEY = 'pet-crm-custom-reminders'; // array of {id, enable
 const AD_CHANNELS_KEY = 'pet-crm-ad-channels'; // array of {id, city, name, defaultWeeklyCost, weekOverrides:{weekStart:amount}}
 const STRONG_AD_ROUNDS_KEY = 'pet-crm-strong-ad-rounds'; // {'city|round': true} - rounds opened during a nationwide "strong ad" week
 const STRONG_AD_CAMPAIGN_KEY = 'pet-crm-strong-ad-campaign'; // {defaultWeeklyCost, weekOverrides:{weekStart:amount}} - shared cost of the nationwide campaign
+const STRONG_AD_ROSTER_KEY = 'pet-crm-strong-ad-roster'; // array of city names that participate in the nationwide campaign whenever it's "activated"
 const STRONG_AD_BUCKET = '🔥 פרסום חזק';
 let depot = { city:'', street:'' };
 async function loadDepot(){
@@ -2839,6 +2841,7 @@ function renderSummary(){
   document.getElementById('statCities').textContent = list.length;
   document.getElementById('statOrders').textContent = activeOrders.length;
   document.getElementById('statUnits').textContent = activeOrders.reduce((s,o)=>s+(o.animals||[]).reduce((s2,a)=>s2+a.quantity,0),0);
+  renderStrongAdActivateBar();
 
   const container = document.getElementById('cityList');
   if(filtered.length===0){
@@ -3861,26 +3864,28 @@ function computeGeneralFinancials(scope){
   const validManualExpenses = manualExpenses.filter(e=>inScope(e.date));
   const manualExpenseTotal = validManualExpenses.reduce((s,e)=>s+(e.amount||0),0);
 
-  let actual = { revenue:0, cost:0, count:0 };
-  let projected = { revenue:0, cost:0, count:0 };
+  let actual = { revenue:0, cost:0, count:0, marketing:0 };
+  let projected = { revenue:0, cost:0, count:0, marketing:0 };
   validOrders.forEach(o=>{
     const c = computeOrderCost(o);
     const bucket = o.delivered ? actual : projected;
     bucket.revenue += (o.totalPrice||0);
     bucket.cost += c;
     bucket.count += 1;
+    bucket.marketing += computeOrderMarketingCost(o);
   });
   // spot/quick sales leave stock and get paid immediately - they're always "actual", never projected.
+  // (not tied to a city/channel, so they always fall back to the general per-order estimate.)
   validSpotSales.forEach(s=>{
     const c = getSkuUnitCost(s.product);
     actual.revenue += (s.totalPrice||0);
     actual.cost += (c!=null ? c*s.quantity : 0);
     actual.count += 1;
+    actual.marketing += avgMarketingCostPerOrder;
   });
   actual.otherExpenses = manualExpenseTotal;
   projected.otherExpenses = 0;
   [actual, projected].forEach(b=>{
-    b.marketing = b.count * avgMarketingCostPerOrder;
     b.profit = b.revenue - b.cost - b.marketing - (b.otherExpenses||0);
   });
   return { actual, projected };
@@ -3917,6 +3922,7 @@ function computeMonthlyTrend(fromDate, toDate){
     const m = ensureMonth(key);
     m.revenue += (o.totalPrice||0);
     m.cost += computeOrderCost(o);
+    m.marketing += computeOrderMarketingCost(o);
     m.orderCount += 1;
   });
   spotSales.forEach(s=>{
@@ -3928,6 +3934,7 @@ function computeMonthlyTrend(fromDate, toDate){
     const c = getSkuUnitCost(s.product);
     m.revenue += (s.totalPrice||0);
     m.cost += (c!=null ? c*s.quantity : 0);
+    m.marketing += avgMarketingCostPerOrder;
     m.orderCount += 1;
   });
   manualExpenses.forEach(e=>{
@@ -3940,7 +3947,6 @@ function computeMonthlyTrend(fromDate, toDate){
   });
   const list = Object.values(months).sort((a,b)=>a.key.localeCompare(b.key));
   list.forEach(m=>{
-    m.marketing = m.orderCount * avgMarketingCostPerOrder;
     m.profit = m.revenue - m.cost - m.marketing - m.manualExpenses;
   });
   return list;
@@ -4100,17 +4106,101 @@ async function toggleStrongAdRound(city, round, checked){
   logAudit(checked?'סימון פרסום חזק':'ביטול פרסום חזק', cityDisplayName(city, round));
   renderSummary();
 }
+// The roster of cities in the nationwide campaign is defined once (editable), so activating a new
+// week doesn't require re-picking cities - see activateStrongAdThisWeek().
+let strongAdCityRoster = [];
+async function loadStrongAdRoster(){
+  try{
+    const res = await window.storage.get(STRONG_AD_ROSTER_KEY, true);
+    strongAdCityRoster = res && res.value ? JSON.parse(res.value) : [];
+    if(!Array.isArray(strongAdCityRoster)) strongAdCityRoster = [];
+  }catch(e){ strongAdCityRoster = []; }
+}
+async function saveStrongAdRoster(){
+  try{ await window.storage.set(STRONG_AD_ROSTER_KEY, JSON.stringify(strongAdCityRoster), true); }
+  catch(e){ showToast('שגיאה בשמירה'); }
+}
+async function addStrongAdRosterCity(){
+  const input = document.getElementById('newStrongAdRosterCity');
+  const city = input.value.trim();
+  if(!city){ showToast('יש להזין שם עיר'); return; }
+  if(strongAdCityRoster.includes(city)){ showToast('העיר כבר ברשימה'); return; }
+  strongAdCityRoster.push(city);
+  await saveStrongAdRoster();
+  logAudit('הוספת עיר לרשימת פרסום חזק', city);
+  input.value = '';
+  renderAdminTabContent();
+}
+async function removeStrongAdRosterCity(city){
+  strongAdCityRoster = strongAdCityRoster.filter(c=>c!==city);
+  await saveStrongAdRoster();
+  logAudit('הסרת עיר מרשימת פרסום חזק', city);
+  renderAdminTabContent();
+}
+// One click, available to any admin: flags the current round of every roster city as this week's
+// strong-ad round, instead of checking each city's card individually. Existing flags stay editable
+// per-city on the summary screen if a specific city needs to be corrected afterward.
+async function activateStrongAdThisWeek(){
+  if(strongAdCityRoster.length===0){ showToast('קודם צריך להגדיר את רשימת הערים בטאב "פרסום" (מנהל ראשי)'); return; }
+  strongAdCityRoster.forEach(city=>{
+    const round = computeCityRoundNumber(city);
+    strongAdRounds[city+'|'+round] = true;
+  });
+  await saveStrongAdRounds();
+  logAudit('הפעלת פרסום חזק לשבוע', strongAdCityRoster.join(', '));
+  showToast(`הופעל עבור ${strongAdCityRoster.length} ערים`);
+  renderAll();
+}
+// Quick-access banner on the main dispatch screen (available to any admin, not just mainadmin) -
+// lets a regular admin activate the week's nationwide campaign without opening the admin panel.
+function renderStrongAdActivateBar(){
+  const el = document.getElementById('strongAdActivateBar');
+  if(!el) return;
+  if(!isAdminRole() || strongAdCityRoster.length===0){ el.innerHTML=''; return; }
+  el.innerHTML = `<div class="alert-banner" style="cursor:pointer;margin-bottom:10px;" onclick="activateStrongAdThisWeek()"><div class="alert-title">🔥 הפעלת פרסום חזק לשבוע הנוכחי</div><div>לחצ/י כדי לסמן את ${strongAdCityRoster.length} ערי הקמפיין (${strongAdCityRoster.join(', ')}) בבת אחת</div></div>`;
+}
 function adChannelsForCity(city){ return adChannels.filter(c=>c.city===city); }
 async function addAdChannel(){
   const city = document.getElementById('newAdChannelCity').value.trim();
   const name = document.getElementById('newAdChannelName').value.trim();
   const cost = parseFloat(document.getElementById('newAdChannelCost').value) || 0;
   if(!city || !name){ showToast('צריך למלא עיר ושם ערוץ'); return; }
-  adChannels.push({ id: Date.now().toString(36)+Math.random().toString(36).slice(2,7), city, name, defaultWeeklyCost:cost, weekOverrides:{} });
+  // first channel in a city is automatically its default (also becomes moot once it's the only
+  // channel anyway - resolveEffectiveChannel auto-picks the sole channel regardless of this flag).
+  const isFirstForCity = adChannelsForCity(city).length===0;
+  adChannels.push({ id: Date.now().toString(36)+Math.random().toString(36).slice(2,7), city, name, defaultWeeklyCost:cost, weekOverrides:{}, isDefault:isFirstForCity });
   await saveAdChannels();
   logAudit('הוספת ערוץ פרסום', `${name} · ${city}`);
   showToast('הערוץ נוסף');
   renderAdminTabContent();
+}
+async function setAdChannelDefault(id, checked){
+  const ch = adChannels.find(c=>c.id===id);
+  if(!ch) return;
+  if(checked){
+    adChannels.forEach(c=>{ if(c.city===ch.city) c.isDefault=false; });
+    ch.isDefault = true;
+  }else{
+    ch.isDefault = false;
+  }
+  await saveAdChannels();
+  renderAdminTabContent();
+}
+// Which channel an order's marketing cost should be attributed to: explicitly picked one, else -
+// if the city has exactly one channel, that one (no ambiguity, no need to ask); else the channel
+// marked as default for that city, if any; else none (falls back to the general estimate).
+function resolveEffectiveChannel(o){
+  if(o.adChannelId){
+    const ch = adChannels.find(c=>c.id===o.adChannelId);
+    if(ch) return ch;
+  }
+  const cityChannels = adChannelsForCity(o.city);
+  if(cityChannels.length===1) return cityChannels[0];
+  if(cityChannels.length>1){
+    const def = cityChannels.find(c=>c.isDefault);
+    if(def) return def;
+  }
+  return null;
 }
 async function deleteAdChannel(id){
   const ch = adChannels.find(c=>c.id===id);
@@ -4186,7 +4276,9 @@ function setAdminAdRange(){
 }
 function computeAdChannelReport(fromDate, toDate){
   return adChannels.map(ch=>{
-    const count = orders.filter(o=>!o.cancelled && o.adChannelId===ch.id && o.date>=fromDate && o.date<=toDate).length;
+    // counts orders explicitly tagged with this channel, PLUS ones auto-resolved to it (sole
+    // channel in the city, or marked as its default) - matches how the profit engine attributes cost.
+    const count = orders.filter(o=>!o.cancelled && o.date>=fromDate && o.date<=toDate && resolveEffectiveChannel(o)?.id===ch.id).length;
     const cost = sumWeeklyCostInRange(ch, fromDate, toDate);
     return { ...ch, count, cost, costPerOrder: count>0 ? cost/count : null };
   }).sort((a,b)=>{
@@ -4223,6 +4315,34 @@ function getCityMarketingRate(city){
   if(totalCityOrders===0) return avgMarketingCostPerOrder;
   return totalSpend / totalCityOrders;
 }
+// The actual marketing cost of ONE order, used everywhere profit is computed. Priority:
+// 1. Strong-ad week: this order's share of that week's nationwide campaign cost (split across
+//    every strong-ad order that same week, across every roster city - it's one shared campaign).
+// 2. Local ad channel (explicit pick, or auto-resolved - see resolveEffectiveChannel): this
+//    order's share of that channel's cost for its week (split across that channel's own orders).
+// 3. Fallback: the old city-level estimate (cityMarketingSpend or the general average).
+function computeOrderMarketingCost(o){
+  if(!o.date) return getCityMarketingRate(o.city);
+  const week = weekStartOf(o.date);
+  if(isStrongAdRound(o.city, o.roundNumber)){
+    const weekCost = weeklyCostFor(strongAdCampaign, week);
+    const ordersThisWeek = orders.filter(x=>!x.cancelled && x.date && isStrongAdRound(x.city, x.roundNumber) && weekStartOf(x.date)===week).length;
+    return ordersThisWeek>0 ? weekCost/ordersThisWeek : 0;
+  }
+  const channel = resolveEffectiveChannel(o);
+  if(channel){
+    const weekCost = weeklyCostFor(channel, week);
+    const ordersThisWeek = orders.filter(x=>!x.cancelled && x.date && weekStartOf(x.date)===week && resolveEffectiveChannel(x)?.id===channel.id).length;
+    return ordersThisWeek>0 ? weekCost/ordersThisWeek : 0;
+  }
+  return getCityMarketingRate(o.city);
+}
+function marketingSourceLabel(cityBucket){
+  if(cityBucket===STRONG_AD_BUCKET) return 'לפי עלות קמפיין הפרסום החזק שהוגדרה';
+  if(adChannelsForCity(cityBucket).length>0) return 'לפי ערוצי הפרסום שהוגדרו לעיר זו';
+  if(cityMarketingSpend[cityBucket]!=null && cityMarketingSpend[cityBucket]!=='') return 'לפי הוצאה שהוזנה לעיר זו';
+  return 'לפי ההערכה הכללית';
+}
 function computeCityFinancials(period){
   const map = {};
   orders.filter(o=>!o.cancelled).forEach(o=>{
@@ -4233,10 +4353,11 @@ function computeCityFinancials(period){
     }
     const bucket = orderCityBucket(o);
     if(!map[bucket]){
-      map[bucket] = { city:bucket, ordersCount:0, deliveredRevenue:0, deliveredCost:0, expectedRevenue:0, expectedCost:0 };
+      map[bucket] = { city:bucket, ordersCount:0, deliveredRevenue:0, deliveredCost:0, expectedRevenue:0, expectedCost:0, marketing:0 };
     }
     const c = map[bucket];
     c.ordersCount += 1;
+    c.marketing += computeOrderMarketingCost(o);
     const orderCost = computeOrderCost(o);
     if(o.delivered){
       c.deliveredRevenue += (o.totalPrice||0);
@@ -4247,8 +4368,7 @@ function computeCityFinancials(period){
     }
   });
   const list = Object.values(map).map(c=>{
-    const marketingRate = getCityMarketingRate(c.city);
-    const marketing = marketingRate * c.ordersCount;
+    const marketing = c.marketing;
     const totalRevenue = c.deliveredRevenue + c.expectedRevenue;
     const merchCost = c.deliveredCost + c.expectedCost;
     const totalCost = merchCost + marketing;
@@ -4276,10 +4396,11 @@ function computeCityMonthlyBreakdown(city){
   orders.filter(o=>!o.cancelled && orderCityBucket(o)===city && o.date).forEach(o=>{
     const month = o.date.slice(0,7);
     if(!map[month]){
-      map[month] = { month, ordersCount:0, deliveredRevenue:0, deliveredCost:0, expectedRevenue:0, expectedCost:0 };
+      map[month] = { month, ordersCount:0, deliveredRevenue:0, deliveredCost:0, expectedRevenue:0, expectedCost:0, marketing:0 };
     }
     const m = map[month];
     m.ordersCount += 1;
+    m.marketing += computeOrderMarketingCost(o);
     const orderCost = computeOrderCost(o);
     if(o.delivered){
       m.deliveredRevenue += (o.totalPrice||0);
@@ -4289,9 +4410,8 @@ function computeCityMonthlyBreakdown(city){
       m.expectedCost += orderCost;
     }
   });
-  const marketingRate = getCityMarketingRate(city);
   const list = Object.values(map).map(m=>{
-    const marketing = marketingRate * m.ordersCount;
+    const marketing = m.marketing;
     const totalRevenue = m.deliveredRevenue + m.expectedRevenue;
     const merchCost = m.deliveredCost + m.expectedCost;
     const totalCost = merchCost + marketing;
@@ -4352,7 +4472,7 @@ function cityFinCardHtml(c, titleHtml){
       <div class="city-totals">${c.ordersCount} הזמנות</div>
       <div class="city-totals">✅ נמסר בפועל: ${c.deliveredRevenue.toFixed(1)} ₪ הכנסה · עלות ${c.deliveredCost.toFixed(1)} ₪ · רווח ${c.deliveredProfit.toFixed(1)} ₪</div>
       <div class="city-totals">⏳ צפוי (טרם נמסר): ${c.expectedRevenue.toFixed(1)} ₪ הכנסה · עלות ${c.expectedCost.toFixed(1)} ₪</div>
-      <div class="city-totals">📢 עלות פרסום משוערת: ${c.marketing.toFixed(1)} ₪${cityMarketingSpend[c.city]!=null && cityMarketingSpend[c.city]!=='' ? ' (לפי הוצאה שהוזנה לעיר זו)' : ' (לפי ההערכה הכללית)'}</div>
+      <div class="city-totals">📢 עלות פרסום: ${c.marketing.toFixed(1)} ₪ (${marketingSourceLabel(c.city)})</div>
       <div class="city-totals" style="font-weight:800;color:${c.totalProfit>=0?'var(--route)':'var(--danger)'};margin-top:4px;">🧾 רווח כולל (בפועל+צפוי, אחרי עלות סחורה ופרסום): ${c.totalProfit.toFixed(1)} ₪ · הכנסה כוללת: ${c.totalRevenue.toFixed(1)} ₪${pctHtml}</div>
       ${warningHtml}
     </div>
@@ -5000,6 +5120,11 @@ function renderAdminTabContent(){
             <label style="font-size:12px;margin-bottom:0;flex:1;">עלות שבועית רגילה:</label>
             <input type="number" step="1" style="flex:1;" value="${ch.defaultWeeklyCost}" onchange="updateAdChannelDefaultCost('${ch.id}', this.value)">
           </div>
+          ${adChannelsForCity(ch.city).length>1 ? `
+          <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:12.5px;">
+            <input type="checkbox" style="width:auto;margin-bottom:0;" ${ch.isDefault?'checked':''} onchange="setAdChannelDefault('${ch.id}', this.checked)">
+            ערוץ ברירת מחדל לעיר זו (הזמנה בלי בחירה מפורשת תיוחס אליו)
+          </label>` : `<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">הערוץ היחיד בעיר זו - כל הזמנה בעיר תיוחס אליו אוטומטית, גם בלי לבחור.</div>`}
           <details style="margin-bottom:8px;">
             <summary style="cursor:pointer;font-size:12.5px;color:var(--muted);">שבועות עם עלות שונה מהרגיל (${Object.keys(ch.weekOverrides||{}).length})</summary>
             <div style="margin-top:8px;">
@@ -5018,7 +5143,19 @@ function renderAdminTabContent(){
         </div>
       `).join('')}
 
-      <div style="font-weight:800;margin:22px 0 8px;border-top:1px solid var(--border);padding-top:14px;">🔥 פרסום חזק ארצי (מסומן על סבבים ממסך הבית הראשי)</div>
+      <div style="font-weight:800;margin:22px 0 8px;border-top:1px solid var(--border);padding-top:14px;">🔥 פרסום חזק ארצי</div>
+      <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:10px;">
+        <div style="font-weight:700;margin-bottom:6px;">🏙️ רשימת הערים בקמפיין (מוגדרת פעם אחת, אפשר לערוך בכל זמן)</div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">אלו הערים שכלולות בפרסום הארצי בכל שבוע שהוא רץ. לא צריך לבחור אותן מחדש כל שבוע - רק ללחוץ "הפעל השבוע" למטה.</div>
+        ${strongAdCityRoster.length===0 ? '<div style="color:var(--muted);font-size:13px;margin-bottom:8px;">אין ערים ברשימה עדיין.</div>' : strongAdCityRoster.map(city=>`
+          <div class="row2" style="align-items:center;margin-bottom:4px;"><div style="flex:1;font-size:13px;">${city}</div><button class="icon-btn" onclick="removeStrongAdRosterCity('${escAttr(city)}')">🗑️</button></div>
+        `).join('')}
+        <div class="row2" style="margin-top:8px;">
+          <input id="newStrongAdRosterCity" placeholder="הוספת עיר" list="adCityDatalist">
+          <button class="btn-ghost" onclick="addStrongAdRosterCity()">➕ הוסף לרשימה</button>
+        </div>
+        <button class="btn-primary" style="margin-top:10px;width:100%;" onclick="activateStrongAdThisWeek()">🔥 הפעל פרסום חזק לשבוע הנוכחי (לכל ערי הרשימה)</button>
+      </div>
       <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:10px;">
         <div class="row2" style="align-items:center;margin-bottom:8px;">
           <label style="font-size:12px;margin-bottom:0;flex:1;">עלות קמפיין שבועית רגילה:</label>
@@ -6054,6 +6191,7 @@ async function initApp(){
   await loadAdChannels();
   await loadStrongAdRounds();
   await loadStrongAdCampaign();
+  await loadStrongAdRoster();
   renderSummary();
   renderCuFeatureToggleLabel();
   renderInventoryAlertBanner();
