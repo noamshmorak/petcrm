@@ -282,6 +282,10 @@
         <input type="checkbox" id="fYad2" style="width:auto;margin-bottom:0;">
         <label style="margin-bottom:0;">הלקוח הגיע מיד 2</label>
       </div>
+      <div class="field" style="display:flex;align-items:center;gap:6px;">
+        <input type="checkbox" id="fCancelFeeNotice" style="width:auto;margin-bottom:0;">
+        <label style="margin-bottom:0;">הודעתי ללקוח ששינוי או ביטול ההזמנה כרוך בעלות של 50 ₪</label>
+      </div>
       <div class="field" id="fAdChannelWrap" style="display:none;">
         <label>מאיפה הלקוח הגיע? (אופציונלי - עוזר להשוות ערוצי פרסום)</label>
         <select id="fAdChannel"><option value="">לא ידוע / אחר</option></select>
@@ -442,6 +446,44 @@
     <div class="modal-actions">
       <button class="btn-primary" style="flex:1;" onclick="confirmSendRoundSms()">שלח SMS</button>
       <button class="btn-ghost" style="flex:1;" onclick="closeSmsModal()">ביטול</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="markBlockedModal">
+  <div class="modal-box" style="text-align:right;max-width:420px;">
+    <button class="modal-close-x" onclick="closeMarkBlockedModal()">✕</button>
+    <p style="text-align:center;font-weight:800;">🚫 סימון לקוח כבעייתי</p>
+    <div class="row2">
+      <div class="field">
+        <label>שם הלקוח</label>
+        <input id="mbName" type="text">
+      </div>
+      <div class="field">
+        <label>טלפון</label>
+        <input id="mbPhone" type="text">
+      </div>
+    </div>
+    <div class="field">
+      <label>תיאור המקרה</label>
+      <textarea id="mbReason" rows="4" placeholder="מה קרה עם הלקוח הזה?"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-primary" style="flex:1;" onclick="submitMarkBlocked()">סמן כבעייתי</button>
+      <button class="btn-ghost" style="flex:1;" onclick="closeMarkBlockedModal()">ביטול</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="blockedCustomerModal">
+  <div class="modal-box" style="text-align:right;max-width:420px;">
+    <button class="modal-close-x" onclick="closeBlockedCustomerModal()">✕</button>
+    <p style="text-align:center;font-weight:800;color:var(--danger);">🚫 לקוח מסומן כבעייתי</p>
+    <div id="blockedCustomerSummary" style="background:#FBEAEA;border-radius:10px;padding:10px 12px;margin-bottom:12px;"></div>
+    <div id="blockedCustomerRepNote" style="display:none;font-size:13px;color:var(--muted);margin-bottom:12px;">לא ניתן לפתוח הזמנה ללקוח זה. פנה/י למנהל אם לדעתך יש טעות.</div>
+    <div class="modal-actions">
+      <button id="blockedCustomerProceedBtn" class="btn-primary" style="flex:1;" onclick="proceedDespiteBlock()">המשך בכל זאת</button>
+      <button class="btn-ghost" style="flex:1;" onclick="closeBlockedCustomerModal()">ביטול</button>
     </div>
   </div>
 </div>
@@ -2555,6 +2597,7 @@ function migrateOrder(o){
   if(typeof o.hasSms !== 'boolean') o.hasSms = true; // assume SMS-capable unless a rep explicitly marked otherwise
   o.smsSentAt = o.smsSentAt || null;
   o.customerUpdateMethod = o.customerUpdateMethod || null;
+  if(typeof o.cancelFeeNoticeGiven !== 'boolean') o.cancelFeeNoticeGiven = false; // unknown for orders created before this field existed
   o.customer = o.customer || '';
   o.address = o.address || '';
   if(typeof o.lat !== 'number') o.lat = null;
@@ -2654,6 +2697,7 @@ function submitOrder(){
   const note = document.getElementById('fNote').value.trim();
   const fromYad2 = document.getElementById('fYad2').checked;
   const hasSms = document.getElementById('fHasSms').checked;
+  const cancelFeeNoticeGiven = document.getElementById('fCancelFeeNotice').checked;
   const adChannelId = document.getElementById('fAdChannel').value || '';
   const animals = collectAnimalRows();
   const foodItems = collectFoodRows();
@@ -2666,6 +2710,7 @@ function submitOrder(){
   if(!city){ showToast('נא לבחור או להזין עיר'); return; }
   if(!customer){ showToast('שם לקוח הוא שדה חובה'); return; }
   if(!phone1raw){ showToast('טלפון 1 הוא שדה חובה'); return; }
+  if(!cancelFeeNoticeGiven){ showToast('יש לאשר שהודעת ללקוח על עלות שינוי/ביטול ההזמנה'); return; }
   // addresses no longer need to be picked from the government street registry - free text is fine
   // (the registry lookup is still offered as a convenience autocomplete, just not enforced).
 
@@ -2687,7 +2732,7 @@ function submitOrder(){
       o.city = city; o.customer = customer; o.address = address;
       o.phone1 = phone1; o.phone2 = phone2; o.animals = animals; o.foodItems = foodItems; o.date = date;
       o.pairFlags = pairFlags; o.cageSharing = cageSharing; o.totalPrice = totalPrice; o.discount = discount; o.discountApproved = discount>0 ? discountApproved : false;
-      o.note = note; o.fromYad2 = fromYad2; o.adChannelId = adChannelId; o.hasSms = hasSms;
+      o.note = note; o.fromYad2 = fromYad2; o.adChannelId = adChannelId; o.hasSms = hasSms; o.cancelFeeNoticeGiven = cancelFeeNoticeGiven;
       logAudit('ערוך הזמנה', `${o.customer||'לקוח'} · ${cityDisplayName(o.city, o.roundNumber||0)}${discount>0?' · הנחה '+discount+'₪':''}`);
     }
     editingId = null;
@@ -2698,7 +2743,15 @@ function submitOrder(){
     return;
   }
 
-  const orderData = {city, customer, address, phone1, phone2, animals, foodItems, date, pairFlags, cageSharing, totalPrice, discount, discountApproved: discount>0 ? discountApproved : false, note, fromYad2, adChannelId, hasSms};
+  const orderData = {city, customer, address, phone1, phone2, animals, foodItems, date, pairFlags, cageSharing, totalPrice, discount, discountApproved: discount>0 ? discountApproved : false, note, fromYad2, adChannelId, hasSms, cancelFeeNoticeGiven};
+  const blockMatch = findBlockedCustomerMatch(customer, phone1);
+  if(blockMatch){
+    openBlockedCustomerModal(blockMatch, ()=>proceedWithNewOrder(orderData, city));
+    return;
+  }
+  proceedWithNewOrder(orderData, city);
+}
+function proceedWithNewOrder(orderData, city){
   const activeRounds = computeCityActiveRounds(city);
   if(activeRounds.length > 0){
     askRoundChoice(city, activeRounds, (roundNumber)=>{
@@ -2735,6 +2788,7 @@ function finishSubmitOrder(){
   document.getElementById('fNote').value='';
   document.getElementById('fYad2').checked=false;
   document.getElementById('fHasSms').checked=true;
+  document.getElementById('fCancelFeeNotice').checked=false;
   document.getElementById('fAdChannel').value='';
   document.getElementById('fDiscount').value='';
   document.getElementById('fDiscountApproved').checked=false;
@@ -2766,6 +2820,7 @@ function cancelEdit(){
   document.getElementById('fNote').value='';
   document.getElementById('fYad2').checked=false;
   document.getElementById('fHasSms').checked=true;
+  document.getElementById('fCancelFeeNotice').checked=false;
   resetAnimalRows();
   resetFoodRows();
   populateCitySelect();
@@ -2786,6 +2841,7 @@ function startEdit(id){
   document.getElementById('fNote').value = o.note||'';
   document.getElementById('fYad2').checked = !!o.fromYad2;
   document.getElementById('fHasSms').checked = o.hasSms !== false;
+  document.getElementById('fCancelFeeNotice').checked = !!o.cancelFeeNoticeGiven;
   document.getElementById('fAdChannel').value = o.adChannelId || '';
   document.getElementById('animalRows').innerHTML='';
   animalRowCounter = 0;
@@ -2951,6 +3007,7 @@ function renderSummary(){
           <button class="icon-btn" onclick="startEdit('${o.id}')">✏️</button>
           <button class="icon-btn" onclick="postponeOrderToNextRound('${o.id}')" title="דחה לסבב הבא">⏭️</button>
           ${(o.hasSms && o.phone1) ? `<button class="icon-btn" onclick="openSingleSmsModal('${o.id}')" title="שלח SMS ללקוח">📱</button>` : ''}
+          ${isAdminRole() ? `<button class="icon-btn" onclick="openMarkBlockedModal('${o.id}')" title="סמן לקוח כבעייתי">⛔</button>` : ''}
           <button class="icon-btn" onclick="toggleCancel('${o.id}')">🚫</button>
           <button class="icon-btn" onclick="deleteOrder('${o.id}')">🗑️</button>
         </div>
@@ -3699,6 +3756,7 @@ function renderHistory(){
         <div class="city-totals">${o.fromYad2?'🏷️ יד2 · ':''}${cityDisplayName(o.city, o.roundNumber||0)} · הוזמן ב-${formatDate(o.date)}</div>
         <div class="order-sub" style="margin-top:6px;">${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.address?' · '+o.address:''}${o.note?' · 📝 '+o.note:''}</div>
         ${managerInquiryHtml(o)}
+        ${isAdminRole() ? `<button class="icon-btn" onclick="openMarkBlockedModal('${o.id}')" title="סמן לקוח כבעייתי">⛔</button>` : ''}
       </div>
     `).join('');
     return;
@@ -3717,6 +3775,7 @@ function renderHistory(){
           <div class="order-main">${o.fromYad2?'🏷️ יד2 · ':''}${o.customer} — ${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}</div>
           <div class="order-sub">הוזמן ב-${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+o.note:''}${o.discount>0?' · 🏷️ ניתנה הנחה של '+o.discount+'₪':''}</div>
           ${managerInquiryHtml(o)}
+          ${isAdminRole() ? `<button class="icon-btn" onclick="openMarkBlockedModal('${o.id}')" title="סמן לקוח כבעייתי">⛔</button>` : ''}
         </div>
       </div>
     `).join('');
@@ -4332,6 +4391,102 @@ async function saveStrongAdRoster(){
   try{ await window.storage.set(STRONG_AD_ROSTER_KEY, JSON.stringify(strongAdCityRoster), true); }
   catch(e){ showToast('שגיאה בשמירה'); }
 }
+
+/* ---------- problematic ("blocked") customers ---------- */
+// A customer matched here (by exact phone or exact name, after normalization) cannot have a new
+// order opened for them by a rep at all - only an admin/mainadmin can see the past-incident
+// summary and choose to proceed anyway. Editing an already-existing order is never blocked.
+const BLOCKED_CUSTOMERS_KEY = 'pet-crm-blocked-customers';
+let blockedCustomers = [];
+async function loadBlockedCustomers(){
+  try{
+    const res = await window.storage.get(BLOCKED_CUSTOMERS_KEY, true);
+    blockedCustomers = res && res.value ? JSON.parse(res.value) : [];
+    if(!Array.isArray(blockedCustomers)) blockedCustomers = [];
+  }catch(e){ blockedCustomers = []; }
+}
+async function saveBlockedCustomers(){
+  try{ await window.storage.set(BLOCKED_CUSTOMERS_KEY, JSON.stringify(blockedCustomers), true); }
+  catch(e){ showToast('שגיאה בשמירת רשימת לקוחות בעייתיים'); }
+}
+function normalizePhoneForMatch(p){ return (p||'').replace(/[^0-9]/g,''); }
+function normalizeNameForMatch(n){ return (n||'').trim().replace(/\s+/g,' '); }
+function findBlockedCustomerMatch(name, phone){
+  const nName = normalizeNameForMatch(name);
+  const nPhone = normalizePhoneForMatch(phone);
+  return blockedCustomers.find(b=>{
+    const bPhone = normalizePhoneForMatch(b.phone);
+    const bName = normalizeNameForMatch(b.name);
+    return (bPhone && nPhone && bPhone===nPhone) || (bName && nName && bName===nName);
+  }) || null;
+}
+function removeBlockedCustomer(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול להסיר סימון'); return; }
+  const b = blockedCustomers.find(x=>x.id===id);
+  showConfirm(`להסיר את הסימון "בעייתי" מ-${b?b.name||b.phone:'הלקוח'}?`, async ()=>{
+    blockedCustomers = blockedCustomers.filter(x=>x.id!==id);
+    await saveBlockedCustomers();
+    logAudit('הסרת סימון לקוח בעייתי', b?(b.name||b.phone||''):'');
+    showToast('הסימון הוסר');
+    renderAdminTabContent();
+  });
+}
+let mbOrderTarget = null;
+function openMarkBlockedModal(orderId){
+  if(!isAdminRole()){ showToast('רק מנהל יכול לסמן לקוח כבעייתי'); return; }
+  const o = orders.find(x=>x.id===orderId);
+  mbOrderTarget = orderId;
+  document.getElementById('mbName').value = o ? (o.customer||'') : '';
+  document.getElementById('mbPhone').value = o ? (o.phone1||'') : '';
+  document.getElementById('mbReason').value = '';
+  document.getElementById('markBlockedModal').classList.add('open');
+}
+function closeMarkBlockedModal(){
+  document.getElementById('markBlockedModal').classList.remove('open');
+  mbOrderTarget = null;
+}
+async function submitMarkBlocked(){
+  const name = document.getElementById('mbName').value.trim();
+  const phone = document.getElementById('mbPhone').value.trim();
+  const reason = document.getElementById('mbReason').value.trim();
+  if(!name && !phone){ showToast('יש למלא שם או טלפון'); return; }
+  if(!reason){ showToast('יש לתאר את המקרה'); return; }
+  blockedCustomers.push({
+    id: Date.now().toString(36)+Math.random().toString(36).slice(2,7),
+    name, phone, reason,
+    markedBy: currentUser ? currentUser.username : '',
+    markedAt: Date.now()
+  });
+  await saveBlockedCustomers();
+  logAudit('סימון לקוח בעייתי', `${name||phone} · ${reason}`);
+  showToast('הלקוח סומן כבעייתי');
+  closeMarkBlockedModal();
+  renderAdminTabContent();
+}
+// Shown when a NEW order's name/phone matches the blocked list. Reps only ever see the
+// no-proceed version; admins/mainadmins get an extra button to override and continue anyway.
+let blockedModalProceedCallback = null;
+function openBlockedCustomerModal(entry, onProceed){
+  const admin = isAdminRole();
+  blockedModalProceedCallback = admin ? onProceed : null;
+  document.getElementById('blockedCustomerSummary').innerHTML = `
+    <div style="font-weight:800;margin-bottom:6px;">${entry.name||''}${entry.phone?' · '+entry.phone:''}</div>
+    <div style="font-size:13px;margin-bottom:6px;">${entry.reason||''}</div>
+    <div style="font-size:12px;color:var(--muted);">סומן ע"י ${entry.markedBy||'(לא ידוע)'} · ${formatDate(new Date(entry.markedAt).toISOString().slice(0,10))}</div>
+  `;
+  document.getElementById('blockedCustomerProceedBtn').style.display = admin ? '' : 'none';
+  document.getElementById('blockedCustomerRepNote').style.display = admin ? 'none' : 'block';
+  document.getElementById('blockedCustomerModal').classList.add('open');
+}
+function closeBlockedCustomerModal(){
+  document.getElementById('blockedCustomerModal').classList.remove('open');
+  blockedModalProceedCallback = null;
+}
+function proceedDespiteBlock(){
+  const cb = blockedModalProceedCallback;
+  closeBlockedCustomerModal();
+  if(cb) cb();
+}
 async function addStrongAdRosterCity(){
   const input = document.getElementById('newStrongAdRosterCity');
   const city = input.value.trim();
@@ -4779,11 +4934,11 @@ function renderAdminRevenueByCity(){
 /* ---------- admin tabs ---------- */
 let adminActiveTab = 'home';
 function adminTabsForRole(){
-  if(currentUser && currentUser.role==='mainadmin') return ['home','report','trend','revenue','expenses','payroll','reminders','advertising','repactivity','stock','depot','trash','users','auditlog','backup'];
-  if(currentUser && currentUser.role==='admin') return ['home','stock','depot','backup'];
+  if(currentUser && currentUser.role==='mainadmin') return ['home','report','trend','revenue','expenses','payroll','reminders','advertising','repactivity','stock','depot','blockedcustomers','trash','users','auditlog','backup'];
+  if(currentUser && currentUser.role==='admin') return ['home','stock','depot','blockedcustomers','backup'];
   return [];
 }
-const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', trend:'📈 מגמה לאורך זמן', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', reminders:'🔔 תזכורות', advertising:'📣 פרסום', repactivity:'📅 פעילות נציגים', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא' };
+const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', trend:'📈 מגמה לאורך זמן', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', reminders:'🔔 תזכורות', advertising:'📣 פרסום', repactivity:'📅 פעילות נציגים', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', blockedcustomers:'🚫 לקוחות בעייתיים', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא' };
 function renderAdminTabsBar(){
   const bar = document.getElementById('adminTabsBar');
   const tabs = adminTabsForRole();
@@ -5593,6 +5748,23 @@ function renderAdminTabContent(){
       <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">בחירת קובץ גיבוי (JSON) שיוצא בעבר תחליף את כל הנתונים הקיימים במערכת - הזמנות, מלאי, משתמשים, הוצאות ועוד. פעולה בלתי הפיכה - מומלץ לייצא גיבוי נוכחי לפני כן.</div>
       <input type="file" id="restoreFileInput" accept="application/json" onchange="restoreFromBackupFile(this)">
       ` : ''}
+    `;
+  }else if(adminActiveTab==='blockedcustomers'){
+    const isMain = currentUser && currentUser.role==='mainadmin';
+    const list = blockedCustomers.slice().sort((a,b)=>b.markedAt-a.markedAt);
+    content.innerHTML = `
+      <div style="font-weight:800;margin-bottom:4px;">🚫 לקוחות בעייתיים</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:14px;">לקוח שמסומן כאן (לפי שם או טלפון) לא יוכל להזין הזמנה חדשה - נציג ייחסם לגמרי, מנהל יראה את סיכום המקרה ויוכל לבחור להמשיך בכל זאת. סימון לקוח נעשה מכפתור 🚫 ליד ההזמנה שלו.</div>
+      ${list.length===0 ? '<div style="color:var(--muted);font-size:13px;">אין כרגע לקוחות מסומנים.</div>' : list.map(b=>`
+        <div class="city-card" style="padding:10px 14px;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+            <div style="font-weight:700;">${b.name||''}${b.phone?' · '+b.phone:''}</div>
+            ${isMain ? `<button class="icon-btn" onclick="removeBlockedCustomer('${b.id}')" title="הסר סימון">🗑️</button>` : ''}
+          </div>
+          <div style="font-size:13px;margin-top:4px;">${b.reason||''}</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:4px;">סומן ע"י ${b.markedBy||'(לא ידוע)'} · ${formatDate(new Date(b.markedAt).toISOString().slice(0,10))}</div>
+        </div>
+      `).join('')}
     `;
   }
 }
@@ -6407,6 +6579,7 @@ async function initApp(){
   await loadStrongAdRounds();
   await loadStrongAdCampaign();
   await loadStrongAdRoster();
+  await loadBlockedCustomers();
   renderSummary();
   renderCuFeatureToggleLabel();
   renderInventoryAlertBanner();
