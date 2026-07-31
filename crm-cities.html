@@ -282,9 +282,9 @@
         <input type="checkbox" id="fYad2" style="width:auto;margin-bottom:0;">
         <label style="margin-bottom:0;">הלקוח הגיע מיד 2</label>
       </div>
-      <div class="field" style="display:flex;align-items:center;gap:6px;">
+      <div class="field" id="fCancelFeeNoticeWrap" style="display:flex;align-items:center;gap:6px;border:2px solid transparent;border-radius:8px;padding:4px 6px;transition:border-color .2s, background-color .2s;">
         <input type="checkbox" id="fCancelFeeNotice" style="width:auto;margin-bottom:0;">
-        <label style="margin-bottom:0;">הודעתי ללקוח ששינוי או ביטול ההזמנה כרוך בעלות של 50 ₪</label>
+        <label style="margin-bottom:0;">⚠️ חובה: הודעתי ללקוח ששינוי או ביטול ההזמנה כרוך בעלות של 50 ₪</label>
       </div>
       <div class="field" id="fAdChannelWrap" style="display:none;">
         <label>מאיפה הלקוח הגיע? (אופציונלי - עוזר להשוות ערוצי פרסום)</label>
@@ -2757,7 +2757,19 @@ function submitOrder(){
   if(!city){ showToast('נא לבחור או להזין עיר'); return; }
   if(!customer){ showToast('שם לקוח הוא שדה חובה'); return; }
   if(!phone1raw){ showToast('טלפון 1 הוא שדה חובה'); return; }
-  if(!cancelFeeNoticeGiven){ showToast('יש לאשר שהודעת ללקוח על עלות שינוי/ביטול ההזמנה'); return; }
+  const cancelFeeWrap = document.getElementById('fCancelFeeNoticeWrap');
+  if(!cancelFeeNoticeGiven){
+    showToast('חובה לסמן שהודעת ללקוח על עלות שינוי/ביטול לפני שמירת ההזמנה!');
+    if(cancelFeeWrap){
+      cancelFeeWrap.style.borderColor = '#c0392b';
+      cancelFeeWrap.style.backgroundColor = '#fdecea';
+      cancelFeeWrap.scrollIntoView({behavior:'smooth', block:'center'});
+    }
+    return;
+  } else if(cancelFeeWrap){
+    cancelFeeWrap.style.borderColor = 'transparent';
+    cancelFeeWrap.style.backgroundColor = 'transparent';
+  }
   // addresses no longer need to be picked from the government street registry - free text is fine
   // (the registry lookup is still offered as a convenience autocomplete, just not enforced).
 
@@ -3127,7 +3139,7 @@ function renderAllOrders(){
     <div class="order-row ${o.cancelled?'cancelled':''}">
       <div>
         <div class="order-main">${o.fromYad2?'🏷️ יד2 · ':''}${o.city} — ${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.cancelled?'<span class="badge-cancelled">מבוטלת</span>':''}${(!o.cancelled && o.delivered)?'<span class="badge-shipped">נשלח '+formatDate(o.deliveryDate)+'</span>':''}</div>
-        <div class="order-sub">${o.customer} · ${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+o.note:''}${o.discount>0?' · 🏷️ ניתנה הנחה של '+o.discount+'₪':''}</div>
+        <div class="order-sub">${o.customer} · ${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+o.note:''}${o.discount>0?' · 🏷️ ניתנה הנחה של '+o.discount+'₪':''}${isAdminRole()&&o.createdByUsername?' · 👤 '+o.createdByUsername:''}</div>
       </div>
       <div class="order-actions">
         <button class="icon-btn" onclick="startEdit('${o.id}')">✏️</button>
@@ -3801,7 +3813,7 @@ function renderHistory(){
           <div class="city-last">משלוח: ${formatDate(o.deliveryDate)} · ${relativeTime(o.deliveryDate)}</div>
         </div>
         <div class="city-totals">${o.fromYad2?'🏷️ יד2 · ':''}${cityDisplayName(o.city, o.roundNumber||0)} · הוזמן ב-${formatDate(o.date)}</div>
-        <div class="order-sub" style="margin-top:6px;">${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.address?' · '+o.address:''}${o.note?' · 📝 '+o.note:''}</div>
+        <div class="order-sub" style="margin-top:6px;">${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.address?' · '+o.address:''}${o.note?' · 📝 '+o.note:''}${isAdminRole()&&o.createdByUsername?' · 👤 '+o.createdByUsername:''}</div>
         ${managerInquiryHtml(o)}
         ${isAdminRole() ? `<button class="icon-btn" onclick="openMarkBlockedModal('${o.id}')" title="סמן לקוח כבעייתי">⛔</button>` : ''}
       </div>
@@ -3820,7 +3832,7 @@ function renderHistory(){
       <div class="order-row">
         <div style="flex:1;">
           <div class="order-main">${o.fromYad2?'🏷️ יד2 · ':''}${o.customer} — ${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}</div>
-          <div class="order-sub">הוזמן ב-${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+o.note:''}${o.discount>0?' · 🏷️ ניתנה הנחה של '+o.discount+'₪':''}</div>
+          <div class="order-sub">הוזמן ב-${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+o.note:''}${o.discount>0?' · 🏷️ ניתנה הנחה של '+o.discount+'₪':''}${isAdminRole()&&o.createdByUsername?' · 👤 '+o.createdByUsername:''}</div>
           ${managerInquiryHtml(o)}
           ${isAdminRole() ? `<button class="icon-btn" onclick="openMarkBlockedModal('${o.id}')" title="סמן לקוח כבעייתי">⛔</button>` : ''}
         </div>
