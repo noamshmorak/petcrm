@@ -234,6 +234,10 @@
           <div class="err" id="err2" style="display:none;"></div>
         </div>
       </div>
+      <div class="field" style="display:flex;align-items:center;gap:6px;">
+        <input type="checkbox" id="fHasSms" style="width:auto;margin-bottom:0;" checked>
+        <label style="margin-bottom:0;">ללקוח יש טלפון שמקבל SMS (בטל אם יש לו טלפון כשר ללא SMS)</label>
+      </div>
 
       <div class="field" style="display:flex;align-items:center;gap:6px;">
         <input type="checkbox" id="fEquipmentOnly" style="width:auto;margin-bottom:0;" onchange="toggleEquipmentOnly()">
@@ -396,6 +400,23 @@
     <div class="modal-actions">
       <button class="btn-primary" style="flex:1;" onclick="submitManagerInquiry()">שלח למנהל</button>
       <button class="btn-ghost" style="flex:1;" onclick="closeManagerInquiryModal()">ביטול</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="smsModal">
+  <div class="modal-box" style="text-align:right;max-width:420px;">
+    <button class="modal-close-x" onclick="closeSmsModal()">✕</button>
+    <p id="smsModalTitle" style="text-align:center;font-weight:800;"></p>
+    <div id="smsModalInfo" style="font-size:12.5px;color:var(--muted);margin-bottom:8px;"></div>
+    <div class="field">
+      <label>תוכן ההודעה</label>
+      <textarea id="smsMessageInput" rows="4"></textarea>
+    </div>
+    <div id="smsModalWarning" style="display:none;font-size:12.5px;color:var(--danger);font-weight:700;margin-bottom:6px;"></div>
+    <div class="modal-actions">
+      <button class="btn-primary" style="flex:1;" onclick="confirmSendRoundSms()">שלח SMS</button>
+      <button class="btn-ghost" style="flex:1;" onclick="closeSmsModal()">ביטול</button>
     </div>
   </div>
 </div>
@@ -2490,6 +2511,8 @@ function migrateOrder(o){
   if(typeof o.deliveryConfirmed !== 'boolean') o.deliveryConfirmed = false;
   if(typeof o.customerUpdated !== 'boolean') o.customerUpdated = false;
   o.deliveryDate = o.deliveryDate || '';
+  if(typeof o.hasSms !== 'boolean') o.hasSms = true; // assume SMS-capable unless a rep explicitly marked otherwise
+  o.smsSentAt = o.smsSentAt || null;
   o.customer = o.customer || '';
   o.address = o.address || '';
   if(typeof o.lat !== 'number') o.lat = null;
@@ -2588,6 +2611,7 @@ function submitOrder(){
   const date = document.getElementById('fDate').value || todayStr();
   const note = document.getElementById('fNote').value.trim();
   const fromYad2 = document.getElementById('fYad2').checked;
+  const hasSms = document.getElementById('fHasSms').checked;
   const adChannelId = document.getElementById('fAdChannel').value || '';
   const animals = collectAnimalRows();
   const foodItems = collectFoodRows();
@@ -2621,7 +2645,7 @@ function submitOrder(){
       o.city = city; o.customer = customer; o.address = address;
       o.phone1 = phone1; o.phone2 = phone2; o.animals = animals; o.foodItems = foodItems; o.date = date;
       o.pairFlags = pairFlags; o.cageSharing = cageSharing; o.totalPrice = totalPrice; o.discount = discount; o.discountApproved = discount>0 ? discountApproved : false;
-      o.note = note; o.fromYad2 = fromYad2; o.adChannelId = adChannelId;
+      o.note = note; o.fromYad2 = fromYad2; o.adChannelId = adChannelId; o.hasSms = hasSms;
       logAudit('ערוך הזמנה', `${o.customer||'לקוח'} · ${cityDisplayName(o.city, o.roundNumber||0)}${discount>0?' · הנחה '+discount+'₪':''}`);
     }
     editingId = null;
@@ -2632,7 +2656,7 @@ function submitOrder(){
     return;
   }
 
-  const orderData = {city, customer, address, phone1, phone2, animals, foodItems, date, pairFlags, cageSharing, totalPrice, discount, discountApproved: discount>0 ? discountApproved : false, note, fromYad2, adChannelId};
+  const orderData = {city, customer, address, phone1, phone2, animals, foodItems, date, pairFlags, cageSharing, totalPrice, discount, discountApproved: discount>0 ? discountApproved : false, note, fromYad2, adChannelId, hasSms};
   const activeRounds = computeCityActiveRounds(city);
   if(activeRounds.length > 0){
     askRoundChoice(city, activeRounds, (roundNumber)=>{
@@ -2668,6 +2692,7 @@ function finishSubmitOrder(){
   document.getElementById('fDate').value=todayStr();
   document.getElementById('fNote').value='';
   document.getElementById('fYad2').checked=false;
+  document.getElementById('fHasSms').checked=true;
   document.getElementById('fAdChannel').value='';
   document.getElementById('fDiscount').value='';
   document.getElementById('fDiscountApproved').checked=false;
@@ -2698,6 +2723,7 @@ function cancelEdit(){
   document.getElementById('fDate').value=todayStr();
   document.getElementById('fNote').value='';
   document.getElementById('fYad2').checked=false;
+  document.getElementById('fHasSms').checked=true;
   resetAnimalRows();
   resetFoodRows();
   populateCitySelect();
@@ -2717,6 +2743,7 @@ function startEdit(id){
   document.getElementById('fDate').value = o.date;
   document.getElementById('fNote').value = o.note||'';
   document.getElementById('fYad2').checked = !!o.fromYad2;
+  document.getElementById('fHasSms').checked = o.hasSms !== false;
   document.getElementById('fAdChannel').value = o.adChannelId || '';
   document.getElementById('animalRows').innerHTML='';
   animalRowCounter = 0;
@@ -2921,6 +2948,7 @@ function renderSummary(){
         <button class="btn-pack" onclick="openAddressesModal('${c.city}', ${c.roundNumber})">📍 רשימת כתובות</button>
         <button class="btn-pack" onclick="openDeliveryTrackModal('${c.city}', ${c.roundNumber})">🚚 מעקב מסירה בשטח</button>
         <button class="btn-pack" onclick="openRouteModal('${c.city}', ${c.roundNumber})">🗺️ מסלול אידיאלי</button>
+        ${isAdminRole() ? `<button class="btn-pack" onclick="openSmsModal('${escAttr(c.city)}', ${c.roundNumber})">📱 שלח SMS ללקוחות על יציאת המשלוח</button>` : ''}
         ${cuButton}
         <button class="btn-ship" onclick="openShipModal('${c.city}', ${c.roundNumber})">✅ סמן משלוח כבוצע</button>
         ${isAdminRole() ? `<button class="btn-pack" style="background:#fde3e3;color:var(--danger);" onclick="deleteRoundToTrash('${c.city}', ${c.roundNumber})">🗑️ מחק סבב זה</button>` : ''}
@@ -3165,6 +3193,66 @@ document.getElementById('packContent').addEventListener('change', (e)=>{
     else{ label.style.opacity='1'; textEl.style.textDecoration='none'; }
   }
 });
+
+/* ---------- SMS to customers before delivery (manual, any admin decides when) ---------- */
+// Sent on-demand (not scheduled) - an admin clicks the button whenever they know the courier is
+// about to go out (a day, two, or three ahead - no fixed rule). Only orders explicitly marked
+// hasSms get a message; the actual send happens server-side via a Supabase Edge Function so the
+// SMS provider's API key never sits in this client-side file.
+let smsModalCity = null;
+let smsModalRound = null;
+function openSmsModal(city, round){
+  const list = computeCitySummary();
+  const cityData = list.find(c=>c.city===city && c.roundNumber===round);
+  if(!cityData) return;
+  const activeOrders = cityData.orders.filter(o=>!o.cancelled);
+  const eligible = activeOrders.filter(o=>o.hasSms && o.phone1);
+  smsModalCity = city; smsModalRound = round;
+  document.getElementById('smsModalTitle').textContent = `📱 שליחת SMS — ${cityDisplayName(city, round)}`;
+  document.getElementById('smsModalInfo').textContent = `${eligible.length} מתוך ${activeOrders.length} לקוחות בסבב הזה מסומנים כבעלי טלפון שמקבל SMS ויקבלו את ההודעה.`;
+  document.getElementById('smsMessageInput').value = 'שלום, המשלוח מ\'חסד לישראל\' יוצא אליכם בקרוב. נשמח אם תהיו זמינים לקבלתו. תודה!';
+  document.getElementById('smsModalWarning').style.display = 'none';
+  document.getElementById('smsModal').classList.add('open');
+}
+function closeSmsModal(){
+  document.getElementById('smsModal').classList.remove('open');
+  smsModalCity = null; smsModalRound = null;
+}
+function confirmSendRoundSms(){
+  if(!smsModalCity) return;
+  const message = document.getElementById('smsMessageInput').value.trim();
+  if(!message){ showToast('יש להזין תוכן להודעה'); return; }
+  const list = computeCitySummary();
+  const cityData = list.find(c=>c.city===smsModalCity && c.roundNumber===smsModalRound);
+  if(!cityData) return;
+  const eligible = cityData.orders.filter(o=>!o.cancelled && o.hasSms && o.phone1);
+  if(eligible.length===0){ showToast('אין לקוחות מסומנים כבעלי SMS בסבב הזה'); return; }
+  const today = new Date().toDateString();
+  const alreadySentToday = eligible.filter(o=>o.smsSentAt && new Date(o.smsSentAt).toDateString()===today);
+  if(alreadySentToday.length>0){
+    showConfirm(`שים לב: ל-${alreadySentToday.length} מהלקוחות כבר נשלח SMS היום עבור הסבב הזה. לשלוח שוב לכולם בכל זאת?`, ()=>doSendRoundSms(message, eligible));
+  }else{
+    doSendRoundSms(message, eligible);
+  }
+}
+async function doSendRoundSms(message, eligible){
+  showToast('שולח SMS...');
+  try{
+    const { data, error } = await _sb.functions.invoke('send-round-sms', {
+      body: { message, destinations: eligible.map(o=>({ phone: o.phone1, orderId: o.id })) }
+    });
+    if(error) throw error;
+    eligible.forEach(e=>{ const ord = orders.find(x=>x.id===e.id); if(ord) ord.smsSentAt = Date.now(); });
+    await saveOrders();
+    logAudit('שליחת SMS ללקוחות', `${cityDisplayName(smsModalCity, smsModalRound)} · ${eligible.length} הודעות`);
+    showToast(`נשלחו ${eligible.length} הודעות SMS`);
+    closeSmsModal();
+    renderAll();
+  }catch(e){
+    console.error('[send-round-sms]', e);
+    showToast('שליחת ה-SMS נכשלה - ' + (e.message||'שגיאה לא ידועה'));
+  }
+}
 function closePackModal(){ document.getElementById('packModal').classList.remove('open'); }
 
 /* ---------- addresses list (one modal, each address individually copyable) ---------- */
