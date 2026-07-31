@@ -1974,6 +1974,11 @@ function getSelectedCity(){
 }
 
 /* ---------- storage ---------- */
+// Tracks every order id this browser tab has ever known about (loaded, created, or merged in),
+// so we can tell "missing locally because someone else added it and we haven't seen it yet" apart
+// from "missing locally because we (this tab) intentionally deleted it" - see saveOrders() below.
+let knownOrderIds = new Set();
+let ordersAutoRefreshTimer = null;
 async function loadOrders(){
   try{
     const res = await window.storage.get(STORAGE_KEY, true);
@@ -1984,16 +1989,58 @@ async function loadOrders(){
   }
   orders = orders.map(migrateOrder);
   migrateRoundNumbers();
+  knownOrderIds = new Set(orders.map(o=>o.id));
   document.getElementById('subtitle').textContent = 'הנתונים משותפים לכל המכשירים והנציגים';
   resetAnimalRows();
   resetFoodRows();
   populateCitySelect();
   renderAll();
   saveOrders();
+  // Without this, a tab that never triggers its own save (e.g. an admin just watching the
+  // dashboard) would only ever see whatever existed the moment it first loaded the page - this
+  // app has no realtime sync between devices, so we poll instead.
+  if(!ordersAutoRefreshTimer) ordersAutoRefreshTimer = setInterval(refreshOrdersFromServer, 45000);
+}
+// Pulls in orders that exist on the server but that this tab has never seen before (added by a
+// rep/admin on a different device), without touching anything this tab already knows about.
+// Returns the list of newly-merged-in orders (empty array if none).
+async function mergeInOrdersAddedElsewhere(){
+  const res = await window.storage.get(STORAGE_KEY, true);
+  const remoteOrders = res && res.value ? JSON.parse(res.value) : [];
+  const localIds = new Set(orders.map(o=>o.id));
+  const newFromOthers = remoteOrders.filter(o=>!localIds.has(o.id) && !knownOrderIds.has(o.id));
+  if(newFromOthers.length > 0){
+    orders = orders.concat(newFromOthers.map(migrateOrder));
+    migrateRoundNumbers();
+    newFromOthers.forEach(o=>knownOrderIds.add(o.id));
+  }
+  return newFromOthers;
+}
+async function refreshOrdersFromServer(){
+  try{
+    const added = await mergeInOrdersAddedElsewhere();
+    if(added.length > 0){
+      renderAll();
+      showToast(`התקבלו ${added.length} הזמנות חדשות ממכשיר/נציג אחר`);
+    }
+  }catch(e){ /* silent - this is a background convenience refresh, not critical */ }
 }
 async function saveOrders(){
-  try{ await window.storage.set(STORAGE_KEY, JSON.stringify(orders), true); }
-  catch(e){ showToast('שגיאה בשמירה, נסה שוב'); }
+  try{
+    // Critical: merge before overwriting. This app has no realtime sync between tabs/devices - a
+    // plain overwrite here would blindly replace the WHOLE shared order list with whatever this
+    // tab happens to have in memory, silently erasing any order another rep/admin added or edited
+    // on a different device since this tab last loaded (this was actually happening in
+    // production - a rep's new order would vanish the next time anyone else's tab saved anything).
+    // Orders this tab already knows about always keep this tab's local version (a save means WE
+    // just changed something); anything on the server we've genuinely never seen before gets
+    // folded back in instead of being wiped out; anything we ourselves deleted stays deleted
+    // (tracked via knownOrderIds, so it's never mistaken for "new from someone else").
+    const added = await mergeInOrdersAddedElsewhere();
+    orders.forEach(o=>knownOrderIds.add(o.id));
+    await window.storage.set(STORAGE_KEY, JSON.stringify(orders), true);
+    if(added.length > 0) renderAll();
+  }catch(e){ showToast('שגיאה בשמירה, נסה שוב'); }
 }
 
 /* ---------- trash (soft-delete a whole city) ---------- */
@@ -3000,7 +3047,7 @@ function renderSummary(){
       <div class="order-row">
         <div>
           <div class="order-main">${o.deliveryConfirmed?'✅ ':''}${o.fromYad2?'🏷️ יד2 · ':''}${formatAnimals(o.animals,o.pairFlags,o.cageSharing)} — ${o.customer}</div>
-          <div class="order-sub">${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+o.note:''}${o.discount>0?' · 🏷️ ניתנה הנחה של '+o.discount+'₪':''}</div>
+          <div class="order-sub">${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+o.note:''}${o.discount>0?' · 🏷️ ניתנה הנחה של '+o.discount+'₪':''}${isAdminRole()&&o.createdByUsername?' · 👤 '+o.createdByUsername:''}</div>
         </div>
         <div class="order-actions">
           ${o.address ? `<button class="icon-btn" onclick="copySingleAddress('${o.id}')" title="העתק כתובת">📍</button>` : ''}
