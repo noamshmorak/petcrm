@@ -392,10 +392,35 @@
 <div class="modal-overlay" id="managerInquiryModal">
   <div class="modal-box" style="text-align:right;max-width:420px;">
     <button class="modal-close-x" onclick="closeManagerInquiryModal()">✕</button>
-    <p style="text-align:center;font-weight:800;">🚩 פתיחת פנייה למנהל</p>
+    <p style="text-align:center;font-weight:800;">🚩 דיווח בעיה למנהל</p>
+    <div class="row2">
+      <div class="field">
+        <label>שם הלקוח</label>
+        <input id="miCustomerName" type="text">
+      </div>
+      <div class="field">
+        <label>עיר</label>
+        <input id="miCity" type="text">
+      </div>
+    </div>
     <div class="field">
-      <label>מה הבעיה של הלקוח?</label>
+      <label>תאריך הגעת המשלוח</label>
+      <input id="miDeliveryDate" type="date">
+    </div>
+    <div class="field">
+      <label>פירוט</label>
       <textarea id="miNoteInput" rows="4" placeholder="לדוגמה: הלקוח מתלונן שהתוכי הגיע חולה"></textarea>
+    </div>
+    <div class="field" style="display:flex;align-items:center;gap:6px;">
+      <input type="checkbox" id="miMedical" style="width:auto;margin-bottom:0;" onchange="toggleMedicalGuidance()">
+      <label style="margin-bottom:0;">🚨 מקרה רפואי דחוף</label>
+    </div>
+    <div id="miMedicalGuidance" style="display:none;font-size:12.5px;background:#FBEAEA;color:var(--danger);border-radius:8px;padding:8px 10px;font-weight:700;margin-bottom:12px;">
+      במקרה רפואי: תמיד להמליץ ללקוח לפנות לוטרינר. אין להתחייב ואין לדבר על החלפת החיה, ואין לומר מי משלם על הוטרינר אם נשאלת - רק מנהל יכול לטפל בנושאים האלו.
+    </div>
+    <div class="field">
+      <label>למי לשלוח את ההתראה?</label>
+      <div id="miAdminList" style="max-height:140px;overflow-y:auto;"></div>
     </div>
     <div class="modal-actions">
       <button class="btn-primary" style="flex:1;" onclick="submitManagerInquiry()">שלח למנהל</button>
@@ -570,10 +595,23 @@ OneSignalDeferred.push(async function(OneSignalSdk){
   window.OneSignal = OneSignalSdk;
   try{ await OneSignalSdk.init({ appId: ONESIGNAL_APP_ID }); }catch(e){ /* push setup failing shouldn't block the app */ }
 });
-// Sends a real push notification to every admin/mainadmin who opted in (tagged 'notifyManager').
-// Fire-and-forget: a failed push should never block the actual business action that triggered it.
-async function sendPushToAdmins(title, message){
+// Sends a real push notification either to every admin/mainadmin who opted in (tagged
+// 'notifyManager', when usernames is empty/omitted) or to specific named admins (tagged
+// 'username'='<name>' - lets a manager-inquiry report be routed to whoever is handling it instead
+// of always blasting every admin). Fire-and-forget: a failed push should never block the action
+// that triggered it.
+async function sendPushToUsernames(title, message, usernames){
   try{
+    let filters;
+    if(!usernames || usernames.length===0){
+      filters = [{ field: 'tag', key: 'notifyManager', relation: '=', value: '1' }];
+    }else{
+      filters = [];
+      usernames.forEach((name,i)=>{
+        if(i>0) filters.push({ operator: 'OR' });
+        filters.push({ field: 'tag', key: 'username', relation: '=', value: name });
+      });
+    }
     await fetch('https://api.onesignal.com/notifications', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json; charset=utf-8', 'Authorization': 'Key ' + ONESIGNAL_REST_API_KEY },
@@ -581,20 +619,23 @@ async function sendPushToAdmins(title, message){
         app_id: ONESIGNAL_APP_ID,
         headings: { en: title },
         contents: { en: message },
-        filters: [{ field: 'tag', key: 'notifyManager', relation: '=', value: '1' }]
+        filters
       })
     });
   }catch(e){ /* push delivery failures are non-critical - ignore */ }
 }
+async function sendPushToAdmins(title, message){ return sendPushToUsernames(title, message, []); }
 // Lets any user opt in to real push notifications from a small banner (see renderPushOptInBanner).
-// Tags their OneSignal subscription both by role (role_rep / role_admin / role_mainadmin - used by
-// the admin-configurable custom reminders) and, for admins/mainadmins, also 'notifyManager' (used
-// by the urgent manager-inquiry escalation push, unrelated to the custom reminders feature).
+// Tags their OneSignal subscription by role (role_rep / role_admin / role_mainadmin - used by the
+// admin-configurable custom reminders), by exact username (used to route a manager-inquiry report
+// to specific chosen admins instead of everyone), and for admins/mainadmins also 'notifyManager'
+// (used as the "all admins" fallback and by the 48h escalation push).
 async function enableAdminPushNotifications(){
   if(!window.OneSignal){ showToast('שירות ההתראות עדיין נטען - נסה שוב בעוד כמה שניות'); return; }
   try{
     await OneSignal.Notifications.requestPermission();
     await OneSignal.User.addTag('role_'+currentUser.role, '1');
+    await OneSignal.User.addTag('username', currentUser.username);
     if(isAdminRole()) await OneSignal.User.addTag('notifyManager', '1');
     localStorage.setItem('pushOptedIn', '1');
     showToast('התראות הופעלו בהצלחה!');
@@ -621,7 +662,7 @@ function checkInquiryEscalations(){
   let changed = false;
   orders.forEach(o=>{
     if(o.managerInquiry && !o.managerInquiry.resolved && !o.managerInquiry.escalationSent && inquiryIsOverdue(o.managerInquiry)){
-      sendPushToAdmins('⚠️ פנייה פתוחה מעל 48 שעות', `${o.customer||'לקוח'} (${o.city}): ${o.managerInquiry.note}`);
+      sendPushToUsernames('⚠️ פנייה פתוחה מעל 48 שעות', `${o.customer||'לקוח'} (${o.city}): ${o.managerInquiry.note}`, o.managerInquiry.assignedTo||[]);
       o.managerInquiry.escalationSent = true;
       changed = true;
     }
@@ -2513,6 +2554,7 @@ function migrateOrder(o){
   o.deliveryDate = o.deliveryDate || '';
   if(typeof o.hasSms !== 'boolean') o.hasSms = true; // assume SMS-capable unless a rep explicitly marked otherwise
   o.smsSentAt = o.smsSentAt || null;
+  o.customerUpdateMethod = o.customerUpdateMethod || null;
   o.customer = o.customer || '';
   o.address = o.address || '';
   if(typeof o.lat !== 'number') o.lat = null;
@@ -2908,9 +2950,11 @@ function renderSummary(){
           ${o.address ? `<button class="icon-btn" onclick="copySingleAddress('${o.id}')" title="העתק כתובת">📍</button>` : ''}
           <button class="icon-btn" onclick="startEdit('${o.id}')">✏️</button>
           <button class="icon-btn" onclick="postponeOrderToNextRound('${o.id}')" title="דחה לסבב הבא">⏭️</button>
+          ${(o.hasSms && o.phone1) ? `<button class="icon-btn" onclick="openSingleSmsModal('${o.id}')" title="שלח SMS ללקוח">📱</button>` : ''}
           <button class="icon-btn" onclick="toggleCancel('${o.id}')">🚫</button>
           <button class="icon-btn" onclick="deleteOrder('${o.id}')">🗑️</button>
         </div>
+        ${managerInquiryHtml(o)}
       </div>
     `).join('');
     const toggleKey = c.city+'|'+c.roundNumber;
@@ -3196,55 +3240,84 @@ document.getElementById('packContent').addEventListener('change', (e)=>{
 
 /* ---------- SMS to customers before delivery (manual, any admin decides when) ---------- */
 // Sent on-demand (not scheduled) - an admin clicks the button whenever they know the courier is
-// about to go out (a day, two, or three ahead - no fixed rule). Only orders explicitly marked
-// hasSms get a message; the actual send happens server-side via a Supabase Edge Function so the
-// SMS provider's API key never sits in this client-side file.
+// about to go out (a day, two, or three ahead - no fixed rule), either for a whole city/round at
+// once or for a single customer. Only orders explicitly marked hasSms get a message; the actual
+// send happens server-side via a Supabase Edge Function so the SMS provider's API key never sits
+// in this client-side file. A successful send also marks the order "customer updated" (with a
+// note recording it was done via SMS) so it stops showing up in the "customers not yet updated"
+// pre-departure checklist.
+const DEFAULT_SMS_MESSAGE = 'שלום, המשלוח מ\'חסד לישראל\' יוצא אליכם בקרוב. נשמח אם תהיו זמינים לקבלתו. תודה!';
+let smsModalMode = null; // 'round' | 'single'
 let smsModalCity = null;
 let smsModalRound = null;
+let smsModalOrderId = null;
 function openSmsModal(city, round){
   const list = computeCitySummary();
   const cityData = list.find(c=>c.city===city && c.roundNumber===round);
   if(!cityData) return;
-  const activeOrders = cityData.orders.filter(o=>!o.cancelled);
+  const activeOrders = cityData.orders.filter(o=>!o.cancelled && !o.delivered);
   const eligible = activeOrders.filter(o=>o.hasSms && o.phone1);
-  smsModalCity = city; smsModalRound = round;
+  smsModalMode = 'round'; smsModalCity = city; smsModalRound = round; smsModalOrderId = null;
   document.getElementById('smsModalTitle').textContent = `📱 שליחת SMS — ${cityDisplayName(city, round)}`;
-  document.getElementById('smsModalInfo').textContent = `${eligible.length} מתוך ${activeOrders.length} לקוחות בסבב הזה מסומנים כבעלי טלפון שמקבל SMS ויקבלו את ההודעה.`;
-  document.getElementById('smsMessageInput').value = 'שלום, המשלוח מ\'חסד לישראל\' יוצא אליכם בקרוב. נשמח אם תהיו זמינים לקבלתו. תודה!';
+  document.getElementById('smsModalInfo').textContent = `${eligible.length} מתוך ${activeOrders.length} לקוחות בסבב הזה מסומנים כבעלי טלפון שמקבל SMS ויקבלו את ההודעה. אחרי השליחה כל אחד מהם יסומן אוטומטית כ"עודכן".`;
+  document.getElementById('smsMessageInput').value = DEFAULT_SMS_MESSAGE;
+  document.getElementById('smsModalWarning').style.display = 'none';
+  document.getElementById('smsModal').classList.add('open');
+}
+function openSingleSmsModal(orderId){
+  const o = orders.find(x=>x.id===orderId);
+  if(!o) return;
+  if(!o.hasSms || !o.phone1){ showToast('הלקוח לא מסומן כבעל טלפון שמקבל SMS'); return; }
+  smsModalMode = 'single'; smsModalOrderId = orderId; smsModalCity = null; smsModalRound = null;
+  document.getElementById('smsModalTitle').textContent = `📱 שליחת SMS — ${o.customer||'לקוח'}`;
+  document.getElementById('smsModalInfo').textContent = `ההודעה תישלח למספר ${o.phone1}. אחרי השליחה ההזמנה תסומן אוטומטית כ"עודכן".`;
+  document.getElementById('smsMessageInput').value = DEFAULT_SMS_MESSAGE;
   document.getElementById('smsModalWarning').style.display = 'none';
   document.getElementById('smsModal').classList.add('open');
 }
 function closeSmsModal(){
   document.getElementById('smsModal').classList.remove('open');
-  smsModalCity = null; smsModalRound = null;
+  smsModalMode = null; smsModalCity = null; smsModalRound = null; smsModalOrderId = null;
 }
 function confirmSendRoundSms(){
-  if(!smsModalCity) return;
   const message = document.getElementById('smsMessageInput').value.trim();
   if(!message){ showToast('יש להזין תוכן להודעה'); return; }
-  const list = computeCitySummary();
-  const cityData = list.find(c=>c.city===smsModalCity && c.roundNumber===smsModalRound);
-  if(!cityData) return;
-  const eligible = cityData.orders.filter(o=>!o.cancelled && o.hasSms && o.phone1);
-  if(eligible.length===0){ showToast('אין לקוחות מסומנים כבעלי SMS בסבב הזה'); return; }
+  let eligible;
+  if(smsModalMode==='single'){
+    const o = orders.find(x=>x.id===smsModalOrderId);
+    if(!o){ return; }
+    eligible = [o];
+  }else if(smsModalMode==='round'){
+    const list = computeCitySummary();
+    const cityData = list.find(c=>c.city===smsModalCity && c.roundNumber===smsModalRound);
+    if(!cityData) return;
+    eligible = cityData.orders.filter(o=>!o.cancelled && !o.delivered && o.hasSms && o.phone1);
+  }else{
+    return;
+  }
+  if(eligible.length===0){ showToast('אין לקוחות מסומנים כבעלי SMS'); return; }
   const today = new Date().toDateString();
   const alreadySentToday = eligible.filter(o=>o.smsSentAt && new Date(o.smsSentAt).toDateString()===today);
   if(alreadySentToday.length>0){
-    showConfirm(`שים לב: ל-${alreadySentToday.length} מהלקוחות כבר נשלח SMS היום עבור הסבב הזה. לשלוח שוב לכולם בכל זאת?`, ()=>doSendRoundSms(message, eligible));
+    showConfirm(`שים לב: ל-${alreadySentToday.length} מהלקוחות כבר נשלח SMS היום. לשלוח שוב בכל זאת?`, ()=>doSendSms(message, eligible));
   }else{
-    doSendRoundSms(message, eligible);
+    doSendSms(message, eligible);
   }
 }
-async function doSendRoundSms(message, eligible){
+async function doSendSms(message, eligible){
   showToast('שולח SMS...');
   try{
     const { data, error } = await _sb.functions.invoke('send-round-sms', {
       body: { message, destinations: eligible.map(o=>({ phone: o.phone1, orderId: o.id })) }
     });
     if(error) throw error;
-    eligible.forEach(e=>{ const ord = orders.find(x=>x.id===e.id); if(ord) ord.smsSentAt = Date.now(); });
+    eligible.forEach(e=>{
+      const ord = orders.find(x=>x.id===e.id);
+      if(ord){ ord.smsSentAt = Date.now(); ord.customerUpdated = true; ord.customerUpdateMethod = 'ע"י שליחת SMS'; }
+    });
     await saveOrders();
-    logAudit('שליחת SMS ללקוחות', `${cityDisplayName(smsModalCity, smsModalRound)} · ${eligible.length} הודעות`);
+    const label = smsModalMode==='single' ? (eligible[0].customer||'לקוח') : cityDisplayName(smsModalCity, smsModalRound);
+    logAudit('שליחת SMS ללקוחות', `${label} · ${eligible.length} הודעות`);
     showToast(`נשלחו ${eligible.length} הודעות SMS`);
     closeSmsModal();
     renderAll();
@@ -3401,6 +3474,7 @@ function renderCustomerUpdateContent(){
         <div style="font-weight:700;font-size:14px;">${o.fromYad2?'🏷️ יד2 · ':''}${o.customer}</div>
         <div style="font-size:12.5px;color:var(--muted);margin-top:2px;">${o.address?o.address+' · ':''}${o.phone1?`<a href="tel:${o.phone1.replace(/-/g,'')}" style="color:var(--accent-dark);font-weight:700;" onclick="event.stopPropagation();">${o.phone1}</a>`:''}${o.phone2?', '+`<a href="tel:${o.phone2.replace(/-/g,'')}" style="color:var(--accent-dark);font-weight:700;" onclick="event.stopPropagation();">${o.phone2}</a>`:''}</div>
         ${o.note?`<div style="font-size:12px;color:var(--muted);margin-top:2px;">📝 ${o.note}</div>`:''}
+        ${o.customerUpdateMethod?`<div style="font-size:12px;color:var(--accent-dark);margin-top:2px;font-weight:700;">✓ עודכן ${o.customerUpdateMethod}</div>`:''}
         ${o.discount>0?`<div style="font-size:12px;color:var(--muted);margin-top:2px;">🏷️ ניתנה הנחה של ${o.discount}₪</div>`:''}
       </div>
     </label>
@@ -3412,6 +3486,7 @@ document.getElementById('customerUpdateContent').addEventListener('change', (e)=
     const o = orders.find(x=>x.id===id);
     if(o){
       o.customerUpdated = e.target.checked;
+      if(!e.target.checked) o.customerUpdateMethod = null; // manual uncheck clears the "how" tag
       saveOrders();
       renderCustomerUpdateContent();
       renderSummary();
@@ -3515,18 +3590,42 @@ function inquiryIsOverdue(inq){
 }
 function managerInquiryHtml(o){
   if(!o.managerInquiry || o.managerInquiry.resolved){
-    return `<button class="icon-btn" onclick="openManagerInquiryModal('${o.id}')" title="פתח פנייה למנהל">🚩</button>`;
+    return `<button class="icon-btn" onclick="openManagerInquiryModal('${o.id}')" title="דווח בעיה למנהל">🚩</button>`;
   }
-  const overdue = inquiryIsOverdue(o.managerInquiry);
-  return `<div style="margin-top:6px;padding:6px 8px;border-radius:8px;background:${overdue?'#FBEAEA':'var(--new-badge-light)'};color:${overdue?'var(--danger)':'var(--new-badge)'};font-size:12px;font-weight:700;">
-    ${overdue?'⚠️ פנייה פתוחה מעל 48 שעות':'🚩 פנייה פתוחה למנהל'}${o.managerInquiry.openedBy?' ('+o.managerInquiry.openedBy+')':''}: ${o.managerInquiry.note}
+  const mi = o.managerInquiry;
+  const overdue = inquiryIsOverdue(mi);
+  const urgent = overdue || mi.isMedical;
+  const medicalTag = mi.isMedical ? '🚨 מקרה רפואי דחוף · ' : '';
+  const assignedLabel = (mi.assignedTo && mi.assignedTo.length) ? ` · מטופל ע"י: ${mi.assignedTo.join(', ')}` : '';
+  return `<div style="margin-top:6px;padding:6px 8px;border-radius:8px;background:${urgent?'#FBEAEA':'var(--new-badge-light)'};color:${urgent?'var(--danger)':'var(--new-badge)'};font-size:12px;font-weight:700;">
+    ${medicalTag}${overdue?'⚠️ פנייה פתוחה מעל 48 שעות':'🚩 פנייה פתוחה למנהל'}${mi.openedBy?' ('+mi.openedBy+')':''}: ${mi.note}${assignedLabel}
     ${isAdminRole() ? `<span style="cursor:pointer;text-decoration:underline;margin-inline-start:8px;" onclick="resolveManagerInquiry('${o.id}')">סמן כטופל</span>` : ''}
   </div>`;
+}
+function toggleMedicalGuidance(){
+  document.getElementById('miMedicalGuidance').style.display = document.getElementById('miMedical').checked ? 'block' : 'none';
+}
+function renderMiAdminList(){
+  const wrap = document.getElementById('miAdminList');
+  const admins = users.filter(u=>u.role==='admin'||u.role==='mainadmin');
+  wrap.innerHTML = admins.map(u=>`
+    <label style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+      <input type="checkbox" class="mi-admin-check" value="${escAttr(u.username)}" style="width:auto;margin-bottom:0;" checked>
+      <span style="font-size:13px;">${u.username} (${roleLabel(u.role)})</span>
+    </label>
+  `).join('');
 }
 let miOrderTarget = null;
 function openManagerInquiryModal(orderId){
   miOrderTarget = orderId;
+  const o = orders.find(x=>x.id===orderId);
   document.getElementById('miNoteInput').value = '';
+  document.getElementById('miCustomerName').value = o ? (o.customer||'') : '';
+  document.getElementById('miCity').value = o ? (o.city||'') : '';
+  document.getElementById('miDeliveryDate').value = o ? (o.deliveryDate || roundDepartures[o.city+'|'+(o.roundNumber||0)] || '') : '';
+  document.getElementById('miMedical').checked = false;
+  document.getElementById('miMedicalGuidance').style.display = 'none';
+  renderMiAdminList();
   document.getElementById('managerInquiryModal').classList.add('open');
 }
 function closeManagerInquiryModal(){
@@ -3535,19 +3634,26 @@ function closeManagerInquiryModal(){
 }
 function submitManagerInquiry(){
   const note = document.getElementById('miNoteInput').value.trim();
-  if(!note){ showToast('יש לכתוב מה הבעיה'); return; }
+  if(!note){ showToast('יש לכתוב את פירוט הבעיה'); return; }
   const o = orders.find(x=>x.id===miOrderTarget);
   if(!o) return;
+  const customerName = document.getElementById('miCustomerName').value.trim() || o.customer || '';
+  const city = document.getElementById('miCity').value.trim() || o.city || '';
+  const deliveryDate = document.getElementById('miDeliveryDate').value || '';
+  const isMedical = document.getElementById('miMedical').checked;
+  const assignedTo = [...document.querySelectorAll('.mi-admin-check:checked')].map(el=>el.value);
   o.managerInquiry = {
-    note, openedAt: Date.now(),
+    customerName, city, deliveryDate, note, isMedical, assignedTo,
+    openedAt: Date.now(),
     openedBy: currentUser ? currentUser.username : '',
-    resolved: false, resolvedAt: null, resolvedBy: null
+    resolved: false, resolvedAt: null, resolvedBy: null, escalationSent: false
   };
   saveOrders();
   renderAll();
   renderAdminHomeIfOpen();
-  logAudit('פתח פנייה למנהל', `${o.customer||'לקוח'} · ${note}`);
-  sendPushToAdmins('🚩 פנייה חדשה למנהל', `${o.customer||'לקוח'} (${o.city}): ${note}`);
+  logAudit('פתח פנייה למנהל', `${customerName} · ${note}${isMedical?' · דחוף/רפואי':''}`);
+  const title = isMedical ? '🚨 פנייה דחופה (רפואי) למנהל' : '🚩 פנייה חדשה למנהל';
+  sendPushToUsernames(title, `${customerName} (${city}): ${note}`, assignedTo);
   closeManagerInquiryModal();
   showToast('הפנייה נפתחה ותוצג למנהל');
 }
