@@ -1261,28 +1261,58 @@ function tryAutoLogin(){
 }
 
 /* ---------- inventory / stock ---------- */
+// Stock counters get touched by EVERY device on EVERY order create/ship/cancel, all the time -
+// this is the single most concurrently-edited piece of shared state in the app, more so even
+// than orders. A blind "overwrite the whole object with my local copy" save (which is what this
+// used to do) has exactly the same silent-data-loss failure mode as the orders bug: if rep A's
+// device deducts 5 rabbits (50->45) and saves, and rep B's device - still holding the old
+// snapshot of 50 - deducts 3 (its own local math says 50-3=47) and saves afterward, B's blind
+// overwrite would silently erase A's deduction, leaving stock at 47 instead of the correct 42.
+//
+// Fix: track what THIS tab last saw from the server (lastSyncedStock). On every save, compute
+// the DELTA this tab actually applied since then (current local value minus lastSyncedStock
+// value, per species/cage type), fetch the live server value, and apply that delta on top of it
+// - rather than overwriting with the local absolute number. Concurrent deltas from different
+// devices then correctly add up instead of clobbering each other, regardless of save order.
 let stock = { animals:{}, cages:{} };
+let lastSyncedStock = { animals:{}, cages:{} };
 function defaultStock(){
   const animals = {}; ANIMAL_SPECIES_LIST.forEach(s=>animals[s]=0);
   const cages = {}; CAGE_TYPES_LIST.forEach(c=>cages[c]=0);
   return { animals, cages };
+}
+function cleanStockShape(s){
+  const def = defaultStock();
+  const out = { animals: Object.assign(def.animals, s && s.animals || {}), cages: Object.assign(def.cages, s && s.cages || {}) };
+  Object.keys(out.animals).forEach(k=>{ if(out.animals[k] < 0) out.animals[k] = 0; });
+  Object.keys(out.cages).forEach(k=>{ if(out.cages[k] < 0) out.cages[k] = 0; });
+  return out;
 }
 async function loadStock(){
   try{
     const res = await window.storage.get(STOCK_KEY, true);
     stock = res && res.value ? JSON.parse(res.value) : defaultStock();
   }catch(e){ stock = defaultStock(); }
-  const def = defaultStock();
-  stock.animals = Object.assign(def.animals, stock.animals||{});
-  stock.cages = Object.assign(def.cages, stock.cages||{});
-  // Stock-on-hand must never go negative (old data from before this rule existed might still
-  // have negative values saved - clean those up once on load).
-  Object.keys(stock.animals).forEach(k=>{ if(stock.animals[k] < 0) stock.animals[k] = 0; });
-  Object.keys(stock.cages).forEach(k=>{ if(stock.cages[k] < 0) stock.cages[k] = 0; });
+  stock = cleanStockShape(stock);
+  lastSyncedStock = JSON.parse(JSON.stringify(stock));
 }
 async function saveStock(){
-  try{ await window.storage.set(STOCK_KEY, JSON.stringify(stock), true); }
-  catch(e){ showToast('שגיאה בשמירת המלאי'); }
+  try{
+    const res = await window.storage.get(STOCK_KEY, true);
+    const remoteStock = cleanStockShape(res && res.value ? JSON.parse(res.value) : defaultStock());
+    const merged = { animals: Object.assign({}, remoteStock.animals), cages: Object.assign({}, remoteStock.cages) };
+    Object.keys(stock.animals).forEach(k=>{
+      const delta = (stock.animals[k]||0) - (lastSyncedStock.animals[k]||0);
+      if(delta !== 0) merged.animals[k] = Math.max(0, (merged.animals[k]||0) + delta);
+    });
+    Object.keys(stock.cages).forEach(k=>{
+      const delta = (stock.cages[k]||0) - (lastSyncedStock.cages[k]||0);
+      if(delta !== 0) merged.cages[k] = Math.max(0, (merged.cages[k]||0) + delta);
+    });
+    await window.storage.set(STOCK_KEY, JSON.stringify(merged), true);
+    stock = merged;
+    lastSyncedStock = JSON.parse(JSON.stringify(merged));
+  }catch(e){ showToast('שגיאה בשמירת המלאי'); }
 }
 // Stock-on-hand must never go negative - if a deduction exceeds what's actually on hand,
 // it's simply floored at 0 (see computeProjectedShortage below for what's actually needed
@@ -2080,6 +2110,43 @@ async function saveOrders(){
   }catch(e){ showToast('שגיאה בשמירה, נסה שוב'); }
 }
 
+/* ---------- generic per-record reconciliation for other shared array stores ---------- */
+// Same fix as orders/stock, generalized: any shared array-of-objects (each needs a stable `id`
+// field) is at risk of the same "load once, blind-overwrite on save" data loss if two devices
+// touch it around the same time - lost hour reports (pay disputes), lost spot sales (missing
+// revenue), lost "blocked customer" entries (a flagged problem customer silently un-flagged),
+// or lost audit log entries (can't investigate later) are all the same underlying bug as the
+// vanishing orders, just in different stores. This diffs the current local array against a
+// per-key snapshot of what this tab last synced, so only what THIS tab actually changed gets
+// layered onto the live server copy - anything another device changed in between is preserved.
+const _reconcileSnapshots = {};
+function _snapshotArrayById(list){
+  const m = new Map();
+  (list||[]).forEach(o => { if(o && o.id!=null) m.set(o.id, JSON.stringify(o)); });
+  return m;
+}
+function markSyncedArray(storageKey, list){
+  _reconcileSnapshots[storageKey] = _snapshotArrayById(list);
+}
+async function reconcileArrayStore(storageKey, localList){
+  const res = await window.storage.get(storageKey, true);
+  const remoteList = res && res.value ? JSON.parse(res.value) : [];
+  const remoteMap = new Map(remoteList.filter(o=>o && o.id!=null).map(o=>[o.id, o]));
+
+  const lastSynced = _reconcileSnapshots[storageKey] || new Map();
+  const localIds = new Set((localList||[]).filter(o=>o && o.id!=null).map(o=>o.id));
+  const deletedByMe = [...lastSynced.keys()].filter(id => !localIds.has(id));
+  const changedOrNewByMe = (localList||[]).filter(o => o && o.id!=null && lastSynced.get(o.id) !== JSON.stringify(o));
+
+  deletedByMe.forEach(id => remoteMap.delete(id));
+  changedOrNewByMe.forEach(o => remoteMap.set(o.id, o));
+
+  const finalList = [...remoteMap.values()];
+  await window.storage.set(storageKey, JSON.stringify(finalList), true);
+  markSyncedArray(storageKey, finalList);
+  return finalList;
+}
+
 /* ---------- trash (soft-delete a whole city) ---------- */
 let trashedCities = []; // { id, city, orders:[...], trashedAt, trashedBy }
 async function loadTrash(){
@@ -2087,9 +2154,10 @@ async function loadTrash(){
     const res = await window.storage.get(TRASH_KEY, true);
     trashedCities = res && res.value ? JSON.parse(res.value) : [];
   }catch(e){ trashedCities = []; }
+  markSyncedArray(TRASH_KEY, trashedCities);
 }
 async function saveTrash(){
-  try{ await window.storage.set(TRASH_KEY, JSON.stringify(trashedCities), true); }
+  try{ trashedCities = await reconcileArrayStore(TRASH_KEY, trashedCities); }
   catch(e){ showToast('שגיאה בשמירת האשפה'); }
 }
 // Moves EVERY order for a city (both already-shipped/delivered and still-active/pending)
@@ -2349,9 +2417,10 @@ async function loadHourReports(){
     const res = await window.storage.get(HOUR_REPORTS_KEY, true);
     hourReports = res && res.value ? JSON.parse(res.value) : [];
   }catch(e){ hourReports = []; }
+  markSyncedArray(HOUR_REPORTS_KEY, hourReports);
 }
 async function saveHourReports(){
-  try{ await window.storage.set(HOUR_REPORTS_KEY, JSON.stringify(hourReports), true); }
+  try{ hourReports = await reconcileArrayStore(HOUR_REPORTS_KEY, hourReports); }
   catch(e){ showToast('שגיאה בשמירת דוחות השעות'); }
 }
 function repWageSettings(username){
@@ -2559,9 +2628,10 @@ async function loadAuditLog(){
     const res = await window.storage.get(AUDIT_LOG_KEY, true);
     auditLog = res && res.value ? JSON.parse(res.value) : [];
   }catch(e){ auditLog = []; }
+  markSyncedArray(AUDIT_LOG_KEY, auditLog);
 }
 async function saveAuditLog(){
-  try{ await window.storage.set(AUDIT_LOG_KEY, JSON.stringify(auditLog), true); }
+  try{ auditLog = await reconcileArrayStore(AUDIT_LOG_KEY, auditLog); }
   catch(e){ /* audit log failures shouldn't block the actual action - fail silently */ }
 }
 // Fire-and-forget: called from every meaningful mutation (create/edit/cancel/delete order,
@@ -3930,9 +4000,10 @@ async function loadSpotSales(){
     const res = await window.storage.get(SPOT_SALES_KEY, true);
     spotSales = res && res.value ? JSON.parse(res.value) : [];
   }catch(e){ spotSales = []; }
+  markSyncedArray(SPOT_SALES_KEY, spotSales);
 }
 async function saveSpotSales(){
-  try{ await window.storage.set(SPOT_SALES_KEY, JSON.stringify(spotSales), true); }
+  try{ spotSales = await reconcileArrayStore(SPOT_SALES_KEY, spotSales); }
   catch(e){ showToast('שגיאה בשמירת המכירה'); }
 }
 function filterQsCitySelect(){
@@ -4143,9 +4214,10 @@ async function loadCustomReminders(){
     customReminders = res && res.value ? JSON.parse(res.value) : [];
     if(!Array.isArray(customReminders)) customReminders = [];
   }catch(e){ customReminders = []; }
+  markSyncedArray(CUSTOM_REMINDERS_KEY, customReminders);
 }
 async function saveCustomReminders(){
-  try{ await window.storage.set(CUSTOM_REMINDERS_KEY, JSON.stringify(customReminders), true); }
+  try{ customReminders = await reconcileArrayStore(CUSTOM_REMINDERS_KEY, customReminders); }
   catch(e){ showToast('שגיאה בשמירת התזכורות'); }
 }
 let editingReminderId = null;
@@ -4507,9 +4579,10 @@ async function loadBlockedCustomers(){
     blockedCustomers = res && res.value ? JSON.parse(res.value) : [];
     if(!Array.isArray(blockedCustomers)) blockedCustomers = [];
   }catch(e){ blockedCustomers = []; }
+  markSyncedArray(BLOCKED_CUSTOMERS_KEY, blockedCustomers);
 }
 async function saveBlockedCustomers(){
-  try{ await window.storage.set(BLOCKED_CUSTOMERS_KEY, JSON.stringify(blockedCustomers), true); }
+  try{ blockedCustomers = await reconcileArrayStore(BLOCKED_CUSTOMERS_KEY, blockedCustomers); }
   catch(e){ showToast('שגיאה בשמירת רשימת לקוחות בעייתיים'); }
 }
 function normalizePhoneForMatch(p){ return (p||'').replace(/[^0-9]/g,''); }
