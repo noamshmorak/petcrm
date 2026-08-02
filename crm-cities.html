@@ -763,7 +763,12 @@ window.storage = {
     if(_kvVersionColumnMissing) { await this.set(key, valueStr, true); return { ok:true, version:0, noVersioning:true }; }
     const parsed = JSON.parse(valueStr);
     const nowIso = new Date().toISOString();
-    if(!expectedVersion){
+    // IMPORTANT: check specifically for null/undefined here, not just falsy - a real existing row
+    // can legitimately be at version 0 (e.g. every key that existed before the version column was
+    // added), and that must go through the UPDATE-by-version path below, never INSERT. Only an
+    // actual missing row (expectedVersion === null, set by casRetryWrite when get() returned
+    // nothing) should ever attempt an insert.
+    if(expectedVersion == null){
       // First-ever write for this key: insert; if it already exists (created concurrently by
       // someone else in the meantime), the unique key constraint rejects it as a conflict.
       const { error } = await _sb.from('kv_store').insert({ key, value: parsed, updated_at: nowIso, version: 1 });
@@ -2115,12 +2120,13 @@ function withSaveQueue(key, fn){
 // module-level state should happen in the caller, using the value this function returns).
 async function casRetryWrite(key, buildFn, maxAttempts){
   maxAttempts = maxAttempts || 8;
-  let lastRemote = null;
   for(let attempt=0; attempt<maxAttempts; attempt++){
     const res = await window.storage.get(key, true);
-    const remoteVersion = res ? res.version : 0;
+    // null (not 0!) specifically means "this key has no row yet" - a real existing row can
+    // legitimately be at version 0 (e.g. every pre-existing key right after the version column
+    // was first added), and that must still go through the UPDATE path below, not INSERT.
+    const remoteVersion = res ? res.version : null;
     const remoteValue = res && res.value ? JSON.parse(res.value) : null;
-    lastRemote = remoteValue;
     const newValue = buildFn(remoteValue);
     const writeRes = await window.storage.casSet(key, JSON.stringify(newValue), remoteVersion);
     if(writeRes.ok) return newValue;
