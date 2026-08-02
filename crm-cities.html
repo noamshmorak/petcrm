@@ -1310,20 +1310,22 @@ async function loadStock(){
 }
 async function saveStock(){
   try{
-    const res = await window.storage.get(STOCK_KEY, true);
-    const remoteStock = cleanStockShape(res && res.value ? JSON.parse(res.value) : defaultStock());
-    const merged = { animals: Object.assign({}, remoteStock.animals), cages: Object.assign({}, remoteStock.cages) };
-    Object.keys(stock.animals).forEach(k=>{
-      const delta = (stock.animals[k]||0) - (lastSyncedStock.animals[k]||0);
-      if(delta !== 0) merged.animals[k] = Math.max(0, (merged.animals[k]||0) + delta);
+    await withSaveQueue(STOCK_KEY, async ()=>{
+      const res = await window.storage.get(STOCK_KEY, true);
+      const remoteStock = cleanStockShape(res && res.value ? JSON.parse(res.value) : defaultStock());
+      const merged = { animals: Object.assign({}, remoteStock.animals), cages: Object.assign({}, remoteStock.cages) };
+      Object.keys(stock.animals).forEach(k=>{
+        const delta = (stock.animals[k]||0) - (lastSyncedStock.animals[k]||0);
+        if(delta !== 0) merged.animals[k] = Math.max(0, (merged.animals[k]||0) + delta);
+      });
+      Object.keys(stock.cages).forEach(k=>{
+        const delta = (stock.cages[k]||0) - (lastSyncedStock.cages[k]||0);
+        if(delta !== 0) merged.cages[k] = Math.max(0, (merged.cages[k]||0) + delta);
+      });
+      await window.storage.set(STOCK_KEY, JSON.stringify(merged), true);
+      stock = merged;
+      lastSyncedStock = JSON.parse(JSON.stringify(merged));
     });
-    Object.keys(stock.cages).forEach(k=>{
-      const delta = (stock.cages[k]||0) - (lastSyncedStock.cages[k]||0);
-      if(delta !== 0) merged.cages[k] = Math.max(0, (merged.cages[k]||0) + delta);
-    });
-    await window.storage.set(STOCK_KEY, JSON.stringify(merged), true);
-    stock = merged;
-    lastSyncedStock = JSON.parse(JSON.stringify(merged));
   }catch(e){ showToast('שגיאה בשמירת המלאי'); }
 }
 // Stock-on-hand must never go negative - if a deduction exceeds what's actually on hand,
@@ -2016,6 +2018,23 @@ function getSelectedCity(){
 }
 
 /* ---------- storage ---------- */
+// Per-key save queue: every reconcile-based save (orders, stock, and every generic array/object/
+// string-array store below) does its own "fetch latest, apply my diff, write" round trip. If the
+// SAME tab fires two saves for the SAME key close together (e.g. a rep taps two different action
+// buttons in quick succession, each independently calling saveOrders()), both could fetch the
+// server state before either has written back, then the one that finishes writing LAST would
+// silently overwrite the other's change - the exact same class of data loss this whole
+// reconciliation system exists to prevent, just triggered from one tab instead of two. Routing
+// every save through this per-key queue forces them to run one at a time, so save #2 always
+// starts from the result of save #1 rather than a stale snapshot from before it.
+const _saveQueues = {};
+function withSaveQueue(key, fn){
+  const prev = _saveQueues[key] || Promise.resolve();
+  const run = prev.then(fn, fn);
+  _saveQueues[key] = run.catch(()=>{}); // never let one failed save jam the queue for later saves
+  return run;
+}
+
 // Reconciliation-based sync. This app has no realtime sync between tabs/devices, so every save
 // used to just overwrite the WHOLE shared order list with whatever this tab happened to have in
 // memory - silently erasing any order/edit/deletion another rep or admin made on a different
@@ -2116,7 +2135,7 @@ async function refreshOrdersFromServer(){
 
 async function saveOrders(){
   try{
-    const addedByOthersCount = await reconcileAndSaveOrders();
+    const addedByOthersCount = await withSaveQueue(STORAGE_KEY, reconcileAndSaveOrders);
     renderAll();
     if(addedByOthersCount > 0) showToast(`התקבלו ${addedByOthersCount} עדכונים ממכשיר/נציג אחר`);
   }catch(e){ showToast('שגיאה בשמירה, נסה שוב'); }
@@ -2158,13 +2177,15 @@ function _mergeArraysById(remoteList, localList, lastSynced, idField){
 // the users list, which is identified by `username`).
 async function reconcileArrayStore(storageKey, localList, idField){
   idField = idField || 'id';
-  const res = await window.storage.get(storageKey, true);
-  const remoteList = res && res.value ? JSON.parse(res.value) : [];
-  const lastSynced = _reconcileSnapshots[storageKey] || new Map();
-  const finalList = _mergeArraysById(remoteList, localList, lastSynced, idField);
-  await window.storage.set(storageKey, JSON.stringify(finalList), true);
-  markSyncedArray(storageKey, finalList, idField);
-  return finalList;
+  return withSaveQueue(storageKey, async ()=>{
+    const res = await window.storage.get(storageKey, true);
+    const remoteList = res && res.value ? JSON.parse(res.value) : [];
+    const lastSynced = _reconcileSnapshots[storageKey] || new Map();
+    const finalList = _mergeArraysById(remoteList, localList, lastSynced, idField);
+    await window.storage.set(storageKey, JSON.stringify(finalList), true);
+    markSyncedArray(storageKey, finalList, idField);
+    return finalList;
+  });
 }
 
 // For flat/nested settings-style objects (not arrays) shared across devices, e.g. the depot
@@ -2177,6 +2198,7 @@ function markSyncedObject(storageKey, obj){
   _reconcileSnapshots[storageKey] = m;
 }
 async function reconcileObjectStore(storageKey, localObj){
+  return withSaveQueue(storageKey, async ()=>{
   const res = await window.storage.get(storageKey, true);
   const remoteObj = res && res.value ? JSON.parse(res.value) : {};
   const lastSynced = _reconcileSnapshots[storageKey] || new Map();
@@ -2188,6 +2210,7 @@ async function reconcileObjectStore(storageKey, localObj){
   await window.storage.set(storageKey, JSON.stringify(merged), true);
   markSyncedObject(storageKey, merged);
   return merged;
+  });
 }
 
 // For a shared array of plain strings (no id field of their own - the string IS the identity),
@@ -2196,17 +2219,19 @@ function markSyncedStringArray(storageKey, list){
   _reconcileSnapshots[storageKey] = new Set(list||[]);
 }
 async function reconcileStringArrayStore(storageKey, localList){
-  const res = await window.storage.get(storageKey, true);
-  const remoteList = res && res.value ? JSON.parse(res.value) : [];
-  const remoteSet = new Set(remoteList);
-  const lastSynced = _reconcileSnapshots[storageKey] || new Set();
-  const localSet = new Set(localList||[]);
-  [...lastSynced].filter(x=>!localSet.has(x)).forEach(x=>remoteSet.delete(x));
-  [...localSet].filter(x=>!lastSynced.has(x)).forEach(x=>remoteSet.add(x));
-  const finalList = [...remoteSet];
-  await window.storage.set(storageKey, JSON.stringify(finalList), true);
-  markSyncedStringArray(storageKey, finalList);
-  return finalList;
+  return withSaveQueue(storageKey, async ()=>{
+    const res = await window.storage.get(storageKey, true);
+    const remoteList = res && res.value ? JSON.parse(res.value) : [];
+    const remoteSet = new Set(remoteList);
+    const lastSynced = _reconcileSnapshots[storageKey] || new Set();
+    const localSet = new Set(localList||[]);
+    [...lastSynced].filter(x=>!localSet.has(x)).forEach(x=>remoteSet.delete(x));
+    [...localSet].filter(x=>!lastSynced.has(x)).forEach(x=>remoteSet.add(x));
+    const finalList = [...remoteSet];
+    await window.storage.set(storageKey, JSON.stringify(finalList), true);
+    markSyncedStringArray(storageKey, finalList);
+    return finalList;
+  });
 }
 
 /* ---------- trash (soft-delete a whole city) ---------- */
@@ -2320,18 +2345,20 @@ async function loadExpensesData(){
 }
 async function saveExpensesData(){
   try{
-    const res = await window.storage.get(EXPENSES_KEY, true);
-    const data = res && res.value ? JSON.parse(res.value) : {};
-    const remoteExpenses = Array.isArray(data.manualExpenses) ? data.manualExpenses : [];
-    const remoteLoans = Array.isArray(data.businessLoans) ? data.businessLoans : [];
-    const remoteDebts = Array.isArray(data.businessDebts) ? data.businessDebts : [];
-    manualExpenses = _mergeArraysById(remoteExpenses, manualExpenses, _reconcileSnapshots['EXPENSES::expenses']||new Map());
-    businessLoans = _mergeArraysById(remoteLoans, businessLoans, _reconcileSnapshots['EXPENSES::loans']||new Map());
-    businessDebts = _mergeArraysById(remoteDebts, businessDebts, _reconcileSnapshots['EXPENSES::debts']||new Map());
-    await window.storage.set(EXPENSES_KEY, JSON.stringify({manualExpenses, businessLoans, businessDebts}), true);
-    markSyncedArray('EXPENSES::expenses', manualExpenses);
-    markSyncedArray('EXPENSES::loans', businessLoans);
-    markSyncedArray('EXPENSES::debts', businessDebts);
+    await withSaveQueue(EXPENSES_KEY, async ()=>{
+      const res = await window.storage.get(EXPENSES_KEY, true);
+      const data = res && res.value ? JSON.parse(res.value) : {};
+      const remoteExpenses = Array.isArray(data.manualExpenses) ? data.manualExpenses : [];
+      const remoteLoans = Array.isArray(data.businessLoans) ? data.businessLoans : [];
+      const remoteDebts = Array.isArray(data.businessDebts) ? data.businessDebts : [];
+      manualExpenses = _mergeArraysById(remoteExpenses, manualExpenses, _reconcileSnapshots['EXPENSES::expenses']||new Map());
+      businessLoans = _mergeArraysById(remoteLoans, businessLoans, _reconcileSnapshots['EXPENSES::loans']||new Map());
+      businessDebts = _mergeArraysById(remoteDebts, businessDebts, _reconcileSnapshots['EXPENSES::debts']||new Map());
+      await window.storage.set(EXPENSES_KEY, JSON.stringify({manualExpenses, businessLoans, businessDebts}), true);
+      markSyncedArray('EXPENSES::expenses', manualExpenses);
+      markSyncedArray('EXPENSES::loans', businessLoans);
+      markSyncedArray('EXPENSES::debts', businessDebts);
+    });
   }catch(e){ showToast('שגיאה בשמירת הנתונים הכספיים'); }
 }
 function genExpenseId(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -2922,6 +2949,11 @@ function validatePhone(raw){
 
 /* ---------- submit / edit ---------- */
 function submitOrder(){
+  // Guards against a rep double-clicking/double-tapping "הוסף הזמנה" (common on a slow connection
+  // or a laggy phone) creating two identical real orders. The button re-enables in
+  // finishSubmitOrder() (success), closeBlockedCustomerModal() (blocked-customer flow aborted),
+  // and the defensive round-choice-cancelled branch below.
+  if(document.getElementById('submitBtn').disabled) return;
   const city = getSelectedCity();
   const customer = document.getElementById('fCustomer').value.trim();
   const address = document.getElementById('fAddress').value.trim();
@@ -2972,6 +3004,7 @@ function submitOrder(){
   if(discount>0 && !discountApproved){ showToast('יש לסמן שקיבלת אישור מנהל להנחה לפני שמירת ההזמנה'); return; }
   const totalPrice = Math.max(0, grossPrice - discount);
 
+  document.getElementById('submitBtn').disabled = true;
   if(editingId){
     const o = orders.find(x=>x.id===editingId);
     if(o){
@@ -3001,7 +3034,7 @@ function proceedWithNewOrder(orderData, city){
   const activeRounds = computeCityActiveRounds(city);
   if(activeRounds.length > 0){
     askRoundChoice(city, activeRounds, (roundNumber)=>{
-      if(roundNumber==null) return;
+      if(roundNumber==null){ document.getElementById('submitBtn').disabled = false; return; }
       pushNewOrder(orderData, roundNumber);
       finishSubmitOrder();
     });
@@ -3045,6 +3078,7 @@ function finishSubmitOrder(){
   resetFoodRows();
   populateCitySelect();
   updateTotalPrice();
+  document.getElementById('submitBtn').disabled = false;
 
   saveOrders();
   renderAll();
@@ -3055,6 +3089,7 @@ function cancelEdit(){
   editingId = null;
   document.getElementById('editNote').style.display = 'none';
   document.getElementById('submitBtn').textContent = 'הוסף הזמנה';
+  document.getElementById('submitBtn').disabled = false;
   document.getElementById('fCustomer').value='';
   document.getElementById('fAddress').value='';
   fPickedStreet = null;
@@ -4744,6 +4779,7 @@ function openBlockedCustomerModal(entry, onProceed){
 function closeBlockedCustomerModal(){
   document.getElementById('blockedCustomerModal').classList.remove('open');
   blockedModalProceedCallback = null;
+  document.getElementById('submitBtn').disabled = false; // in case this closed an in-progress submit without proceeding
 }
 function proceedDespiteBlock(){
   const cb = blockedModalProceedCallback;
