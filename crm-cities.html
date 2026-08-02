@@ -845,9 +845,10 @@ async function loadDepot(){
     const res = await window.storage.get(DEPOT_KEY, true);
     if(res && res.value) depot = JSON.parse(res.value);
   }catch(e){ /* keep default empty depot */ }
+  markSyncedObject(DEPOT_KEY, depot);
 }
 async function saveDepot(){
-  try{ await window.storage.set(DEPOT_KEY, JSON.stringify(depot), true); }
+  try{ depot = await reconcileObjectStore(DEPOT_KEY, depot); }
   catch(e){ showToast('שגיאה בשמירת נקודת המוצא'); }
 }
 const MAIN_ADMIN_USERNAME = 'נועם';
@@ -1096,6 +1097,16 @@ function getColorOptions(type){
 function escAttr(str){
   return String(str).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
+// Free-text fields (customer name, note, address...) are typed by reps based on what a customer
+// says over the phone and get rendered straight into innerHTML in many places across the app. If
+// someone ever types something like "<img src=x onerror=...>" into one of those fields (by
+// accident, or maliciously), without escaping it would run as real HTML/JS in the browser of
+// every rep/admin who later views that order - a stored XSS hole. This escapes text for safe use
+// inside HTML content (not inside an attribute - use escAttr for that).
+function escHtml(str){
+  if(str==null) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
 
 const ANIMAL_INFO = {
   'תוכון מותאם לאילוף כולל כלוב': "התוכון מגיע אליכם מותאם לאילוף עם דף הדרכה שנרשם על ידי מאלף מקצועי, שמלמד אתכם איך לאלף אותו מא' ועד ת'. לתוכי יש יכולת אחרי אילוף לעלות מאצבע לאצבע ולעלות על הכתף. בתוכי הזה מומלץ לקחת 2 כדי שיהיה לו חברה. גיל ההגעה: בין 4 חודשים (לרוב סביב גיל 6 חודשים) לשנה.",
@@ -1145,6 +1156,7 @@ async function loadUsers(){
     const res = await window.storage.get(USERS_KEY, true);
     users = res && res.value ? JSON.parse(res.value) : [];
   }catch(e){ users = []; }
+  markSyncedArray(USERS_KEY, users, 'username');
   let needsBootstrapPassword = false;
   if(!Array.isArray(users) || users.length===0){ users = defaultUsers(); needsBootstrapPassword = true; }
   // always guarantee the protected main admin account exists
@@ -1157,7 +1169,7 @@ async function loadUsers(){
   if(needsBootstrapPassword) await ensureCredentials(MAIN_ADMIN_USERNAME, MAIN_ADMIN_DEFAULT_PASSWORD);
 }
 async function saveUsers(){
-  try{ await window.storage.set(USERS_KEY, JSON.stringify(users), true); }
+  try{ users = await reconcileArrayStore(USERS_KEY, users, 'username'); }
   catch(e){ showToast('שגיאה בשמירת המשתמשים'); }
 }
 function roleLabel(role){
@@ -2120,30 +2132,80 @@ async function saveOrders(){
 // per-key snapshot of what this tab last synced, so only what THIS tab actually changed gets
 // layered onto the live server copy - anything another device changed in between is preserved.
 const _reconcileSnapshots = {};
-function _snapshotArrayById(list){
+function _snapshotArrayById(list, idField){
+  idField = idField || 'id';
   const m = new Map();
-  (list||[]).forEach(o => { if(o && o.id!=null) m.set(o.id, JSON.stringify(o)); });
+  (list||[]).forEach(o => { if(o && o[idField]!=null) m.set(o[idField], JSON.stringify(o)); });
   return m;
 }
-function markSyncedArray(storageKey, list){
-  _reconcileSnapshots[storageKey] = _snapshotArrayById(list);
+function markSyncedArray(storageKey, list, idField){
+  _reconcileSnapshots[storageKey] = _snapshotArrayById(list, idField);
 }
-async function reconcileArrayStore(storageKey, localList){
+// Pure merge helper (no network I/O) so multiple arrays stored under ONE remote key (like the
+// combined expenses/loans/debts blob) can each be reconciled independently against their own
+// snapshot before being recombined and written together in a single request.
+function _mergeArraysById(remoteList, localList, lastSynced, idField){
+  idField = idField || 'id';
+  const remoteMap = new Map((remoteList||[]).filter(o=>o && o[idField]!=null).map(o=>[o[idField], o]));
+  const localIds = new Set((localList||[]).filter(o=>o && o[idField]!=null).map(o=>o[idField]));
+  const deletedByMe = [...lastSynced.keys()].filter(id => !localIds.has(id));
+  const changedOrNewByMe = (localList||[]).filter(o => o && o[idField]!=null && lastSynced.get(o[idField]) !== JSON.stringify(o));
+  deletedByMe.forEach(id => remoteMap.delete(id));
+  changedOrNewByMe.forEach(o => remoteMap.set(o[idField], o));
+  return [...remoteMap.values()];
+}
+// idField lets this same logic work for stores identified by something other than `id` (e.g.
+// the users list, which is identified by `username`).
+async function reconcileArrayStore(storageKey, localList, idField){
+  idField = idField || 'id';
   const res = await window.storage.get(storageKey, true);
   const remoteList = res && res.value ? JSON.parse(res.value) : [];
-  const remoteMap = new Map(remoteList.filter(o=>o && o.id!=null).map(o=>[o.id, o]));
-
   const lastSynced = _reconcileSnapshots[storageKey] || new Map();
-  const localIds = new Set((localList||[]).filter(o=>o && o.id!=null).map(o=>o.id));
-  const deletedByMe = [...lastSynced.keys()].filter(id => !localIds.has(id));
-  const changedOrNewByMe = (localList||[]).filter(o => o && o.id!=null && lastSynced.get(o.id) !== JSON.stringify(o));
-
-  deletedByMe.forEach(id => remoteMap.delete(id));
-  changedOrNewByMe.forEach(o => remoteMap.set(o.id, o));
-
-  const finalList = [...remoteMap.values()];
+  const finalList = _mergeArraysById(remoteList, localList, lastSynced, idField);
   await window.storage.set(storageKey, JSON.stringify(finalList), true);
-  markSyncedArray(storageKey, finalList);
+  markSyncedArray(storageKey, finalList, idField);
+  return finalList;
+}
+
+// For flat/nested settings-style objects (not arrays) shared across devices, e.g. the depot
+// address or campaign cost settings: only the top-level keys THIS tab actually changed since its
+// last sync get written on top of a freshly-fetched copy, so an admin editing one setting on one
+// device never silently wipes out a different setting someone else just changed elsewhere.
+function markSyncedObject(storageKey, obj){
+  const m = new Map();
+  Object.keys(obj||{}).forEach(k => m.set(k, JSON.stringify(obj[k])));
+  _reconcileSnapshots[storageKey] = m;
+}
+async function reconcileObjectStore(storageKey, localObj){
+  const res = await window.storage.get(storageKey, true);
+  const remoteObj = res && res.value ? JSON.parse(res.value) : {};
+  const lastSynced = _reconcileSnapshots[storageKey] || new Map();
+  const merged = Object.assign({}, remoteObj);
+  Object.keys(localObj||{}).forEach(k=>{
+    if(lastSynced.get(k) !== JSON.stringify(localObj[k])) merged[k] = localObj[k];
+  });
+  [...lastSynced.keys()].forEach(k=>{ if(!localObj || !(k in localObj)) delete merged[k]; });
+  await window.storage.set(storageKey, JSON.stringify(merged), true);
+  markSyncedObject(storageKey, merged);
+  return merged;
+}
+
+// For a shared array of plain strings (no id field of their own - the string IS the identity),
+// e.g. the list of city names participating in a campaign.
+function markSyncedStringArray(storageKey, list){
+  _reconcileSnapshots[storageKey] = new Set(list||[]);
+}
+async function reconcileStringArrayStore(storageKey, localList){
+  const res = await window.storage.get(storageKey, true);
+  const remoteList = res && res.value ? JSON.parse(res.value) : [];
+  const remoteSet = new Set(remoteList);
+  const lastSynced = _reconcileSnapshots[storageKey] || new Set();
+  const localSet = new Set(localList||[]);
+  [...lastSynced].filter(x=>!localSet.has(x)).forEach(x=>remoteSet.delete(x));
+  [...localSet].filter(x=>!lastSynced.has(x)).forEach(x=>remoteSet.add(x));
+  const finalList = [...remoteSet];
+  await window.storage.set(storageKey, JSON.stringify(finalList), true);
+  markSyncedStringArray(storageKey, finalList);
   return finalList;
 }
 
@@ -2251,11 +2313,26 @@ async function loadExpensesData(){
     manualExpenses = Array.isArray(data.manualExpenses) ? data.manualExpenses : [];
     businessLoans = Array.isArray(data.businessLoans) ? data.businessLoans : [];
     businessDebts = Array.isArray(data.businessDebts) ? data.businessDebts : [];
+    markSyncedArray('EXPENSES::expenses', manualExpenses);
+    markSyncedArray('EXPENSES::loans', businessLoans);
+    markSyncedArray('EXPENSES::debts', businessDebts);
   }catch(e){ manualExpenses = []; businessLoans = []; businessDebts = []; }
 }
 async function saveExpensesData(){
-  try{ await window.storage.set(EXPENSES_KEY, JSON.stringify({manualExpenses, businessLoans, businessDebts}), true); }
-  catch(e){ showToast('שגיאה בשמירת הנתונים הכספיים'); }
+  try{
+    const res = await window.storage.get(EXPENSES_KEY, true);
+    const data = res && res.value ? JSON.parse(res.value) : {};
+    const remoteExpenses = Array.isArray(data.manualExpenses) ? data.manualExpenses : [];
+    const remoteLoans = Array.isArray(data.businessLoans) ? data.businessLoans : [];
+    const remoteDebts = Array.isArray(data.businessDebts) ? data.businessDebts : [];
+    manualExpenses = _mergeArraysById(remoteExpenses, manualExpenses, _reconcileSnapshots['EXPENSES::expenses']||new Map());
+    businessLoans = _mergeArraysById(remoteLoans, businessLoans, _reconcileSnapshots['EXPENSES::loans']||new Map());
+    businessDebts = _mergeArraysById(remoteDebts, businessDebts, _reconcileSnapshots['EXPENSES::debts']||new Map());
+    await window.storage.set(EXPENSES_KEY, JSON.stringify({manualExpenses, businessLoans, businessDebts}), true);
+    markSyncedArray('EXPENSES::expenses', manualExpenses);
+    markSyncedArray('EXPENSES::loans', businessLoans);
+    markSyncedArray('EXPENSES::debts', businessDebts);
+  }catch(e){ showToast('שגיאה בשמירת הנתונים הכספיים'); }
 }
 function genExpenseId(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function addManualExpense(){
@@ -2472,7 +2549,7 @@ function computeRepActivityByWeekday(scope){
       days[d.getDay()].count += 1;
       days[d.getDay()].items.push({
         type:'order', createdAt:o.createdAt,
-        label: `${o.customer||'לקוח'} · ${cityDisplayName(o.city, o.roundNumber||0)}${isAdminRole()?' · '+(o.totalPrice||0)+' ₪':''}`
+        label: `${escHtml(o.customer||'לקוח')} · ${cityDisplayName(o.city, o.roundNumber||0)}${isAdminRole()?' · '+(o.totalPrice||0)+' ₪':''}`
       });
     });
     spotSales.forEach(s=>{
@@ -2481,7 +2558,7 @@ function computeRepActivityByWeekday(scope){
       days[d.getDay()].count += 1;
       days[d.getDay()].items.push({
         type:'spot', createdAt:s.createdAt,
-        label: `⚡ מכירה מהירה: ${s.product} ×${s.quantity}${s.customer?' · '+s.customer:''}${isAdminRole()?' · '+(s.totalPrice||0)+' ₪':''}`
+        label: `⚡ מכירה מהירה: ${s.product} ×${s.quantity}${s.customer?' · '+escHtml(s.customer):''}${isAdminRole()?' · '+(s.totalPrice||0)+' ₪':''}`
       });
     });
     days.forEach(day=>day.items.sort((a,b)=>b.createdAt-a.createdAt));
@@ -3172,8 +3249,8 @@ function renderSummary(){
     const ordersHtml = c.orders.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(o=>`
       <div class="order-row">
         <div>
-          <div class="order-main">${o.deliveryConfirmed?'✅ ':''}${o.fromYad2?'🏷️ יד2 · ':''}${formatAnimals(o.animals,o.pairFlags,o.cageSharing)} — ${o.customer}</div>
-          <div class="order-sub">${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+o.note:''}${o.discount>0?' · 🏷️ ניתנה הנחה של '+o.discount+'₪':''}${isAdminRole()&&o.createdByUsername?' · 👤 '+o.createdByUsername:''}</div>
+          <div class="order-main">${o.deliveryConfirmed?'✅ ':''}${o.fromYad2?'🏷️ יד2 · ':''}${formatAnimals(o.animals,o.pairFlags,o.cageSharing)} — ${escHtml(o.customer)}</div>
+          <div class="order-sub">${formatDate(o.date)}${o.address?' · '+escHtml(o.address):''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+escHtml(o.note):''}${o.discount>0?' · 🏷️ ניתנה הנחה של '+o.discount+'₪':''}${isAdminRole()&&o.createdByUsername?' · 👤 '+escHtml(o.createdByUsername):''}</div>
         </div>
         <div class="order-actions">
           ${o.address ? `<button class="icon-btn" onclick="copySingleAddress('${o.id}')" title="העתק כתובת">📍</button>` : ''}
@@ -3253,7 +3330,7 @@ function renderAllOrders(){
     <div class="order-row ${o.cancelled?'cancelled':''}">
       <div>
         <div class="order-main">${o.fromYad2?'🏷️ יד2 · ':''}${o.city} — ${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.cancelled?'<span class="badge-cancelled">מבוטלת</span>':''}${(!o.cancelled && o.delivered)?'<span class="badge-shipped">נשלח '+formatDate(o.deliveryDate)+'</span>':''}</div>
-        <div class="order-sub">${o.customer} · ${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+o.note:''}${o.discount>0?' · 🏷️ ניתנה הנחה של '+o.discount+'₪':''}${isAdminRole()&&o.createdByUsername?' · 👤 '+o.createdByUsername:''}</div>
+        <div class="order-sub">${escHtml(o.customer)} · ${formatDate(o.date)}${o.address?' · '+escHtml(o.address):''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+escHtml(o.note):''}${o.discount>0?' · 🏷️ ניתנה הנחה של '+o.discount+'₪':''}${isAdminRole()&&o.createdByUsername?' · 👤 '+escHtml(o.createdByUsername):''}</div>
       </div>
       <div class="order-actions">
         <button class="icon-btn" onclick="startEdit('${o.id}')">✏️</button>
@@ -3442,7 +3519,7 @@ function openPackModal(city, round){
   if(notedOrders.length>0){
     html += `<div style="font-weight:800;font-size:14px;margin-top:14px;padding-top:10px;border-top:2px solid var(--border);">📝 הערות מיוחדות</div>`;
     notedOrders.forEach(o=>{
-      html += `<div style="font-size:12.5px;color:var(--muted);padding:6px 4px;">${o.fromYad2?'🏷️ יד2 · ':''}<b>${o.customer}</b>${o.note?' — '+o.note:''}${o.discount>0?' — ניתנה הנחה של '+o.discount+'₪':''}</div>`;
+      html += `<div style="font-size:12.5px;color:var(--muted);padding:6px 4px;">${o.fromYad2?'🏷️ יד2 · ':''}<b>${escHtml(o.customer)}</b>${o.note?' — '+escHtml(o.note):''}${o.discount>0?' — ניתנה הנחה של '+o.discount+'₪':''}</div>`;
     });
   }
 
@@ -3608,8 +3685,8 @@ function renderDeliveryTrackContent(){
     <label class="pack-item">
       <input type="checkbox" class="delivery-check" data-order-id="${o.id}" ${o.deliveryConfirmed?'checked':''} style="width:19px;height:19px;margin-top:2px;flex-shrink:0;">
       <div style="flex:1;text-align:right;">
-        <div style="font-weight:700;font-size:14px;">${o.customer}</div>
-        <div style="font-size:12.5px;color:var(--muted);margin-top:2px;">${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}</div>
+        <div style="font-weight:700;font-size:14px;">${escHtml(o.customer)}</div>
+        <div style="font-size:12.5px;color:var(--muted);margin-top:2px;">${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.address?' · '+escHtml(o.address):''}${o.phone1?' · '+o.phone1:''}</div>
       </div>
     </label>
   `).join('');
@@ -3635,9 +3712,10 @@ async function loadRoundDepartures(){
     const res = await window.storage.get(ROUND_DEPARTURE_KEY, true);
     roundDepartures = res && res.value ? JSON.parse(res.value) : {};
   }catch(e){ roundDepartures = {}; }
+  markSyncedObject(ROUND_DEPARTURE_KEY, roundDepartures);
 }
 async function saveRoundDepartures(){
-  try{ await window.storage.set(ROUND_DEPARTURE_KEY, JSON.stringify(roundDepartures), true); }
+  try{ roundDepartures = await reconcileObjectStore(ROUND_DEPARTURE_KEY, roundDepartures); }
   catch(e){ showToast('שגיאה בשמירת תאריך היציאה'); }
 }
 function daysUntil(dateStr){
@@ -3701,9 +3779,9 @@ function renderCustomerUpdateContent(){
     <label class="pack-item">
       <input type="checkbox" class="cu-check" data-order-id="${o.id}" ${o.customerUpdated?'checked':''} style="width:19px;height:19px;margin-top:2px;flex-shrink:0;">
       <div style="flex:1;text-align:right;">
-        <div style="font-weight:700;font-size:14px;">${o.fromYad2?'🏷️ יד2 · ':''}${o.customer}</div>
-        <div style="font-size:12.5px;color:var(--muted);margin-top:2px;">${o.address?o.address+' · ':''}${o.phone1?`<a href="tel:${o.phone1.replace(/-/g,'')}" style="color:var(--accent-dark);font-weight:700;" onclick="event.stopPropagation();">${o.phone1}</a>`:''}${o.phone2?', '+`<a href="tel:${o.phone2.replace(/-/g,'')}" style="color:var(--accent-dark);font-weight:700;" onclick="event.stopPropagation();">${o.phone2}</a>`:''}</div>
-        ${o.note?`<div style="font-size:12px;color:var(--muted);margin-top:2px;">📝 ${o.note}</div>`:''}
+        <div style="font-weight:700;font-size:14px;">${o.fromYad2?'🏷️ יד2 · ':''}${escHtml(o.customer)}</div>
+        <div style="font-size:12.5px;color:var(--muted);margin-top:2px;">${o.address?escHtml(o.address)+' · ':''}${o.phone1?`<a href="tel:${o.phone1.replace(/-/g,'')}" style="color:var(--accent-dark);font-weight:700;" onclick="event.stopPropagation();">${o.phone1}</a>`:''}${o.phone2?', '+`<a href="tel:${o.phone2.replace(/-/g,'')}" style="color:var(--accent-dark);font-weight:700;" onclick="event.stopPropagation();">${o.phone2}</a>`:''}</div>
+        ${o.note?`<div style="font-size:12px;color:var(--muted);margin-top:2px;">📝 ${escHtml(o.note)}</div>`:''}
         ${o.customerUpdateMethod?`<div style="font-size:12px;color:var(--accent-dark);margin-top:2px;font-weight:700;">✓ עודכן ${o.customerUpdateMethod}</div>`:''}
         ${o.discount>0?`<div style="font-size:12px;color:var(--muted);margin-top:2px;">🏷️ ניתנה הנחה של ${o.discount}₪</div>`:''}
       </div>
@@ -3787,12 +3865,12 @@ function renderCustomerSearch(){
   html += matchingOrders.map(o=>`
     <div class="city-card">
       <div class="city-head">
-        <div class="city-name-wrap"><div class="city-name">${o.fromYad2?'🏷️ יד2 · ':''}${o.customer}</div></div>
+        <div class="city-name-wrap"><div class="city-name">${o.fromYad2?'🏷️ יד2 · ':''}${escHtml(o.customer)}</div></div>
         <div class="city-last">${statusBadge(o)}</div>
       </div>
       <div class="city-totals">${cityDisplayName(o.city, o.roundNumber||0)} · הוזמן ב-${formatDate(o.date)}</div>
       <div class="order-sub" style="margin-top:6px;">${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.foodItems&&o.foodItems.length?' · 🍽️ '+formatFoodItems(o.foodItems):''}</div>
-      <div class="order-sub" style="margin-top:2px;">${o.address?o.address+' · ':''}${o.phone1?`<a href="tel:${o.phone1.replace(/-/g,'')}" style="color:var(--accent-dark);font-weight:700;">${o.phone1}</a>`:''}${o.phone2?', '+`<a href="tel:${o.phone2.replace(/-/g,'')}" style="color:var(--accent-dark);font-weight:700;">${o.phone2}</a>`:''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+o.note:''}${o.discount>0?' · 🏷️ ניתנה הנחה של '+o.discount+'₪':''}</div>
+      <div class="order-sub" style="margin-top:2px;">${o.address?escHtml(o.address)+' · ':''}${o.phone1?`<a href="tel:${o.phone1.replace(/-/g,'')}" style="color:var(--accent-dark);font-weight:700;">${o.phone1}</a>`:''}${o.phone2?', '+`<a href="tel:${o.phone2.replace(/-/g,'')}" style="color:var(--accent-dark);font-weight:700;">${o.phone2}</a>`:''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+escHtml(o.note):''}${o.discount>0?' · 🏷️ ניתנה הנחה של '+o.discount+'₪':''}</div>
     </div>
   `).join('');
 
@@ -3826,9 +3904,9 @@ function managerInquiryHtml(o){
   const overdue = inquiryIsOverdue(mi);
   const urgent = overdue || mi.isMedical;
   const medicalTag = mi.isMedical ? '🚨 מקרה רפואי דחוף · ' : '';
-  const assignedLabel = (mi.assignedTo && mi.assignedTo.length) ? ` · מטופל ע"י: ${mi.assignedTo.join(', ')}` : '';
+  const assignedLabel = (mi.assignedTo && mi.assignedTo.length) ? ` · מטופל ע"י: ${escHtml(mi.assignedTo.join(', '))}` : '';
   return `<div style="margin-top:6px;padding:6px 8px;border-radius:8px;background:${urgent?'#FBEAEA':'var(--new-badge-light)'};color:${urgent?'var(--danger)':'var(--new-badge)'};font-size:12px;font-weight:700;">
-    ${medicalTag}${overdue?'⚠️ פנייה פתוחה מעל 48 שעות':'🚩 פנייה פתוחה למנהל'}${mi.openedBy?' ('+mi.openedBy+')':''}: ${mi.note}${assignedLabel}
+    ${medicalTag}${overdue?'⚠️ פנייה פתוחה מעל 48 שעות':'🚩 פנייה פתוחה למנהל'}${mi.openedBy?' ('+escHtml(mi.openedBy)+')':''}: ${escHtml(mi.note)}${assignedLabel}
     ${isAdminRole() ? `<span style="cursor:pointer;text-decoration:underline;margin-inline-start:8px;" onclick="resolveManagerInquiry('${o.id}')">סמן כטופל</span>` : ''}
   </div>`;
 }
@@ -3923,11 +4001,11 @@ function renderHistory(){
     container.innerHTML = matches.map(o=>`
       <div class="city-card">
         <div class="city-head">
-          <div class="city-name-wrap"><div class="city-name">${o.customer}</div></div>
+          <div class="city-name-wrap"><div class="city-name">${escHtml(o.customer)}</div></div>
           <div class="city-last">משלוח: ${formatDate(o.deliveryDate)} · ${relativeTime(o.deliveryDate)}</div>
         </div>
         <div class="city-totals">${o.fromYad2?'🏷️ יד2 · ':''}${cityDisplayName(o.city, o.roundNumber||0)} · הוזמן ב-${formatDate(o.date)}</div>
-        <div class="order-sub" style="margin-top:6px;">${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.address?' · '+o.address:''}${o.note?' · 📝 '+o.note:''}${isAdminRole()&&o.createdByUsername?' · 👤 '+o.createdByUsername:''}</div>
+        <div class="order-sub" style="margin-top:6px;">${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.address?' · '+escHtml(o.address):''}${o.note?' · 📝 '+escHtml(o.note):''}${isAdminRole()&&o.createdByUsername?' · 👤 '+escHtml(o.createdByUsername):''}</div>
         ${managerInquiryHtml(o)}
         ${isAdminRole() ? `<button class="icon-btn" onclick="openMarkBlockedModal('${o.id}')" title="סמן לקוח כבעייתי">⛔</button>` : ''}
       </div>
@@ -3945,8 +4023,8 @@ function renderHistory(){
     const rows = s.orders.slice().sort((a,b)=>a.customer.localeCompare(b.customer,'he')).map(o=>`
       <div class="order-row">
         <div style="flex:1;">
-          <div class="order-main">${o.fromYad2?'🏷️ יד2 · ':''}${o.customer} — ${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}</div>
-          <div class="order-sub">הוזמן ב-${formatDate(o.date)}${o.address?' · '+o.address:''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+o.note:''}${o.discount>0?' · 🏷️ ניתנה הנחה של '+o.discount+'₪':''}${isAdminRole()&&o.createdByUsername?' · 👤 '+o.createdByUsername:''}</div>
+          <div class="order-main">${o.fromYad2?'🏷️ יד2 · ':''}${escHtml(o.customer)} — ${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}</div>
+          <div class="order-sub">הוזמן ב-${formatDate(o.date)}${o.address?' · '+escHtml(o.address):''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+escHtml(o.note):''}${o.discount>0?' · 🏷️ ניתנה הנחה של '+o.discount+'₪':''}${isAdminRole()&&o.createdByUsername?' · 👤 '+escHtml(o.createdByUsername):''}</div>
           ${managerInquiryHtml(o)}
           ${isAdminRole() ? `<button class="icon-btn" onclick="openMarkBlockedModal('${o.id}')" title="סמן לקוח כבעייתי">⛔</button>` : ''}
         </div>
@@ -4179,7 +4257,7 @@ function renderQuickSaleRecent(){
     <div class="order-row">
       <div>
         <div class="order-main" style="font-size:13.5px;">${s.product} ×${s.quantity} — ${s.totalPrice} ₪${s.noCage?' (ללא כלוב)':''}</div>
-        <div class="order-sub">${formatDate(s.date)}${s.customer?' · '+s.customer:''}${s.location?' · '+s.location:''}${s.extraCharge?' · תוספת מיוחדת '+s.extraCharge+' ₪':''}</div>
+        <div class="order-sub">${formatDate(s.date)}${s.customer?' · '+escHtml(s.customer):''}${s.location?' · '+escHtml(s.location):''}${s.extraCharge?' · תוספת מיוחדת '+s.extraCharge+' ₪':''}</div>
       </div>
       <button class="icon-btn" onclick="deleteSpotSale('${s.id}')">🗑️</button>
     </div>
@@ -4197,10 +4275,15 @@ async function loadCostSettings(){
       cityMarketingSpend = parsed.cityMarketing || {};
     }
   }catch(e){ /* use defaults */ }
+  markSyncedObject(COST_SETTINGS_KEY, {costs:costSettings, marketing:avgMarketingCostPerOrder, cityMarketing:cityMarketingSpend});
 }
 async function saveCostSettings(){
-  try{ await window.storage.set(COST_SETTINGS_KEY, JSON.stringify({costs:costSettings, marketing:avgMarketingCostPerOrder, cityMarketing:cityMarketingSpend}), true); }
-  catch(e){ showToast('שגיאה בשמירת ההגדרות'); }
+  try{
+    const merged = await reconcileObjectStore(COST_SETTINGS_KEY, {costs:costSettings, marketing:avgMarketingCostPerOrder, cityMarketing:cityMarketingSpend});
+    costSettings = merged.costs || costSettings;
+    avgMarketingCostPerOrder = typeof merged.marketing === 'number' ? merged.marketing : avgMarketingCostPerOrder;
+    cityMarketingSpend = merged.cityMarketing || cityMarketingSpend;
+  }catch(e){ showToast('שגיאה בשמירת ההגדרות'); }
 }
 // Free-form scheduled reminders the main admin builds themselves: any message, any daily time,
 // sent to whichever role they pick (rep / admin / mainadmin). The actual sending happens outside
@@ -4485,9 +4568,10 @@ async function loadAdChannels(){
     adChannels = res && res.value ? JSON.parse(res.value) : [];
     if(!Array.isArray(adChannels)) adChannels = [];
   }catch(e){ adChannels = []; }
+  markSyncedArray(AD_CHANNELS_KEY, adChannels);
 }
 async function saveAdChannels(){
-  try{ await window.storage.set(AD_CHANNELS_KEY, JSON.stringify(adChannels), true); }
+  try{ adChannels = await reconcileArrayStore(AD_CHANNELS_KEY, adChannels); }
   catch(e){ showToast('שגיאה בשמירת ערוצי הפרסום'); }
 }
 let strongAdRounds = {};
@@ -4496,9 +4580,10 @@ async function loadStrongAdRounds(){
     const res = await window.storage.get(STRONG_AD_ROUNDS_KEY, true);
     strongAdRounds = res && res.value ? JSON.parse(res.value) : {};
   }catch(e){ strongAdRounds = {}; }
+  markSyncedObject(STRONG_AD_ROUNDS_KEY, strongAdRounds);
 }
 async function saveStrongAdRounds(){
-  try{ await window.storage.set(STRONG_AD_ROUNDS_KEY, JSON.stringify(strongAdRounds), true); }
+  try{ strongAdRounds = await reconcileObjectStore(STRONG_AD_ROUNDS_KEY, strongAdRounds); }
   catch(e){ showToast('שגיאה בשמירה'); }
 }
 let strongAdCampaign = { defaultWeeklyCost:0, weekOverrides:{} };
@@ -4509,10 +4594,11 @@ async function loadStrongAdCampaign(){
       const parsed = JSON.parse(res.value);
       strongAdCampaign = { defaultWeeklyCost: parsed.defaultWeeklyCost||0, weekOverrides: parsed.weekOverrides||{} };
     }
+    markSyncedObject(STRONG_AD_CAMPAIGN_KEY, strongAdCampaign);
   }catch(e){ /* use defaults */ }
 }
 async function saveStrongAdCampaign(){
-  try{ await window.storage.set(STRONG_AD_CAMPAIGN_KEY, JSON.stringify(strongAdCampaign), true); }
+  try{ strongAdCampaign = await reconcileObjectStore(STRONG_AD_CAMPAIGN_KEY, strongAdCampaign); }
   catch(e){ showToast('שגיאה בשמירה'); }
 }
 // Returns the Sunday (YYYY-MM-DD) that starts the week containing dateStr - ads in this business go out Sundays.
@@ -4561,9 +4647,10 @@ async function loadStrongAdRoster(){
     strongAdCityRoster = res && res.value ? JSON.parse(res.value) : [];
     if(!Array.isArray(strongAdCityRoster)) strongAdCityRoster = [];
   }catch(e){ strongAdCityRoster = []; }
+  markSyncedStringArray(STRONG_AD_ROSTER_KEY, strongAdCityRoster);
 }
 async function saveStrongAdRoster(){
-  try{ await window.storage.set(STRONG_AD_ROSTER_KEY, JSON.stringify(strongAdCityRoster), true); }
+  try{ strongAdCityRoster = await reconcileStringArrayStore(STRONG_AD_ROSTER_KEY, strongAdCityRoster); }
   catch(e){ showToast('שגיאה בשמירה'); }
 }
 
@@ -4646,9 +4733,9 @@ function openBlockedCustomerModal(entry, onProceed){
   const admin = isAdminRole();
   blockedModalProceedCallback = admin ? onProceed : null;
   document.getElementById('blockedCustomerSummary').innerHTML = `
-    <div style="font-weight:800;margin-bottom:6px;">${entry.name||''}${entry.phone?' · '+entry.phone:''}</div>
-    <div style="font-size:13px;margin-bottom:6px;">${entry.reason||''}</div>
-    <div style="font-size:12px;color:var(--muted);">סומן ע"י ${entry.markedBy||'(לא ידוע)'} · ${formatDate(new Date(entry.markedAt).toISOString().slice(0,10))}</div>
+    <div style="font-weight:800;margin-bottom:6px;">${escHtml(entry.name||'')}${entry.phone?' · '+escHtml(entry.phone):''}</div>
+    <div style="font-size:13px;margin-bottom:6px;">${escHtml(entry.reason||'')}</div>
+    <div style="font-size:12px;color:var(--muted);">סומן ע"י ${escHtml(entry.markedBy||'(לא ידוע)')} · ${formatDate(new Date(entry.markedAt).toISOString().slice(0,10))}</div>
   `;
   document.getElementById('blockedCustomerProceedBtn').style.display = admin ? '' : 'none';
   document.getElementById('blockedCustomerRepNote').style.display = admin ? 'none' : 'block';
@@ -5934,11 +6021,11 @@ function renderAdminTabContent(){
       ${list.length===0 ? '<div style="color:var(--muted);font-size:13px;">אין כרגע לקוחות מסומנים.</div>' : list.map(b=>`
         <div class="city-card" style="padding:10px 14px;margin-bottom:8px;">
           <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">
-            <div style="font-weight:700;">${b.name||''}${b.phone?' · '+b.phone:''}</div>
+            <div style="font-weight:700;">${escHtml(b.name||'')}${b.phone?' · '+escHtml(b.phone):''}</div>
             ${isMain ? `<button class="icon-btn" onclick="removeBlockedCustomer('${b.id}')" title="הסר סימון">🗑️</button>` : ''}
           </div>
-          <div style="font-size:13px;margin-top:4px;">${b.reason||''}</div>
-          <div style="font-size:12px;color:var(--muted);margin-top:4px;">סומן ע"י ${b.markedBy||'(לא ידוע)'} · ${formatDate(new Date(b.markedAt).toISOString().slice(0,10))}</div>
+          <div style="font-size:13px;margin-top:4px;">${escHtml(b.reason||'')}</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:4px;">סומן ע"י ${escHtml(b.markedBy||'(לא ידוע)')} · ${formatDate(new Date(b.markedAt).toISOString().slice(0,10))}</div>
         </div>
       `).join('')}
     `;
@@ -6683,13 +6770,13 @@ async function openRouteModal(city, round){
   const stopsHtml = stopsForLink.map((o,i)=>`
     <div class="order-row">
       <div>
-        <div class="order-main">${i+1}. ${o.customer}</div>
-        <div class="order-sub">${o.address}${o.phone1?' · '+o.phone1:''}</div>
+        <div class="order-main">${i+1}. ${escHtml(o.customer)}</div>
+        <div class="order-sub">${escHtml(o.address)}${o.phone1?' · '+o.phone1:''}</div>
       </div>
     </div>
   `).join('');
-  const warnHtml = noAddress.length ? `<div style="color:var(--danger);font-size:12.5px;margin-top:8px;">⚠️ ${noAddress.length} הזמנות בעיר זו בלי כתובת רשומה, לא נכללות: ${noAddress.map(o=>o.customer).join(', ')}</div>` : '';
-  const geocodeFailedHtml = geocodeFailed.length ? `<div style="color:var(--danger);font-size:12.5px;margin-top:6px;">⚠️ לא הצלחנו לאתר מיקום מדויק עבור: ${geocodeFailed.map(o=>`${o.customer} (${o.address})`).join(', ')} - הן נכללות בקישור אבל לא בסדר המחושב, כדאי לבדוק ידנית.</div>` : '';
+  const warnHtml = noAddress.length ? `<div style="color:var(--danger);font-size:12.5px;margin-top:8px;">⚠️ ${noAddress.length} הזמנות בעיר זו בלי כתובת רשומה, לא נכללות: ${escHtml(noAddress.map(o=>o.customer).join(', '))}</div>` : '';
+  const geocodeFailedHtml = geocodeFailed.length ? `<div style="color:var(--danger);font-size:12.5px;margin-top:6px;">⚠️ לא הצלחנו לאתר מיקום מדויק עבור: ${escHtml(geocodeFailed.map(o=>`${o.customer} (${o.address})`).join(', '))} - הן נכללות בקישור אבל לא בסדר המחושב, כדאי לבדוק ידנית.</div>` : '';
   const errorMessages = {
     depot: 'לא הצלחנו לאתר את נקודת המוצא במפה - בדוק/י שהעיר והרחוב שהוגדרו באזור מנהל נכונים.',
     none: 'לא הצלחנו לאתר במפה אף אחת מהכתובות בסבב הזה.',
