@@ -235,8 +235,8 @@
         </div>
       </div>
       <div class="field" style="display:flex;align-items:center;gap:6px;">
-        <input type="checkbox" id="fHasSms" style="width:auto;margin-bottom:0;" checked>
-        <label style="margin-bottom:0;">ללקוח יש טלפון שמקבל SMS (בטל אם יש לו טלפון כשר ללא SMS)</label>
+        <input type="checkbox" id="fHasSms" style="width:auto;margin-bottom:0;">
+        <label style="margin-bottom:0;">✅ יש ללקוח SMS (סמן רק אם ידוע בוודאות - לא טלפון כשר)</label>
       </div>
 
       <div class="field" style="display:flex;align-items:center;gap:6px;">
@@ -1974,11 +1974,29 @@ function getSelectedCity(){
 }
 
 /* ---------- storage ---------- */
-// Tracks every order id this browser tab has ever known about (loaded, created, or merged in),
-// so we can tell "missing locally because someone else added it and we haven't seen it yet" apart
-// from "missing locally because we (this tab) intentionally deleted it" - see saveOrders() below.
-let knownOrderIds = new Set();
+// Reconciliation-based sync. This app has no realtime sync between tabs/devices, so every save
+// used to just overwrite the WHOLE shared order list with whatever this tab happened to have in
+// memory - silently erasing any order/edit/deletion another rep or admin made on a different
+// device since this tab last loaded (this really happened in production: a rep's new order
+// vanished the next time anyone else's tab saved anything).
+//
+// The fix: lastSyncedOrdersMap is a snapshot (id -> JSON string) of exactly what this tab last
+// successfully read from or wrote to the server. Every save/refresh diffs the CURRENT local
+// `orders` array against that snapshot to figure out precisely what THIS tab changed (created,
+// edited, or deleted) since then - and only THOSE changes get layered on top of a freshly-fetched
+// copy of the server's current state. Anything another device changed in the meantime (including
+// deletions or edits to orders this tab hasn't touched) is preserved automatically, because we
+// always start from the live server state rather than this tab's possibly-stale memory.
+let knownOrderIds = new Set(); // kept for backwards compatibility with any external references
+let lastSyncedOrdersMap = new Map();
 let ordersAutoRefreshTimer = null;
+
+function snapshotOrdersMap(list){
+  const m = new Map();
+  list.forEach(o => m.set(o.id, JSON.stringify(o)));
+  return m;
+}
+
 async function loadOrders(){
   try{
     const res = await window.storage.get(STORAGE_KEY, true);
@@ -1990,56 +2008,75 @@ async function loadOrders(){
   orders = orders.map(migrateOrder);
   migrateRoundNumbers();
   knownOrderIds = new Set(orders.map(o=>o.id));
+  lastSyncedOrdersMap = snapshotOrdersMap(orders);
   document.getElementById('subtitle').textContent = 'הנתונים משותפים לכל המכשירים והנציגים';
   resetAnimalRows();
   resetFoodRows();
   populateCitySelect();
   renderAll();
-  saveOrders();
+  saveOrders(); // persists any migration changes, through the same safe reconcile path
   // Without this, a tab that never triggers its own save (e.g. an admin just watching the
   // dashboard) would only ever see whatever existed the moment it first loaded the page - this
   // app has no realtime sync between devices, so we poll instead.
   if(!ordersAutoRefreshTimer) ordersAutoRefreshTimer = setInterval(refreshOrdersFromServer, 45000);
 }
-// Pulls in orders that exist on the server but that this tab has never seen before (added by a
-// rep/admin on a different device), without touching anything this tab already knows about.
-// Returns the list of newly-merged-in orders (empty array if none).
-async function mergeInOrdersAddedElsewhere(){
+
+// Fetches the live server state, applies ONLY what this tab itself changed since the last sync
+// on top of it, writes the result back, and updates local state/snapshot to match exactly what
+// was written. Returns how many orders were added/changed by OTHER devices in this round trip
+// (useful for a friendly toast), so the caller doesn't need to recompute it.
+async function reconcileAndSaveOrders(){
   const res = await window.storage.get(STORAGE_KEY, true);
-  const remoteOrders = res && res.value ? JSON.parse(res.value) : [];
+  const remoteOrders = (res && res.value ? JSON.parse(res.value) : []).map(migrateOrder);
+  const remoteMap = new Map(remoteOrders.map(o=>[o.id, o]));
+
   const localIds = new Set(orders.map(o=>o.id));
-  const newFromOthers = remoteOrders.filter(o=>!localIds.has(o.id) && !knownOrderIds.has(o.id));
-  if(newFromOthers.length > 0){
-    orders = orders.concat(newFromOthers.map(migrateOrder));
-    migrateRoundNumbers();
-    newFromOthers.forEach(o=>knownOrderIds.add(o.id));
-  }
-  return newFromOthers;
+  // Present in our last snapshot but no longer in our local array = we deleted it ourselves.
+  const deletedByMe = [...lastSyncedOrdersMap.keys()].filter(id => !localIds.has(id));
+  // New locally, or changed compared to our last snapshot = we created/edited it ourselves.
+  const changedOrNewByMe = orders.filter(o => lastSyncedOrdersMap.get(o.id) !== JSON.stringify(o));
+
+  deletedByMe.forEach(id => remoteMap.delete(id));
+  changedOrNewByMe.forEach(o => remoteMap.set(o.id, o));
+
+  const finalOrders = [...remoteMap.values()];
+  await window.storage.set(STORAGE_KEY, JSON.stringify(finalOrders), true);
+
+  // Anything in the final result that wasn't already in OUR local list must have come from
+  // another device (anything we created ourselves was already in `orders` beforehand).
+  const addedByOthersCount = finalOrders.filter(o => !localIds.has(o.id)).length;
+
+  orders = finalOrders.map(migrateOrder);
+  migrateRoundNumbers();
+  knownOrderIds = new Set(orders.map(o=>o.id));
+  lastSyncedOrdersMap = snapshotOrdersMap(orders);
+  return addedByOthersCount;
 }
+
 async function refreshOrdersFromServer(){
   try{
-    const added = await mergeInOrdersAddedElsewhere();
-    if(added.length > 0){
+    // Passive background refresh: only pulls in orders we've never seen locally (new from
+    // elsewhere). Deliberately does NOT reconcile/push local changes here, so it can run safely
+    // on a timer even while a rep might be mid-edit in the form.
+    const res = await window.storage.get(STORAGE_KEY, true);
+    const remoteOrders = (res && res.value ? JSON.parse(res.value) : []).map(migrateOrder);
+    const localIds = new Set(orders.map(o=>o.id));
+    const newFromOthers = remoteOrders.filter(o=>!localIds.has(o.id) && !knownOrderIds.has(o.id));
+    if(newFromOthers.length > 0){
+      orders = orders.concat(newFromOthers);
+      migrateRoundNumbers();
+      newFromOthers.forEach(o=>{ knownOrderIds.add(o.id); lastSyncedOrdersMap.set(o.id, JSON.stringify(o)); });
       renderAll();
-      showToast(`התקבלו ${added.length} הזמנות חדשות ממכשיר/נציג אחר`);
+      showToast(`התקבלו ${newFromOthers.length} הזמנות חדשות ממכשיר/נציג אחר`);
     }
   }catch(e){ /* silent - this is a background convenience refresh, not critical */ }
 }
+
 async function saveOrders(){
   try{
-    // Critical: merge before overwriting. This app has no realtime sync between tabs/devices - a
-    // plain overwrite here would blindly replace the WHOLE shared order list with whatever this
-    // tab happens to have in memory, silently erasing any order another rep/admin added or edited
-    // on a different device since this tab last loaded (this was actually happening in
-    // production - a rep's new order would vanish the next time anyone else's tab saved anything).
-    // Orders this tab already knows about always keep this tab's local version (a save means WE
-    // just changed something); anything on the server we've genuinely never seen before gets
-    // folded back in instead of being wiped out; anything we ourselves deleted stays deleted
-    // (tracked via knownOrderIds, so it's never mistaken for "new from someone else").
-    const added = await mergeInOrdersAddedElsewhere();
-    orders.forEach(o=>knownOrderIds.add(o.id));
-    await window.storage.set(STORAGE_KEY, JSON.stringify(orders), true);
-    if(added.length > 0) renderAll();
+    const addedByOthersCount = await reconcileAndSaveOrders();
+    renderAll();
+    if(addedByOthersCount > 0) showToast(`התקבלו ${addedByOthersCount} עדכונים ממכשיר/נציג אחר`);
   }catch(e){ showToast('שגיאה בשמירה, נסה שוב'); }
 }
 
@@ -2061,6 +2098,7 @@ async function saveTrash(){
 // stock was already deducted at ship time and stays deducted; only permanent deletion or a
 // manual stock correction should change that.
 function deleteCityToTrash(city){
+  if(!isAdminRole()){ showToast('רק מנהל יכול למחוק עיר'); return; }
   const cityOrders = orders.filter(o=>o.city===city);
   if(cityOrders.length===0){ showToast('אין הזמנות לעיר הזו'); return; }
   const activeCount = cityOrders.filter(o=>!o.cancelled && !o.delivered).length;
@@ -2088,6 +2126,7 @@ function deleteCityToTrash(city){
 // Visible only to admin/mainadmin, directly on the round card - no need to go into the
 // admin area first.
 function deleteRoundToTrash(city, roundNumber){
+  if(!isAdminRole()){ showToast('רק מנהל יכול למחוק סבב'); return; }
   const roundOrders = orders.filter(o=>o.city===city && (o.roundNumber||0)===roundNumber);
   if(roundOrders.length===0){ showToast('אין הזמנות בסבב הזה'); return; }
   const activeCount = roundOrders.filter(o=>!o.cancelled && !o.delivered).length;
@@ -2118,6 +2157,7 @@ function restoreCityFromTrash(id){
   });
 }
 function purgeCityFromTrash(id){
+  if(!isAdminRole()){ showToast('רק מנהל יכול למחוק לצמיתות'); return; }
   const entry = trashedCities.find(t=>t.id===id);
   if(!entry) return;
   showConfirm(`למחוק את העיר ${entry.city} לצמיתות? לא ניתן לשחזר לאחר מכן.`, ()=>{
@@ -2641,7 +2681,7 @@ function migrateOrder(o){
   if(typeof o.deliveryConfirmed !== 'boolean') o.deliveryConfirmed = false;
   if(typeof o.customerUpdated !== 'boolean') o.customerUpdated = false;
   o.deliveryDate = o.deliveryDate || '';
-  if(typeof o.hasSms !== 'boolean') o.hasSms = true; // assume SMS-capable unless a rep explicitly marked otherwise
+  if(typeof o.hasSms !== 'boolean') o.hasSms = false; // default: assume no SMS unless a rep explicitly confirmed the customer has it
   o.smsSentAt = o.smsSentAt || null;
   o.customerUpdateMethod = o.customerUpdateMethod || null;
   if(typeof o.cancelFeeNoticeGiven !== 'boolean') o.cancelFeeNoticeGiven = false; // unknown for orders created before this field existed
@@ -2846,7 +2886,7 @@ function finishSubmitOrder(){
   document.getElementById('fDate').value=todayStr();
   document.getElementById('fNote').value='';
   document.getElementById('fYad2').checked=false;
-  document.getElementById('fHasSms').checked=true;
+  document.getElementById('fHasSms').checked=false;
   document.getElementById('fCancelFeeNotice').checked=false;
   document.getElementById('fAdChannel').value='';
   document.getElementById('fDiscount').value='';
@@ -2878,7 +2918,7 @@ function cancelEdit(){
   document.getElementById('fDate').value=todayStr();
   document.getElementById('fNote').value='';
   document.getElementById('fYad2').checked=false;
-  document.getElementById('fHasSms').checked=true;
+  document.getElementById('fHasSms').checked=false;
   document.getElementById('fCancelFeeNotice').checked=false;
   resetAnimalRows();
   resetFoodRows();
@@ -2899,7 +2939,7 @@ function startEdit(id){
   document.getElementById('fDate').value = o.date;
   document.getElementById('fNote').value = o.note||'';
   document.getElementById('fYad2').checked = !!o.fromYad2;
-  document.getElementById('fHasSms').checked = o.hasSms !== false;
+  document.getElementById('fHasSms').checked = o.hasSms === true;
   document.getElementById('fCancelFeeNotice').checked = !!o.cancelFeeNoticeGiven;
   document.getElementById('fAdChannel').value = o.adChannelId || '';
   document.getElementById('animalRows').innerHTML='';
@@ -2951,7 +2991,11 @@ function toggleCancel(id){
     logAudit('שחזר הזמנה מבוטלת', `${o.customer||'לקוח'} · ${cityDisplayName(o.city, o.roundNumber||0)}`);
   }
 }
+// Permanent deletion is admin-only and unrecoverable (unlike toggleCancel, which is a reversible
+// soft-cancel that stays visible in history). Gated both here and by hiding the button from reps
+// in the UI, so a rep can never wipe out a real customer order by mistake.
 function deleteOrder(id){
+  if(!isAdminRole()){ showToast('רק מנהל יכול למחוק הזמנה לצמיתות - נציג יכול לבטל אותה (🚫) במקום'); return; }
   showConfirm('למחוק הזמנה זו לצמיתות? לא ניתן לשחזר לאחר המחיקה.', ()=>{
     const o = orders.find(x=>x.id===id);
     const label = o ? `${o.customer||'לקוח'} · ${cityDisplayName(o.city, o.roundNumber||0)}` : id;
@@ -3068,7 +3112,7 @@ function renderSummary(){
           ${(o.hasSms && o.phone1) ? `<button class="icon-btn" onclick="openSingleSmsModal('${o.id}')" title="שלח SMS ללקוח">📱</button>` : ''}
           ${isAdminRole() ? `<button class="icon-btn" onclick="openMarkBlockedModal('${o.id}')" title="סמן לקוח כבעייתי">⛔</button>` : ''}
           <button class="icon-btn" onclick="toggleCancel('${o.id}')">🚫</button>
-          <button class="icon-btn" onclick="deleteOrder('${o.id}')">🗑️</button>
+          ${isAdminRole() ? `<button class="icon-btn" onclick="deleteOrder('${o.id}')" title="מחיקה לצמיתות - מנהל בלבד">🗑️</button>` : ''}
         </div>
         ${managerInquiryHtml(o)}
       </div>
@@ -3145,7 +3189,7 @@ function renderAllOrders(){
         <button class="icon-btn" onclick="startEdit('${o.id}')">✏️</button>
         ${(!o.cancelled && !o.delivered) ? `<button class="icon-btn" onclick="postponeOrderToNextRound('${o.id}')" title="דחה לסבב הבא">⏭️</button>` : ''}
         <button class="icon-btn" onclick="toggleCancel('${o.id}')">${o.cancelled?'↩️':'🚫'}</button>
-        <button class="icon-btn" onclick="deleteOrder('${o.id}')">🗑️</button>
+        ${isAdminRole() ? `<button class="icon-btn" onclick="deleteOrder('${o.id}')" title="מחיקה לצמיתות - מנהל בלבד">🗑️</button>` : ''}
       </div>
     </div>
   `).join('');
