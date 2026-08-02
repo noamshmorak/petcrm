@@ -730,8 +730,23 @@ setInterval(checkInquiryEscalations, 5*60*1000);
 let _kvVersionColumnMissing = false; // set true the first time we detect the column doesn't exist yet
 window.storage = {
   async get(key, _shared){
+    if(_kvVersionColumnMissing){
+      const { data, error } = await _sb.from('kv_store').select('value').eq('key', key).maybeSingle();
+      if(error){ console.error('[storage.get] key=', key, error); throw error; }
+      if(!data) return null;
+      return { value: JSON.stringify(data.value), version: 0 };
+    }
     const { data, error } = await _sb.from('kv_store').select('value, version').eq('key', key).maybeSingle();
-    if(error){ console.error('[storage.get] key=', key, error); throw error; }
+    if(error){
+      if(error.code === '42703'){
+        // `version` column doesn't exist yet in this Supabase project - fall back permanently
+        // (for the rest of this page session) to plain reads/writes with no CAS protection,
+        // instead of breaking every single load in the app.
+        _kvVersionColumnMissing = true;
+        return this.get(key, _shared);
+      }
+      console.error('[storage.get] key=', key, error); throw error;
+    }
     if(!data) return null;
     return { value: JSON.stringify(data.value), version: typeof data.version === 'number' ? data.version : 0 };
   },
