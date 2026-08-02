@@ -716,17 +716,59 @@ setInterval(checkInquiryEscalations, 5*60*1000);
 // Shim that mimics the previous window.storage.get/set API (used throughout this file),
 // but now backed by a real shared 'kv_store' table in Supabase, so data syncs across
 // every device/phone that opens this page instead of staying local to one browser.
+//
+// casSet (compare-and-swap) below is what closes the last remaining gap in the save system: even
+// with the reconcile-based merging elsewhere in this file, a plain read-then-write still has a
+// narrow window (one network round trip) where two devices could both read, then both write, and
+// the second write could overwrite the first without knowing about it. casSet uses a `version`
+// column so a write only succeeds if nobody else wrote to that key since we last read it - if
+// someone did, the write is rejected (not silently overwritten) and the caller re-reads and
+// retries with fresh data. This requires a one-time, additive SQL migration in Supabase
+// (`alter table kv_store add column version integer not null default 0`) - until that column
+// exists, casSet automatically falls back to a plain unconditional write (today's behavior)
+// instead of failing, so nothing breaks either way.
+let _kvVersionColumnMissing = false; // set true the first time we detect the column doesn't exist yet
 window.storage = {
   async get(key, _shared){
-    const { data, error } = await _sb.from('kv_store').select('value').eq('key', key).maybeSingle();
+    const { data, error } = await _sb.from('kv_store').select('value, version').eq('key', key).maybeSingle();
     if(error){ console.error('[storage.get] key=', key, error); throw error; }
     if(!data) return null;
-    return { value: JSON.stringify(data.value) };
+    return { value: JSON.stringify(data.value), version: typeof data.version === 'number' ? data.version : 0 };
   },
   async set(key, valueStr, _shared){
     const parsed = JSON.parse(valueStr);
     const { error } = await _sb.from('kv_store').upsert({ key, value: parsed, updated_at: new Date().toISOString() }, { onConflict: 'key' });
     if(error){ console.error('[storage.set] key=', key, error); throw error; }
+  },
+  // Attempts to write only if the row's version still equals expectedVersion (pass 0/undefined for
+  // a key that doesn't exist yet, or wasn't returned with a version by get()). Returns
+  // {ok:true, version} on success, or {ok:false, conflict:true} if someone else wrote first (or the
+  // key was created concurrently) - the caller should re-read and retry, not assume success.
+  async casSet(key, valueStr, expectedVersion){
+    if(_kvVersionColumnMissing) { await this.set(key, valueStr, true); return { ok:true, version:0, noVersioning:true }; }
+    const parsed = JSON.parse(valueStr);
+    const nowIso = new Date().toISOString();
+    if(!expectedVersion){
+      // First-ever write for this key: insert; if it already exists (created concurrently by
+      // someone else in the meantime), the unique key constraint rejects it as a conflict.
+      const { error } = await _sb.from('kv_store').insert({ key, value: parsed, updated_at: nowIso, version: 1 });
+      if(error){
+        if(error.code === '42703'){ _kvVersionColumnMissing = true; await this.set(key, valueStr, true); return { ok:true, version:0, noVersioning:true }; }
+        if(error.code === '23505') return { ok:false, conflict:true };
+        throw error;
+      }
+      return { ok:true, version:1 };
+    }
+    const { data, error } = await _sb.from('kv_store')
+      .update({ value: parsed, updated_at: nowIso, version: expectedVersion+1 })
+      .eq('key', key).eq('version', expectedVersion)
+      .select('version');
+    if(error){
+      if(error.code === '42703'){ _kvVersionColumnMissing = true; await this.set(key, valueStr, true); return { ok:true, version:0, noVersioning:true }; }
+      throw error;
+    }
+    if(!data || data.length===0) return { ok:false, conflict:true };
+    return { ok:true, version: data[0].version };
   }
 };
 
@@ -1321,18 +1363,21 @@ async function loadStock(){
 async function saveStock(){
   try{
     await withSaveQueue(STOCK_KEY, async ()=>{
-      const res = await window.storage.get(STOCK_KEY, true);
-      const remoteStock = cleanStockShape(res && res.value ? JSON.parse(res.value) : defaultStock());
-      const merged = { animals: Object.assign({}, remoteStock.animals), cages: Object.assign({}, remoteStock.cages) };
-      Object.keys(stock.animals).forEach(k=>{
-        const delta = (stock.animals[k]||0) - (lastSyncedStock.animals[k]||0);
-        if(delta !== 0) merged.animals[k] = Math.max(0, (merged.animals[k]||0) + delta);
+      const localAnimals = stock.animals, localCages = stock.cages;
+      const lastAnimals = lastSyncedStock.animals, lastCages = lastSyncedStock.cages;
+      const merged = await casRetryWrite(STOCK_KEY, (remoteValue)=>{
+        const remoteStock = cleanStockShape(remoteValue || defaultStock());
+        const m = { animals: Object.assign({}, remoteStock.animals), cages: Object.assign({}, remoteStock.cages) };
+        Object.keys(localAnimals).forEach(k=>{
+          const delta = (localAnimals[k]||0) - (lastAnimals[k]||0);
+          if(delta !== 0) m.animals[k] = Math.max(0, (m.animals[k]||0) + delta);
+        });
+        Object.keys(localCages).forEach(k=>{
+          const delta = (localCages[k]||0) - (lastCages[k]||0);
+          if(delta !== 0) m.cages[k] = Math.max(0, (m.cages[k]||0) + delta);
+        });
+        return m;
       });
-      Object.keys(stock.cages).forEach(k=>{
-        const delta = (stock.cages[k]||0) - (lastSyncedStock.cages[k]||0);
-        if(delta !== 0) merged.cages[k] = Math.max(0, (merged.cages[k]||0) + delta);
-      });
-      await window.storage.set(STOCK_KEY, JSON.stringify(merged), true);
       stock = merged;
       lastSyncedStock = JSON.parse(JSON.stringify(merged));
     });
@@ -2045,6 +2090,31 @@ function withSaveQueue(key, fn){
   return run;
 }
 
+// Closes the very last gap in the save system: withSaveQueue above only protects against two
+// saves racing from the SAME tab. Two different devices can still each read a fresh copy, both
+// compute their own merge, and both try to write - without this, whichever write lands second
+// would silently overwrite the first with a merge that was computed before the first write
+// happened. buildFn(remoteValueOrNull) must be a PURE function that takes the freshly-read remote
+// value and returns the new value to write - it may be called more than once if a conflict is
+// detected, so it must not have side effects itself (any side effects like updating local
+// module-level state should happen in the caller, using the value this function returns).
+async function casRetryWrite(key, buildFn, maxAttempts){
+  maxAttempts = maxAttempts || 8;
+  let lastRemote = null;
+  for(let attempt=0; attempt<maxAttempts; attempt++){
+    const res = await window.storage.get(key, true);
+    const remoteVersion = res ? res.version : 0;
+    const remoteValue = res && res.value ? JSON.parse(res.value) : null;
+    lastRemote = remoteValue;
+    const newValue = buildFn(remoteValue);
+    const writeRes = await window.storage.casSet(key, JSON.stringify(newValue), remoteVersion);
+    if(writeRes.ok) return newValue;
+    // conflict: someone else wrote to this key in between our read and our write - loop and retry
+    // with a fresh read. This is expected to be rare (a handful of active reps, not thousands).
+  }
+  throw new Error('שמירה נכשלה אחרי כמה ניסיונות (התנגשות עם מכשיר אחר) - key: '+key);
+}
+
 // Reconciliation-based sync. This app has no realtime sync between tabs/devices, so every save
 // used to just overwrite the WHOLE shared order list with whatever this tab happened to have in
 // memory - silently erasing any order/edit/deletion another rep or admin made on a different
@@ -2105,21 +2175,24 @@ async function loadOrders(){
 // was written. Returns how many orders were added/changed by OTHER devices in this round trip
 // (useful for a friendly toast), so the caller doesn't need to recompute it.
 async function reconcileAndSaveOrders(){
-  const res = await window.storage.get(STORAGE_KEY, true);
-  const remoteOrders = (res && res.value ? JSON.parse(res.value) : []).map(migrateOrder);
-  const remoteMap = new Map(remoteOrders.map(o=>[o.id, o]));
-
-  const localIds = new Set(orders.map(o=>o.id));
+  const localOrdersSnapshot = orders;
+  const lastSynced = lastSyncedOrdersMap;
+  const localIds = new Set(localOrdersSnapshot.map(o=>o.id));
   // Present in our last snapshot but no longer in our local array = we deleted it ourselves.
-  const deletedByMe = [...lastSyncedOrdersMap.keys()].filter(id => !localIds.has(id));
+  const deletedByMe = [...lastSynced.keys()].filter(id => !localIds.has(id));
   // New locally, or changed compared to our last snapshot = we created/edited it ourselves.
-  const changedOrNewByMe = orders.filter(o => lastSyncedOrdersMap.get(o.id) !== JSON.stringify(o));
+  const changedOrNewByMe = localOrdersSnapshot.filter(o => lastSynced.get(o.id) !== JSON.stringify(o));
 
-  deletedByMe.forEach(id => remoteMap.delete(id));
-  changedOrNewByMe.forEach(o => remoteMap.set(o.id, o));
-
-  const finalOrders = [...remoteMap.values()];
-  await window.storage.set(STORAGE_KEY, JSON.stringify(finalOrders), true);
+  // casRetryWrite re-reads the live server value and re-applies deletedByMe/changedOrNewByMe on
+  // top of it if another device wrote in between our read and our write attempt - so this never
+  // blindly overwrites a concurrent change from someone else, even under real simultaneous saves.
+  const finalOrders = await casRetryWrite(STORAGE_KEY, (remoteValue)=>{
+    const remoteOrders = (remoteValue || []).map(migrateOrder);
+    const remoteMap = new Map(remoteOrders.map(o=>[o.id, o]));
+    deletedByMe.forEach(id => remoteMap.delete(id));
+    changedOrNewByMe.forEach(o => remoteMap.set(o.id, o));
+    return [...remoteMap.values()];
+  });
 
   // Anything in the final result that wasn't already in OUR local list must have come from
   // another device (anything we created ourselves was already in `orders` beforehand).
@@ -2196,11 +2269,10 @@ function _mergeArraysById(remoteList, localList, lastSynced, idField){
 async function reconcileArrayStore(storageKey, localList, idField){
   idField = idField || 'id';
   return withSaveQueue(storageKey, async ()=>{
-    const res = await window.storage.get(storageKey, true);
-    const remoteList = res && res.value ? JSON.parse(res.value) : [];
     const lastSynced = _reconcileSnapshots[storageKey] || new Map();
-    const finalList = _mergeArraysById(remoteList, localList, lastSynced, idField);
-    await window.storage.set(storageKey, JSON.stringify(finalList), true);
+    const finalList = await casRetryWrite(storageKey, (remoteValue)=>{
+      return _mergeArraysById(remoteValue || [], localList, lastSynced, idField);
+    });
     markSyncedArray(storageKey, finalList, idField);
     return finalList;
   });
@@ -2217,17 +2289,18 @@ function markSyncedObject(storageKey, obj){
 }
 async function reconcileObjectStore(storageKey, localObj){
   return withSaveQueue(storageKey, async ()=>{
-  const res = await window.storage.get(storageKey, true);
-  const remoteObj = res && res.value ? JSON.parse(res.value) : {};
-  const lastSynced = _reconcileSnapshots[storageKey] || new Map();
-  const merged = Object.assign({}, remoteObj);
-  Object.keys(localObj||{}).forEach(k=>{
-    if(lastSynced.get(k) !== JSON.stringify(localObj[k])) merged[k] = localObj[k];
-  });
-  [...lastSynced.keys()].forEach(k=>{ if(!localObj || !(k in localObj)) delete merged[k]; });
-  await window.storage.set(storageKey, JSON.stringify(merged), true);
-  markSyncedObject(storageKey, merged);
-  return merged;
+    const lastSynced = _reconcileSnapshots[storageKey] || new Map();
+    const merged = await casRetryWrite(storageKey, (remoteValue)=>{
+      const remoteObj = remoteValue || {};
+      const m = Object.assign({}, remoteObj);
+      Object.keys(localObj||{}).forEach(k=>{
+        if(lastSynced.get(k) !== JSON.stringify(localObj[k])) m[k] = localObj[k];
+      });
+      [...lastSynced.keys()].forEach(k=>{ if(!localObj || !(k in localObj)) delete m[k]; });
+      return m;
+    });
+    markSyncedObject(storageKey, merged);
+    return merged;
   });
 }
 
@@ -2238,15 +2311,14 @@ function markSyncedStringArray(storageKey, list){
 }
 async function reconcileStringArrayStore(storageKey, localList){
   return withSaveQueue(storageKey, async ()=>{
-    const res = await window.storage.get(storageKey, true);
-    const remoteList = res && res.value ? JSON.parse(res.value) : [];
-    const remoteSet = new Set(remoteList);
     const lastSynced = _reconcileSnapshots[storageKey] || new Set();
     const localSet = new Set(localList||[]);
-    [...lastSynced].filter(x=>!localSet.has(x)).forEach(x=>remoteSet.delete(x));
-    [...localSet].filter(x=>!lastSynced.has(x)).forEach(x=>remoteSet.add(x));
-    const finalList = [...remoteSet];
-    await window.storage.set(storageKey, JSON.stringify(finalList), true);
+    const finalList = await casRetryWrite(storageKey, (remoteValue)=>{
+      const remoteSet = new Set(remoteValue || []);
+      [...lastSynced].filter(x=>!localSet.has(x)).forEach(x=>remoteSet.delete(x));
+      [...localSet].filter(x=>!lastSynced.has(x)).forEach(x=>remoteSet.add(x));
+      return [...remoteSet];
+    });
     markSyncedStringArray(storageKey, finalList);
     return finalList;
   });
@@ -2365,15 +2437,24 @@ async function loadExpensesData(){
 async function saveExpensesData(){
   try{
     await withSaveQueue(EXPENSES_KEY, async ()=>{
-      const res = await window.storage.get(EXPENSES_KEY, true);
-      const data = res && res.value ? JSON.parse(res.value) : {};
-      const remoteExpenses = Array.isArray(data.manualExpenses) ? data.manualExpenses : [];
-      const remoteLoans = Array.isArray(data.businessLoans) ? data.businessLoans : [];
-      const remoteDebts = Array.isArray(data.businessDebts) ? data.businessDebts : [];
-      manualExpenses = _mergeArraysById(remoteExpenses, manualExpenses, _reconcileSnapshots['EXPENSES::expenses']||new Map());
-      businessLoans = _mergeArraysById(remoteLoans, businessLoans, _reconcileSnapshots['EXPENSES::loans']||new Map());
-      businessDebts = _mergeArraysById(remoteDebts, businessDebts, _reconcileSnapshots['EXPENSES::debts']||new Map());
-      await window.storage.set(EXPENSES_KEY, JSON.stringify({manualExpenses, businessLoans, businessDebts}), true);
+      const localExpenses = manualExpenses, localLoans = businessLoans, localDebts = businessDebts;
+      const snapExpenses = _reconcileSnapshots['EXPENSES::expenses']||new Map();
+      const snapLoans = _reconcileSnapshots['EXPENSES::loans']||new Map();
+      const snapDebts = _reconcileSnapshots['EXPENSES::debts']||new Map();
+      const result = await casRetryWrite(EXPENSES_KEY, (remoteValue)=>{
+        const data = remoteValue || {};
+        const remoteExpenses = Array.isArray(data.manualExpenses) ? data.manualExpenses : [];
+        const remoteLoans = Array.isArray(data.businessLoans) ? data.businessLoans : [];
+        const remoteDebts = Array.isArray(data.businessDebts) ? data.businessDebts : [];
+        return {
+          manualExpenses: _mergeArraysById(remoteExpenses, localExpenses, snapExpenses),
+          businessLoans: _mergeArraysById(remoteLoans, localLoans, snapLoans),
+          businessDebts: _mergeArraysById(remoteDebts, localDebts, snapDebts)
+        };
+      });
+      manualExpenses = result.manualExpenses;
+      businessLoans = result.businessLoans;
+      businessDebts = result.businessDebts;
       markSyncedArray('EXPENSES::expenses', manualExpenses);
       markSyncedArray('EXPENSES::loans', businessLoans);
       markSyncedArray('EXPENSES::debts', businessDebts);
