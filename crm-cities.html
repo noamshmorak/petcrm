@@ -566,7 +566,7 @@
     <div id="qsPriceDisplay" style="font-weight:800;color:var(--accent-dark);margin-bottom:12px;"></div>
     <div class="modal-actions">
       <button class="btn-ghost" onclick="closeQuickSaleModal()">ביטול</button>
-      <button class="btn-primary" onclick="submitQuickSale()">שמור מכירה</button>
+      <button class="btn-primary" id="qsSubmitBtn" onclick="submitQuickSale()">שמור מכירה</button>
     </div>
     <div id="qsRecentList" style="margin-top:16px;border-top:1px solid var(--border);padding-top:10px;max-height:200px;overflow-y:auto;"></div>
   </div>
@@ -1152,11 +1152,21 @@ async function ensureCredentials(username, password){
   catch(e){ console.error('[ensureCredentials]', e); }
 }
 async function loadUsers(){
+  let fetchFailed = false;
   try{
     const res = await window.storage.get(USERS_KEY, true);
     users = res && res.value ? JSON.parse(res.value) : [];
-  }catch(e){ users = []; }
+  }catch(e){ users = []; fetchFailed = true; }
   markSyncedArray(USERS_KEY, users, 'username');
+  // IMPORTANT: the auto-repair/bootstrap logic below (recreating the main-admin account and
+  // resetting its password to the well-known default) must ONLY ever run on a genuinely fresh,
+  // never-had-any-users install - never merely because THIS load happened to fail on a transient
+  // network hiccup. Previously, any failed fetch was treated exactly like "brand-new install",
+  // which would have silently reset the real main admin's password back to the shared default
+  // (a serious security/reliability bug) every time their device had a brief connectivity blip on
+  // load. If the fetch itself failed, leave `users` as-is locally and try again on the next load -
+  // do NOT touch the server or any credentials.
+  if(fetchFailed){ showToast('לא ניתן היה לטעון את רשימת המשתמשים כרגע'); return; }
   let needsBootstrapPassword = false;
   if(!Array.isArray(users) || users.length===0){ users = defaultUsers(); needsBootstrapPassword = true; }
   // always guarantee the protected main admin account exists
@@ -2059,13 +2069,18 @@ function snapshotOrdersMap(list){
 }
 
 async function loadOrders(){
+  let fetchFailed = false;
   try{
     const res = await window.storage.get(STORAGE_KEY, true);
     orders = res && res.value ? JSON.parse(res.value) : [];
-  }catch(e){ orders = []; }
-  if(orders.length === 0 && Array.isArray(SEED_ORDERS) && SEED_ORDERS.length){
-    orders = JSON.parse(JSON.stringify(SEED_ORDERS));
-  }
+  }catch(e){ orders = []; fetchFailed = true; }
+  // NOTE: SEED_ORDERS (below) was one-time bootstrap data used only for the very first launch of
+  // this system, before there was any real data in Supabase. It is intentionally NEVER used to
+  // repopulate `orders` anymore - doing so used to also trigger whenever a fetch merely failed or
+  // the order list was legitimately empty for a moment, which would silently resurrect ~35 stale,
+  // long-since-handled historical orders back onto real reps' screens. If this fetch fails, we now
+  // just show an empty list and retry on the next natural save/refresh, instead of showing wrong data.
+  if(fetchFailed) showToast('לא ניתן היה לטעון הזמנות כרגע - בדוק חיבור לאינטרנט ורענן');
   orders = orders.map(migrateOrder);
   migrateRoundNumbers();
   knownOrderIds = new Set(orders.map(o=>o.id));
@@ -2075,7 +2090,10 @@ async function loadOrders(){
   resetFoodRows();
   populateCitySelect();
   renderAll();
-  saveOrders(); // persists any migration changes, through the same safe reconcile path
+  // If the initial fetch itself failed, skip the migration-save below - there's nothing real to
+  // persist yet, and it would just be a second pointless request. The auto-refresh timer (started
+  // either way, right below) will naturally retry within 45 seconds and pick up real data then.
+  if(!fetchFailed) saveOrders(); // persists any migration changes, through the same safe reconcile path
   // Without this, a tab that never triggers its own save (e.g. an admin just watching the
   // dashboard) would only ever see whatever existed the moment it first loaded the page - this
   // app has no realtime sync between devices, so we poll instead.
@@ -2301,6 +2319,7 @@ function isAdminRole(){
   return !!(currentUser && (currentUser.role==='mainadmin' || currentUser.role==='admin'));
 }
 function restoreCityFromTrash(id){
+  if(!isAdminRole()){ showToast('רק מנהל יכול לשחזר עיר מהאשפה'); return; }
   const entry = trashedCities.find(t=>t.id===id);
   if(!entry) return;
   showConfirm(`לשחזר את העיר ${entry.city} (${entry.orders.length} הזמנות) בחזרה לרשימה הפעילה?`, ()=>{
@@ -2374,6 +2393,7 @@ function addManualExpense(){
   renderAdminTabContent();
 }
 function deleteManualExpense(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול למחוק הוצאה'); return; }
   showConfirm('למחוק את ההוצאה הזו?', ()=>{
     manualExpenses = manualExpenses.filter(e=>e.id!==id);
     saveExpensesData(); renderAdminTabContent();
@@ -2393,6 +2413,7 @@ function addBusinessLoan(){
   renderAdminTabContent();
 }
 function deleteBusinessLoan(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול למחוק רשומה'); return; }
   showConfirm('למחוק את רשומת ההלוואה הזו?', ()=>{
     businessLoans = businessLoans.filter(e=>e.id!==id);
     saveExpensesData(); renderAdminTabContent();
@@ -2802,6 +2823,7 @@ function exportFullBackup(){
   showToast('הקובץ יורד...');
 }
 async function restoreFromBackupFile(input){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לשחזר גיבוי'); input.value=''; return; }
   const file = input.files && input.files[0];
   if(!file) return;
   let data;
@@ -3683,8 +3705,8 @@ function openAddressesModal(city, round){
     container.innerHTML = activeOrders.map(o=>`
       <div class="row2" style="align-items:center;margin-bottom:8px;border:1px solid var(--border);border-radius:10px;padding:8px 10px;">
         <div style="flex:1;">
-          <div style="font-weight:700;font-size:13.5px;">${o.customer||'לקוח'}</div>
-          <div style="font-size:13px;color:var(--muted);margin-top:2px;">${o.address||'אין כתובת'}</div>
+          <div style="font-weight:700;font-size:13.5px;">${escHtml(o.customer||'לקוח')}</div>
+          <div style="font-size:13px;color:var(--muted);margin-top:2px;">${escHtml(o.address)||'אין כתובת'}</div>
         </div>
         ${o.address ? `<button class="icon-btn" style="font-size:20px;" onclick="copySingleAddress('${o.id}')" title="העתק כתובת">📋</button>` : ''}
       </div>
@@ -3801,7 +3823,7 @@ function renderCustomerUpdateContent(){
     if(notUpdated.length===0){
       alertBox.innerHTML = `<div style="background:var(--route-light);color:var(--route);border-radius:10px;padding:10px 12px;font-size:13px;font-weight:700;margin:10px 0;">✅ יציאה מחר — כל הלקוחות סומנו כעודכנו</div>`;
     }else{
-      alertBox.innerHTML = `<div style="background:#FBEAEA;color:var(--danger);border-radius:10px;padding:10px 12px;font-size:13px;font-weight:700;margin:10px 0;">⚠️ יציאה מחר! ${notUpdated.length} לקוחות עוד לא סומנו כעודכנו: ${notUpdated.map(o=>o.customer).join(', ')}</div>`;
+      alertBox.innerHTML = `<div style="background:#FBEAEA;color:var(--danger);border-radius:10px;padding:10px 12px;font-size:13px;font-weight:700;margin:10px 0;">⚠️ יציאה מחר! ${notUpdated.length} לקוחות עוד לא סומנו כעודכנו: ${notUpdated.map(o=>escHtml(o.customer)).join(', ')}</div>`;
     }
   }else{
     alertBox.innerHTML = '';
@@ -3914,10 +3936,10 @@ function renderCustomerSearch(){
     html += matchingSpot.map(s=>`
       <div class="city-card">
         <div class="city-head">
-          <div class="city-name-wrap"><div class="city-name">${s.customer||'(ללא שם)'}</div></div>
+          <div class="city-name-wrap"><div class="city-name">${escHtml(s.customer)||'(ללא שם)'}</div></div>
           <div class="city-last">${formatDate(s.date)}</div>
         </div>
-        <div class="order-sub" style="margin-top:6px;">${s.product} ×${s.quantity}${s.location?' · '+s.location:''}${isAdminRole()?' · 💰 '+(s.totalPrice||0)+' ₪':''}</div>
+        <div class="order-sub" style="margin-top:6px;">${escHtml(s.product)} ×${s.quantity}${s.location?' · '+escHtml(s.location):''}${isAdminRole()?' · 💰 '+(s.totalPrice||0)+' ₪':''}</div>
       </div>
     `).join('');
   }
@@ -4157,6 +4179,7 @@ function updateQsSpecialFieldsVisibility(){
   document.getElementById('qsSpecialFieldsWrap').style.display = special ? '' : 'none';
 }
 function openQuickSaleModal(){
+  document.getElementById('qsSubmitBtn').disabled = false;
   const sel = document.getElementById('qsProduct');
   sel.innerHTML = QUICK_SALE_PRODUCTS.map(p=>{
     const price = quickSalePrice(p);
@@ -4204,6 +4227,8 @@ document.getElementById('qsExtraCharge').addEventListener('input', updateQuickSa
 document.getElementById('qsSpecialDelivery').addEventListener('change', ()=>{ updateQsSpecialFieldsVisibility(); updateQuickSalePriceDisplay(); });
 
 function submitQuickSale(){
+  const qsBtn = document.getElementById('qsSubmitBtn');
+  if(qsBtn.disabled) return;
   const product = document.getElementById('qsProduct').value;
   const qty = parseInt(document.getElementById('qsQty').value) || 1;
   const customer = document.getElementById('qsCustomer').value.trim();
@@ -4213,6 +4238,13 @@ function submitQuickSale(){
   const price = quickSalePrice(product);
   let totalPrice = (price||0) * qty;
   if(noCage && NO_CAGE_DISCOUNT_MAP[product]!=null){ totalPrice -= NO_CAGE_DISCOUNT_MAP[product]*qty; }
+
+  const qsCity = document.getElementById('qsCitySelect').value || '';
+  if(!special){
+    if(!qsCity){ showToast('נא לבחור עיר, או לסמן "משלוח מיוחד"'); return; }
+    if(!customer){ showToast('שם לקוח הוא שדה חובה'); return; }
+  }
+  qsBtn.disabled = true;
 
   if(special){
     const location = document.getElementById('qsSpecialLocation').value.trim();
@@ -4238,10 +4270,8 @@ function submitQuickSale(){
     saveSpotSales();
     showToast('המכירה המיוחדת נשמרה');
   }else{
-    const city = document.getElementById('qsCitySelect').value || '';
+    const city = qsCity;
     const address = document.getElementById('qsAddress').value.trim();
-    if(!city){ showToast('נא לבחור עיר, או לסמן "משלוח מיוחד"'); return; }
-    if(!customer){ showToast('שם לקוח הוא שדה חובה'); return; }
     // addresses no longer need to be picked from the government street registry - free text is fine.
     const isAnimal = ANIMAL_OPTIONS.includes(product);
     const animals = isAnimal ? [{type:product, quantity:qty, color:'', color2:'', noCage: !!noCage}] : [];
@@ -4262,12 +4292,15 @@ function submitQuickSale(){
   document.getElementById('qsExtraCharge').value='0';
   document.getElementById('qsQty').value=1;
   document.getElementById('qsNoCage').checked = false;
+  qsBtn.disabled = false;
   updateQuickSalePriceDisplay();
   renderQuickSaleRecent();
 }
 function deleteSpotSale(id){
+  if(!isAdminRole()){ showToast('רק מנהל יכול למחוק מכירה מיוחדת - ניתן להוסיף מכירה מתקנת במקום'); return; }
   showConfirm('למחוק מכירה זו?', ()=>{
     const s = spotSales.find(x=>x.id===id);
+    const label = s ? `${s.product} ×${s.quantity} · ${s.totalPrice} ₪${s.customer?' · '+s.customer:''}` : id;
     if(s && ANIMAL_SPECIES_MAP[s.product]){
       const species = ANIMAL_SPECIES_MAP[s.product];
       stockRestore(stock.animals, species, s.quantity*(ANIMALS_PER_UNIT[s.product]||1));
@@ -4280,6 +4313,7 @@ function deleteSpotSale(id){
     }
     spotSales = spotSales.filter(s=>s.id!==id);
     saveSpotSales();
+    logAudit('מחק מכירה מיוחדת', label);
     renderQuickSaleRecent();
     showToast('נמחק');
   });
@@ -4294,7 +4328,7 @@ function renderQuickSaleRecent(){
         <div class="order-main" style="font-size:13.5px;">${s.product} ×${s.quantity} — ${s.totalPrice} ₪${s.noCage?' (ללא כלוב)':''}</div>
         <div class="order-sub">${formatDate(s.date)}${s.customer?' · '+escHtml(s.customer):''}${s.location?' · '+escHtml(s.location):''}${s.extraCharge?' · תוספת מיוחדת '+s.extraCharge+' ₪':''}</div>
       </div>
-      <button class="icon-btn" onclick="deleteSpotSale('${s.id}')">🗑️</button>
+      ${isAdminRole() ? `<button class="icon-btn" onclick="deleteSpotSale('${s.id}')">🗑️</button>` : ''}
     </div>
   `).join('');
 }
@@ -4348,6 +4382,7 @@ function cancelEditReminder(){
   renderAdminTabContent();
 }
 async function addOrSaveReminder(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך תזכורות'); return; }
   const title = document.getElementById('reminderTitleInput').value.trim();
   const message = document.getElementById('reminderMessageInput').value.trim();
   const time = document.getElementById('reminderTimeInput').value || '20:00';
@@ -4367,6 +4402,7 @@ async function addOrSaveReminder(id){
   renderAdminTabContent();
 }
 async function toggleReminderEnabled(id, checked){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך תזכורות'); return; }
   const r = customReminders.find(x=>x.id===id);
   if(!r) return;
   r.enabled = checked;
@@ -4374,6 +4410,7 @@ async function toggleReminderEnabled(id, checked){
   logAudit(checked?'הפעלת תזכורת':'כיבוי תזכורת', r.title||r.message);
 }
 async function deleteReminder(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול למחוק תזכורת'); return; }
   const r = customReminders.find(x=>x.id===id);
   if(!r) return;
   customReminders = customReminders.filter(x=>x.id!==id);
@@ -4667,6 +4704,7 @@ function isStrongAdRound(city, round){ return !!strongAdRounds[city+'|'+(round||
 // under STRONG_AD_BUCKET instead. Dispatch/courier views never use this - they always use o.city.
 function orderCityBucket(o){ return isStrongAdRound(o.city, o.roundNumber) ? STRONG_AD_BUCKET : o.city; }
 async function toggleStrongAdRound(city, round, checked){
+  if(!isAdminRole()){ showToast('רק מנהל יכול לסמן פרסום חזק'); return; }
   const key = city+'|'+(round||0);
   if(checked) strongAdRounds[key] = true; else delete strongAdRounds[key];
   await saveStrongAdRounds();
@@ -4744,6 +4782,7 @@ function closeMarkBlockedModal(){
   mbOrderTarget = null;
 }
 async function submitMarkBlocked(){
+  if(!isAdminRole()){ showToast('רק מנהל יכול לסמן לקוח כבעייתי'); return; }
   const name = document.getElementById('mbName').value.trim();
   const phone = document.getElementById('mbPhone').value.trim();
   const reason = document.getElementById('mbReason').value.trim();
@@ -4787,6 +4826,7 @@ function proceedDespiteBlock(){
   if(cb) cb();
 }
 async function addStrongAdRosterCity(){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך את רשימת הערים'); return; }
   const input = document.getElementById('newStrongAdRosterCity');
   const city = input.value.trim();
   if(!city){ showToast('יש להזין שם עיר'); return; }
@@ -4798,6 +4838,7 @@ async function addStrongAdRosterCity(){
   renderAdminTabContent();
 }
 async function removeStrongAdRosterCity(city){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך את רשימת הערים'); return; }
   strongAdCityRoster = strongAdCityRoster.filter(c=>c!==city);
   await saveStrongAdRoster();
   logAudit('הסרת עיר מרשימת פרסום חזק', city);
@@ -4807,6 +4848,7 @@ async function removeStrongAdRosterCity(city){
 // strong-ad round, instead of checking each city's card individually. Existing flags stay editable
 // per-city on the summary screen if a specific city needs to be corrected afterward.
 async function activateStrongAdThisWeek(){
+  if(!isAdminRole()){ showToast('רק מנהל יכול להפעיל פרסום חזק'); return; }
   if(strongAdCityRoster.length===0){ showToast('קודם צריך להגדיר את רשימת הערים בטאב "פרסום" (מנהל ראשי)'); return; }
   strongAdCityRoster.forEach(city=>{
     const round = computeCityRoundNumber(city);
@@ -4827,6 +4869,7 @@ function renderStrongAdActivateBar(){
 }
 function adChannelsForCity(city){ return adChannels.filter(c=>c.city===city); }
 async function addAdChannel(){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך ערוצי פרסום'); return; }
   const city = document.getElementById('newAdChannelCity').value.trim();
   const name = document.getElementById('newAdChannelName').value.trim();
   const cost = parseFloat(document.getElementById('newAdChannelCost').value) || 0;
@@ -4841,6 +4884,7 @@ async function addAdChannel(){
   renderAdminTabContent();
 }
 async function setAdChannelDefault(id, checked){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך ערוצי פרסום'); return; }
   const ch = adChannels.find(c=>c.id===id);
   if(!ch) return;
   if(checked){
@@ -4869,6 +4913,7 @@ function resolveEffectiveChannel(o){
   return null;
 }
 async function deleteAdChannel(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך ערוצי פרסום'); return; }
   const ch = adChannels.find(c=>c.id===id);
   if(!ch) return;
   adChannels = adChannels.filter(c=>c.id!==id);
@@ -4878,12 +4923,14 @@ async function deleteAdChannel(id){
   renderAdminTabContent();
 }
 async function updateAdChannelDefaultCost(id, value){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך ערוצי פרסום'); return; }
   const ch = adChannels.find(c=>c.id===id);
   if(!ch) return;
   ch.defaultWeeklyCost = parseFloat(value) || 0;
   await saveAdChannels();
 }
 async function addAdChannelWeekOverride(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך ערוצי פרסום'); return; }
   const ch = adChannels.find(c=>c.id===id);
   if(!ch) return;
   const dateVal = document.getElementById('adChOverrideDate_'+id).value;
@@ -4897,6 +4944,7 @@ async function addAdChannelWeekOverride(id){
   renderAdminTabContent();
 }
 async function deleteAdChannelWeekOverride(id, weekStart){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך ערוצי פרסום'); return; }
   const ch = adChannels.find(c=>c.id===id);
   if(!ch || !ch.weekOverrides) return;
   delete ch.weekOverrides[weekStart];
@@ -4904,10 +4952,12 @@ async function deleteAdChannelWeekOverride(id, weekStart){
   renderAdminTabContent();
 }
 async function updateStrongAdDefaultCost(value){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך פרסום חזק'); return; }
   strongAdCampaign.defaultWeeklyCost = parseFloat(value) || 0;
   await saveStrongAdCampaign();
 }
 async function addStrongAdWeekOverride(){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך פרסום חזק'); return; }
   const dateVal = document.getElementById('strongAdOverrideDate').value;
   const amount = parseFloat(document.getElementById('strongAdOverrideAmount').value);
   if(!dateVal || isNaN(amount)){ showToast('יש למלא תאריך וסכום'); return; }
@@ -4919,11 +4969,13 @@ async function addStrongAdWeekOverride(){
   renderAdminTabContent();
 }
 async function deleteStrongAdWeekOverride(weekStart){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך פרסום חזק'); return; }
   if(strongAdCampaign.weekOverrides) delete strongAdCampaign.weekOverrides[weekStart];
   await saveStrongAdCampaign();
   renderAdminTabContent();
 }
 async function unflagStrongAdRoundByKey(key){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך פרסום חזק'); return; }
   delete strongAdRounds[key];
   await saveStrongAdRounds();
   logAudit('ביטול פרסום חזק', key);
@@ -5300,7 +5352,7 @@ function renderAdminHomeContent(){
         <div class="alert-title" style="color:${overdueInquiries.length?'var(--danger)':''};">🚩 ${openInquiries.length} פניות פתוחות למנהל${overdueInquiries.length?' (⚠️ '+overdueInquiries.length+' מהן מעל 48 שעות!)':''}</div>
         ${openInquiries.slice().sort((a,b)=>a.managerInquiry.openedAt-b.managerInquiry.openedAt).slice(0,5).map(o=>{
           const overdue = inquiryIsOverdue(o.managerInquiry);
-          return `<div style="${overdue?'color:var(--danger);font-weight:700;':''}">${o.customer||'לקוח'} (${o.city}) - ${o.managerInquiry.note}</div>`;
+          return `<div style="${overdue?'color:var(--danger);font-weight:700;':''}">${escHtml(o.customer||'לקוח')} (${escHtml(o.city)}) - ${escHtml(o.managerInquiry.note)}</div>`;
         }).join('')}
         ${openInquiries.length>5 ? `<div>ועוד ${openInquiries.length-5}...</div>` : ''}
         <div style="font-size:12px;color:var(--muted);margin-top:4px;">אפשר לסגור פנייה מתוך "היסטוריית משלוחים" ליד ההזמנה הרלוונטית.</div>
@@ -5508,7 +5560,7 @@ function renderAdminTabContent(){
       <div style="font-weight:800;margin:16px 0 8px;border-top:1px solid var(--border);padding-top:14px;">🧾 הוצאות ידניות (החודש)</div>
       ${ec.manual.items.length===0 ? '<div style="color:var(--muted);font-size:13px;margin-bottom:8px;">אין הוצאות ידניות החודש.</div>' : ec.manual.items.map(e=>`
         <div class="row2" style="align-items:center;margin-bottom:6px;">
-          <div style="flex:2;font-size:13px;">${e.name} <span style="color:var(--muted);">(${formatDate(e.date)})</span></div>
+          <div style="flex:2;font-size:13px;">${escHtml(e.name)} <span style="color:var(--muted);">(${formatDate(e.date)})</span></div>
           <div style="flex:1;font-weight:700;">${e.amount.toFixed(1)} ₪</div>
           <button class="icon-btn" onclick="deleteManualExpense('${e.id}')">🗑️</button>
         </div>
@@ -5527,7 +5579,7 @@ function renderAdminTabContent(){
       <div style="font-weight:800;margin:22px 0 8px;border-top:1px solid var(--border);padding-top:14px;">🤝 הלוואות מהעסק (מעקב בלבד - לא משפיע על הרווח)</div>
       ${businessLoans.length===0 ? '<div style="color:var(--muted);font-size:13px;margin-bottom:8px;">אין הלוואות רשומות.</div>' : businessLoans.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(l=>`
         <div class="row2" style="align-items:center;margin-bottom:6px;">
-          <div style="flex:2;font-size:13px;">${l.name}${l.note?' · '+l.note:''} <span style="color:var(--muted);">(${formatDate(l.date)})</span></div>
+          <div style="flex:2;font-size:13px;">${escHtml(l.name)}${l.note?' · '+escHtml(l.note):''} <span style="color:var(--muted);">(${formatDate(l.date)})</span></div>
           <div style="flex:1;font-weight:700;">${l.amount.toFixed(1)} ₪</div>
           <button class="icon-btn" onclick="deleteBusinessLoan('${l.id}')">🗑️</button>
         </div>
@@ -5569,7 +5621,7 @@ function renderAdminTabContent(){
             <label style="display:flex;align-items:center;gap:6px;flex:0;">
               <input type="checkbox" style="width:auto;margin-bottom:0;" ${d.paid?'checked':''} onchange="toggleBusinessDebtPaid('${d.id}', this.checked)">
             </label>
-            <div style="flex:2;font-size:13px;">${d.name}${d.note?' · '+d.note:''} <span style="color:var(--muted);">(${formatDate(d.date)})</span>${d.paid?' <span style="color:var(--route);font-weight:700;">· שולם ב-'+formatDate(d.paidDate)+'</span>':''}</div>
+            <div style="flex:2;font-size:13px;">${escHtml(d.name)}${d.note?' · '+escHtml(d.note):''} <span style="color:var(--muted);">(${formatDate(d.date)})</span>${d.paid?' <span style="color:var(--route);font-weight:700;">· שולם ב-'+formatDate(d.paidDate)+'</span>':''}</div>
             <div style="flex:1;font-weight:700;">${d.amount.toFixed(1)} ₪</div>
             <button class="icon-btn" onclick="startEditDebt('${d.id}')">✏️</button>
             <button class="icon-btn" onclick="deleteBusinessDebt('${d.id}')">🗑️</button>
@@ -5731,7 +5783,7 @@ function renderAdminTabContent(){
           <label style="display:flex;align-items:center;gap:6px;flex:0;">
             <input type="checkbox" style="width:auto;margin-bottom:0;" ${r.enabled?'checked':''} onchange="toggleReminderEnabled('${r.id}', this.checked)">
           </label>
-          <div style="flex:2;font-size:13px;">${r.title?'<b>'+r.title+'</b> - ':''}${r.message} <span style="color:var(--muted);">(${REMINDER_ROLE_LABELS[r.targetRole]} · בשעה ${r.time})</span></div>
+          <div style="flex:2;font-size:13px;">${r.title?'<b>'+escHtml(r.title)+'</b> - ':''}${escHtml(r.message)} <span style="color:var(--muted);">(${REMINDER_ROLE_LABELS[r.targetRole]} · בשעה ${r.time})</span></div>
           <button class="icon-btn" onclick="startEditReminder('${r.id}')">✏️</button>
           <button class="icon-btn" onclick="deleteReminder('${r.id}')">🗑️</button>
         </div>
@@ -5779,7 +5831,7 @@ function renderAdminTabContent(){
       ${cityReport.length===0 ? '<div style="color:var(--muted);font-size:13px;margin-bottom:14px;">אין ערוצי פרסום מוגדרים עדיין.</div>' : cityReport.map(ch=>`
         <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:10px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-            <div style="font-weight:800;">${ch.name} <span style="font-weight:400;color:var(--muted);font-size:12.5px;">(${ch.city})</span></div>
+            <div style="font-weight:800;">${escHtml(ch.name)} <span style="font-weight:400;color:var(--muted);font-size:12.5px;">(${escHtml(ch.city)})</span></div>
             <button class="icon-btn" onclick="deleteAdChannel('${ch.id}')">🗑️</button>
           </div>
           <div class="row2" style="align-items:center;margin-bottom:8px;">
@@ -6025,10 +6077,10 @@ function renderAdminTabContent(){
           return `
           <div class="city-card" style="padding:10px 14px;margin-bottom:6px;">
             <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">
-              <div style="font-weight:700;">${e.action}</div>
+              <div style="font-weight:700;">${escHtml(e.action)}</div>
               <div style="font-size:12px;color:var(--muted);">${dateLabel}</div>
             </div>
-            <div style="font-size:13px;margin-top:2px;">${e.details||''}</div>
+            <div style="font-size:13px;margin-top:2px;">${escHtml(e.details||'')}</div>
             <div style="font-size:12px;color:var(--muted);margin-top:2px;">על ידי ${e.username||'(לא ידוע)'}${e.role?' · '+roleLabel(e.role):''}</div>
           </div>
         `;}).join('')}
@@ -6068,11 +6120,13 @@ function renderAdminTabContent(){
   }
 }
 async function addUser(){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול להוסיף משתמשים'); return; }
   const username = document.getElementById('newUserUsername').value.trim();
   const password = document.getElementById('newUserPassword').value;
   const role = document.getElementById('newUserRole').value;
   if(!username || !password){ showToast('יש למלא שם משתמש וסיסמה'); return; }
   if(findUser(username)){ showToast('שם משתמש כבר קיים'); return; }
+  if(role!=='rep' && role!=='admin'){ showToast('תפקיד לא תקין'); return; }
   users.push({ username, role });
   await saveUsers();
   await ensureCredentials(username, password);
@@ -6080,12 +6134,13 @@ async function addUser(){
   renderAdminTabContent();
 }
 async function updateUser(username){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך משתמשים'); return; }
   const u = findUser(username);
   if(!u || u.role==='mainadmin') return;
   const pwInput = document.querySelector(`.user-reset-password[data-username="${CSS.escape(username)}"]`);
   const roleSelect = document.querySelector(`.user-role-select[data-username="${CSS.escape(username)}"]`);
   const newPassword = pwInput && pwInput.value.trim() ? pwInput.value.trim() : null;
-  if(roleSelect) u.role = roleSelect.value;
+  if(roleSelect && (roleSelect.value==='rep' || roleSelect.value==='admin')) u.role = roleSelect.value;
   await saveUsers();
   if(newPassword) await ensureCredentials(username, newPassword);
   showToast('המשתמש עודכן');
@@ -6113,6 +6168,7 @@ async function changeMainAdminPassword(){
   if(input) input.value = '';
 }
 function saveStockSettings(){
+  if(!isAdminRole()){ showToast('רק מנהל יכול לערוך את המלאי'); return; }
   document.querySelectorAll('.stock-input-animal').forEach(inp=>{
     const species = inp.dataset.species;
     const val = parseFloat(inp.value);
@@ -6135,6 +6191,7 @@ function openAdminPanel(){
   document.getElementById('adminPanelModal').classList.add('open');
 }
 function saveAdminSettings(){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך הגדרות אלו'); return; }
   document.querySelectorAll('.admin-cost-input-animal').forEach(inp=>{
     const sku = inp.dataset.sku;
     const val = inp.value.trim();
@@ -6300,6 +6357,7 @@ function renderDepotCityOptions(filterText){
 function filterDepotCitySelect(){ renderDepotCityOptions(document.getElementById('depotCityFilter').value); }
 function depotFullAddress(){ return depot.street && depot.city ? `${depot.street}, ${depot.city}` : ''; }
 function saveDepotFromAdmin(){
+  if(!isAdminRole()){ showToast('רק מנהל יכול לערוך את נקודת המוצא'); return; }
   const city = document.getElementById('depotCitySelect').value || '';
   const street = document.getElementById('depotAddressInput').value.trim();
   if(!city){ showToast('נא לבחור עיר'); return; }
