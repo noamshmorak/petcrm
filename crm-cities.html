@@ -676,6 +676,16 @@ async function enableAdminPushNotifications(){
   if(!window.OneSignal){ showToast('שירות ההתראות עדיין נטען - נסה שוב בעוד כמה שניות'); return; }
   try{
     await OneSignal.Notifications.requestPermission();
+    // requestPermission() resolves normally even when the user denies/dismisses the browser
+    // prompt, or when Chrome's "quiet" notification UI blocks it silently without ever showing a
+    // popup at all - it does NOT throw in that case. Without this explicit check we'd wrongly
+    // report success, permanently hide the opt-in banner (pushOptedIn=1 below), and the person
+    // would have no way to ever retry - a silent failure that looks exactly like "notifications
+    // are just broken" with no error anywhere.
+    if(Notification.permission !== 'granted'){
+      showToast('ההרשאה לא אושרה בדפדפן - בדוק/י ליד שורת הכתובת (סמל פעמון/מנעול) שהאתר לא חסום, ונסה/י שוב');
+      return;
+    }
     await OneSignal.User.addTag('role_'+currentUser.role, '1');
     await OneSignal.User.addTag('username', currentUser.username);
     if(isAdminRole()) await OneSignal.User.addTag('notifyManager', '1');
@@ -687,7 +697,12 @@ async function enableAdminPushNotifications(){
 function renderPushOptInBanner(){
   const el = document.getElementById('pushOptInBanner');
   if(!el) return;
-  if(!currentUser || localStorage.getItem('pushOptedIn')==='1'){ el.innerHTML=''; return; }
+  // Also re-check the real browser permission, not just our own localStorage flag: anyone who
+  // hit the false-success bug before this fix (opted-in flag set even though the browser never
+  // actually granted permission) would otherwise have the banner hidden forever with no way to
+  // retry. This lets them see it again and try once more.
+  const alreadyOptedIn = localStorage.getItem('pushOptedIn')==='1' && typeof Notification!=='undefined' && Notification.permission==='granted';
+  if(!currentUser || alreadyOptedIn){ el.innerHTML=''; return; }
   const hasReminder = customReminders.some(r=>r.enabled && r.targetRole===currentUser.role);
   if(isAdminRole()){
     el.innerHTML = `<div class="alert-banner" style="cursor:pointer;" onclick="enableAdminPushNotifications()"><div class="alert-title">🔔 הפעלת התראות</div><div>לחצ/י כאן כדי לקבל התראות לנייד גם כשהאפליקציה סגורה (פניות דחופות ממתינות לטיפול${hasReminder?', ותזכורות שהוגדרו':''})</div></div>`;
