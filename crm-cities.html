@@ -2725,7 +2725,7 @@ function computeRepActivityByWeekday(scope){
     const d = new Date(ts);
     return (d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))===curMonthKey;
   }
-  const reps = users.filter(u=>u.role==='rep');
+  const reps = users.filter(u=>u.role==='rep' || u.role==='admin');
   return reps.map(u=>{
     const days = WEEKDAY_LABELS.map((label,idx)=>({ weekday: idx, label, count: 0, items: [] }));
     orders.forEach(o=>{
@@ -5784,7 +5784,7 @@ function renderAdminTabContent(){
       <button class="btn-primary" onclick="addBusinessDebt()">הוסף חוב</button>
     `;
   }else if(adminActiveTab==='payroll'){
-    const reps = users.filter(u=>u.role==='rep');
+    const reps = users.filter(u=>u.role==='rep' || u.role==='admin');
     const allPending = hourReports.filter(r=>r.pendingApproval);
     const grandTotalOwed = hourReports.filter(r=>!r.paid && !r.pendingApproval).reduce((s,r)=>s+computeHourReportAmount(r), 0);
     content.innerHTML = `
