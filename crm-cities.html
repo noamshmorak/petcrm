@@ -337,6 +337,15 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="popupAlertModal">
+  <div class="modal-box">
+    <button class="modal-close-x" onclick="closePopupAlert()">✕</button>
+    <div id="popupAlertTitle" style="font-weight:800;font-size:16px;margin-bottom:8px;"></div>
+    <p id="popupAlertMessage" style="text-align:right;font-size:13.5px;line-height:1.6;"></p>
+    <div class="modal-actions" id="popupAlertActions"></div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="roundChoiceModal">
   <div class="modal-box">
     <button class="modal-close-x" onclick="resolveRoundChoice(null)">✕</button>
@@ -720,6 +729,7 @@ function checkInquiryEscalations(){
   orders.forEach(o=>{
     if(o.managerInquiry && !o.managerInquiry.resolved && !o.managerInquiry.escalationSent && inquiryIsOverdue(o.managerInquiry)){
       sendPushToUsernames('⚠️ פנייה פתוחה מעל 48 שעות', `${o.customer||'לקוח'} (${o.city}): ${o.managerInquiry.note}`, o.managerInquiry.assignedTo||[]);
+      if(isAdminRole()) showPopupAlert('⚠️ פנייה פתוחה מעל 48 שעות', `${o.customer||'לקוח'} (${o.city}): ${o.managerInquiry.note}`, { dedupeId:'inquiry-'+o.id });
       o.managerInquiry.escalationSent = true;
       changed = true;
     }
@@ -911,6 +921,7 @@ const EXPENSES_KEY = 'pet-crm-expenses';
 const HOUR_REPORTS_KEY = 'pet-crm-hour-reports';
 const AUDIT_LOG_KEY = 'pet-crm-audit-log';
 const CUSTOM_REMINDERS_KEY = 'pet-crm-custom-reminders'; // array of {id, enabled, time, targetRole, title, message} - admin-editable, read by an external GitHub Actions cron job that sends the actual push
+const AUTOMATION_SETTINGS_KEY = 'pet-crm-automation-settings'; // {popupAlertsEnabled, quickContactEnabled} - on/off switches for the in-app popup alerts and the WhatsApp/email quick-send buttons
 const AD_CHANNELS_KEY = 'pet-crm-ad-channels'; // array of {id, city, name, defaultWeeklyCost, weekOverrides:{weekStart:amount}}
 const STRONG_AD_ROUNDS_KEY = 'pet-crm-strong-ad-rounds'; // {'city|round': true} - rounds opened during a nationwide "strong ad" week
 const STRONG_AD_CAMPAIGN_KEY = 'pet-crm-strong-ad-campaign'; // {defaultWeeklyCost, weekOverrides:{weekStart:amount}} - shared cost of the nationwide campaign
@@ -1057,6 +1068,8 @@ const DEFAULT_COST_MAP = {
   'כלי שתייה ענק לתוכי': null
 };
 let costSettings = JSON.parse(JSON.stringify(DEFAULT_COST_MAP));
+const DEFAULT_AUTOMATION_SETTINGS = { popupAlertsEnabled: true, quickContactEnabled: true };
+let automationSettings = JSON.parse(JSON.stringify(DEFAULT_AUTOMATION_SETTINGS));
 function isAnimalSku(sku){ return ANIMAL_OPTIONS.includes(sku); }
 function getSkuUnitCost(sku){
   const c = costSettings[sku];
@@ -1508,6 +1521,8 @@ function renderInventoryAlertBanner(){
     html += '<div class="alert-title" style="margin-top:8px;">❗ יידרש להשיג כדי לכסות הזמנות שטרם יצאו למשלוח</div>';
     missingAnimals.forEach(a=>{ html += `<div>🐦 יש להשיג עוד ${a.qty} ${a.species}</div>`; });
     missingCages.forEach(c=>{ html += `<div>📦 יש להשיג עוד ${c.qty} ${c.type}</div>`; });
+    const dedupeKey = 'stock-missing-'+todayStr()+'-'+missingAnimals.map(a=>a.species+a.qty).join(',')+missingCages.map(c=>c.type+c.qty).join(',');
+    showPopupAlert('❗ חוסר צפוי במלאי', 'יש הזמנות שטרם יצאו למשלוח שאין להן כיסוי מלא במלאי הנוכחי. פרטים בטאב "מלאי".', { dedupeId: dedupeKey, actionLabel:'מעבר למלאי', actionFn:()=>{ openAdminPanel(); switchAdminTab('stock'); } });
   }
   html += '</div>';
   el.innerHTML = html;
@@ -1572,6 +1587,47 @@ function showToast(msg){
   t.textContent = msg;
   t.classList.add('show');
   setTimeout(()=>t.classList.remove('show'), 1800);
+}
+// In-app popup alert: a modal that interrupts whatever the admin is looking at (unlike the
+// alert-banners, which just sit quietly in a tab that has to be scrolled to). Used for things
+// urgent enough to demand attention right now, while the tab is open. Gated by
+// automationSettings.popupAlertsEnabled so it can be switched off entirely. `dedupeId`, if given,
+// is remembered for this page session only (sessionStorage) so the exact same event never pops up
+// twice in a row every time the periodic check runs - the person only has to dismiss it once.
+const POPUP_ALERT_SEEN_KEY = 'popupAlertsSeenIds';
+function _popupAlertSeenSet(){
+  try{ return new Set(JSON.parse(sessionStorage.getItem(POPUP_ALERT_SEEN_KEY)||'[]')); }
+  catch(e){ return new Set(); }
+}
+function showPopupAlert(title, message, opts){
+  opts = opts || {};
+  if(!automationSettings.popupAlertsEnabled) return;
+  if(opts.dedupeId){
+    const seen = _popupAlertSeenSet();
+    if(seen.has(opts.dedupeId)) return;
+    seen.add(opts.dedupeId);
+    try{ sessionStorage.setItem(POPUP_ALERT_SEEN_KEY, JSON.stringify([...seen])); }catch(e){}
+  }
+  document.getElementById('popupAlertTitle').textContent = title;
+  document.getElementById('popupAlertMessage').textContent = message;
+  const actions = document.getElementById('popupAlertActions');
+  actions.innerHTML = '';
+  if(opts.actionLabel && opts.actionFn){
+    const btn = document.createElement('button');
+    btn.className = 'btn-primary';
+    btn.textContent = opts.actionLabel;
+    btn.onclick = ()=>{ closePopupAlert(); opts.actionFn(); };
+    actions.appendChild(btn);
+  }
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'btn-ghost';
+  closeBtn.textContent = 'סגור';
+  closeBtn.onclick = closePopupAlert;
+  actions.appendChild(closeBtn);
+  document.getElementById('popupAlertModal').classList.add('open');
+}
+function closePopupAlert(){
+  document.getElementById('popupAlertModal').classList.remove('open');
 }
 function showConfirm(message, onConfirm){
   document.getElementById('confirmMessage').textContent = message;
@@ -3466,6 +3522,7 @@ function renderSummary(){
           <button class="icon-btn" onclick="startEdit('${o.id}')">✏️</button>
           <button class="icon-btn" onclick="postponeOrderToNextRound('${o.id}')" title="דחה לסבב הבא">⏭️</button>
           ${(o.hasSms && o.phone1) ? `<button class="icon-btn" onclick="openSingleSmsModal('${o.id}')" title="שלח SMS ללקוח">📱</button>` : ''}
+          ${(automationSettings.quickContactEnabled && o.phone1) ? `<button class="icon-btn" onclick="whatsAppOrderReminder('${o.id}')" title="שלח תזכורת בוואטסאפ">💬</button>` : ''}
           ${isAdminRole() ? `<button class="icon-btn" onclick="openMarkBlockedModal('${o.id}')" title="סמן לקוח כבעייתי">⛔</button>` : ''}
           <button class="icon-btn" onclick="toggleCancel('${o.id}')">🚫</button>
           ${isAdminRole() ? `<button class="icon-btn" onclick="deleteOrder('${o.id}')" title="מחיקה לצמיתות - מנהל בלבד">🗑️</button>` : ''}
@@ -3840,6 +3897,47 @@ async function doSendSms(message, eligible){
   }catch(e){
     console.error('[send-round-sms]', e);
     showToast('שליחת ה-SMS נכשלה - ' + (e.message||'שגיאה לא ידועה'));
+  }
+}
+/* ---------- WhatsApp / email quick-send (manual, one click - opens a pre-filled message in
+   WhatsApp or the person's email app; no API account or server involved, so it's available
+   immediately and works for both customers and staff). Gated by
+   automationSettings.quickContactEnabled so it can be hidden entirely if unwanted. ---------- */
+function openWhatsAppTo(phone, message){
+  if(!automationSettings.quickContactEnabled){ showToast('כפתורי וואטסאפ/אימייל כבויים כרגע בהגדרות האוטומציה'); return; }
+  const digits = (phone||'').replace(/\D/g,'');
+  if(!digits){ showToast('אין מספר טלפון תקין'); return; }
+  // Israeli local format (05X-XXXXXXX) -> international 972 prefix, dropping the leading 0,
+  // which is what wa.me requires; already-international numbers are left as-is.
+  const intl = digits.startsWith('0') ? '972'+digits.slice(1) : digits;
+  window.open(`https://wa.me/${intl}?text=${encodeURIComponent(message||'')}`, '_blank');
+}
+function openEmailTo(email, subject, body){
+  if(!automationSettings.quickContactEnabled){ showToast('כפתורי וואטסאפ/אימייל כבויים כרגע בהגדרות האוטומציה'); return; }
+  if(!email){ showToast('אין כתובת אימייל מוגדרת'); return; }
+  window.location.href = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(subject||'')}&body=${encodeURIComponent(body||'')}`;
+}
+function whatsAppOrderReminder(orderId){
+  const o = orders.find(x=>x.id===orderId);
+  if(!o){ return; }
+  if(!o.phone1){ showToast('אין טלפון להזמנה זו'); return; }
+  const msg = `שלום ${o.customer||''}, ${DEFAULT_SMS_MESSAGE}`;
+  openWhatsAppTo(o.phone1, msg);
+  o.customerUpdated = true; o.customerUpdateMethod = 'ע"י שליחת וואטסאפ';
+  saveOrders();
+  logAudit('שליחת תזכורת וואטסאפ ללקוח', o.customer||'לקוח');
+  renderAll();
+}
+function contactStaffMember(username, channel){
+  const u = findUser(username);
+  if(!u){ return; }
+  const title = `שלום ${u.username}, זו תזכורת מ-CRM חסד לישראל`;
+  if(channel==='whatsapp'){
+    if(!u.phone){ showToast('לא הוגדר טלפון למשתמש זה - אפשר להוסיף בטאב "משתמשים"'); return; }
+    openWhatsAppTo(u.phone, title);
+  }else{
+    if(!u.email){ showToast('לא הוגדרה כתובת אימייל למשתמש זה - אפשר להוסיף בטאב "משתמשים"'); return; }
+    openEmailTo(u.email, 'תזכורת מ-CRM חסד לישראל', title);
   }
 }
 function closePackModal(){ document.getElementById('packModal').classList.remove('open'); }
@@ -4505,6 +4603,25 @@ async function saveCostSettings(){
     avgMarketingCostPerOrder = typeof merged.marketing === 'number' ? merged.marketing : avgMarketingCostPerOrder;
     cityMarketingSpend = merged.cityMarketing || cityMarketingSpend;
   }catch(e){ showToast('שגיאה בשמירת ההגדרות'); }
+}
+/* ---------- automation settings (on/off switches for popup alerts + WhatsApp/email quick-send) ---------- */
+async function loadAutomationSettings(){
+  try{
+    const res = await window.storage.get(AUTOMATION_SETTINGS_KEY, true);
+    const parsed = res && res.value ? JSON.parse(res.value) : {};
+    automationSettings = Object.assign(JSON.parse(JSON.stringify(DEFAULT_AUTOMATION_SETTINGS)), parsed);
+  }catch(e){ /* use defaults */ }
+  markSyncedObject(AUTOMATION_SETTINGS_KEY, automationSettings);
+}
+async function toggleAutomationSetting(key, checked){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לשנות הגדרה זו'); return; }
+  automationSettings[key] = checked;
+  try{
+    const merged = await reconcileObjectStore(AUTOMATION_SETTINGS_KEY, automationSettings);
+    automationSettings = Object.assign(JSON.parse(JSON.stringify(DEFAULT_AUTOMATION_SETTINGS)), merged);
+  }catch(e){ showToast('שגיאה בשמירת ההגדרה'); }
+  showToast(checked ? 'הופעל' : 'כובה');
+  renderAdminTabContent();
 }
 // Free-form scheduled reminders the main admin builds themselves: any message, any daily time,
 // sent to whichever role they pick (rep / admin / mainadmin). The actual sending happens outside
@@ -5437,11 +5554,11 @@ function renderAdminRevenueByCity(){
 /* ---------- admin tabs ---------- */
 let adminActiveTab = 'home';
 function adminTabsForRole(){
-  if(currentUser && currentUser.role==='mainadmin') return ['home','report','trend','revenue','expenses','payroll','reminders','advertising','repactivity','stock','depot','blockedcustomers','trash','users','auditlog','backup'];
+  if(currentUser && currentUser.role==='mainadmin') return ['home','report','trend','revenue','expenses','payroll','reminders','automation','advertising','repactivity','stock','depot','blockedcustomers','trash','users','auditlog','backup'];
   if(currentUser && currentUser.role==='admin') return ['home','stock','depot','blockedcustomers','backup'];
   return [];
 }
-const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', trend:'📈 מגמה לאורך זמן', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', reminders:'🔔 תזכורות', advertising:'📣 פרסום', repactivity:'📅 פעילות נציגים', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', blockedcustomers:'🚫 לקוחות בעייתיים', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא' };
+const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', trend:'📈 מגמה לאורך זמן', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', reminders:'🔔 תזכורות', automation:'⚙️ אוטומציות', advertising:'📣 פרסום', repactivity:'📅 פעילות נציגים', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', blockedcustomers:'🚫 לקוחות בעייתיים', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא' };
 function renderAdminTabsBar(){
   const bar = document.getElementById('adminTabsBar');
   const tabs = adminTabsForRole();
@@ -5857,6 +5974,12 @@ function renderAdminTabContent(){
             return `
             <div style="font-weight:700;margin:12px 0 6px;color:var(--danger);">⚠️ ימים עם הזמנות שנסגרו ללא דיווח שעות</div>
             <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">הנציג הזין הזמנות/מכירות בימים האלה אך לא הגיש דיווח שעות עבורם - כך שהם לא נספרים כרגע בחוב. לחצו על יום כדי לראות בדיוק אילו הזמנות נסגרו בו.</div>
+            ${automationSettings.quickContactEnabled ? `
+            <div style="display:flex;gap:6px;margin-bottom:8px;">
+              ${u.phone ? `<button class="btn-ghost" style="flex:0;padding:6px 10px;font-size:12.5px;" onclick="contactStaffMember('${escAttr(u.username)}','whatsapp')">💬 תזכורת בוואטסאפ</button>` : ''}
+              ${u.email ? `<button class="btn-ghost" style="flex:0;padding:6px 10px;font-size:12.5px;" onclick="contactStaffMember('${escAttr(u.username)}','email')">📧 תזכורת באימייל</button>` : ''}
+              ${(!u.phone && !u.email) ? `<div style="font-size:12px;color:var(--muted);">אין טלפון/אימייל שמור לנציג זה - אפשר להוסיף בטאב "משתמשים"</div>` : ''}
+            </div>` : ''}
             ${unreportedActivity.map(d=>`
               <details style="border-top:1px solid var(--border);padding-top:6px;margin-top:6px;">
                 <summary style="cursor:pointer;font-weight:700;display:flex;justify-content:space-between;">
@@ -5960,6 +6083,36 @@ function renderAdminTabContent(){
           <button class="icon-btn" onclick="deleteReminder('${r.id}')">🗑️</button>
         </div>
       `).join('')}
+    `;
+  }else if(adminActiveTab==='automation'){
+    content.innerHTML = `
+      <div style="font-weight:800;margin-bottom:4px;">⚙️ אוטומציות</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:14px;">מתג הפעלה/כיבוי לכל אחת מהאוטומציות בנפרד - אפשר לכבות בכל רגע בלי לאבד שום נתון.</div>
+
+      <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div style="font-weight:700;">🔔 פופ-אפ התראה במסך</div>
+          <label style="display:flex;align-items:center;gap:6px;">
+            <input type="checkbox" style="width:auto;margin-bottom:0;" ${automationSettings.popupAlertsEnabled?'checked':''} onchange="toggleAutomationSetting('popupAlertsEnabled', this.checked)">
+          </label>
+        </div>
+        <div style="font-size:12.5px;color:var(--muted);margin-top:4px;">כשמופעל: אירועים דחופים (פנייה שלא טופלה מעל 48 שעות, חוסר צפוי במלאי) יקפצו כחלון בולט על המסך אצל כל מנהל שהאפליקציה פתוחה אצלו, בנוסף להתראת Push הרגילה - לא רק כבאנר שקט שצריך לגלול אליו. כל התראה קופצת פעם אחת בלבד לכל אירוע (לא חוזרת שוב ושוב).</div>
+      </div>
+
+      <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div style="font-weight:700;">💬 כפתורי וואטסאפ/אימייל מהירים</div>
+          <label style="display:flex;align-items:center;gap:6px;">
+            <input type="checkbox" style="width:auto;margin-bottom:0;" ${automationSettings.quickContactEnabled?'checked':''} onchange="toggleAutomationSetting('quickContactEnabled', this.checked)">
+          </label>
+        </div>
+        <div style="font-size:12.5px;color:var(--muted);margin-top:4px;">כשמופעל: כפתור 💬 ליד כל הזמנה עם טלפון פותח וואטסאפ עם הודעה מוכנה ללקוח (לחיצה אחת, שליחה ידנית - לא דורש שום חשבון API). באותו אופן, בטאב "שכר ושעות" אפשר לשלוח תזכורת וואטסאפ/אימייל לנציג ישירות (דורש שטלפון/אימייל שלו יוגדרו בטאב "משתמשים"). כיבוי המתג מסתיר את כל הכפתורים האלה בבת אחת.</div>
+      </div>
+
+      <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;background:#F5F7FA;">
+        <div style="font-weight:700;margin-bottom:4px;">📊 דוח תקופתי אוטומטי - בקרוב</div>
+        <div style="font-size:12.5px;color:var(--muted);">שליחת סיכום יומי/שבועי (הזמנות, הכנסות) אוטומטית גם כשאף אחד לא פתח את האפליקציה, דרך אותו מנגנון ה-Push הקיים. בהמשך פיתוח.</div>
+      </div>
     `;
   }else if(adminActiveTab==='advertising'){
     const cityReport = computeAdChannelReport(adminAdFrom, adminAdTo);
@@ -6208,8 +6361,22 @@ function renderAdminTabContent(){
                   </select>
                 </div>
               </div>
+              <div class="row2" style="margin-top:8px;">
+                <div>
+                  <label>טלפון (לתזכורות בוואטסאפ)</label>
+                  <input class="user-phone" data-username="${escAttr(u.username)}" placeholder="05X-XXXXXXX" value="${escAttr(u.phone||'')}">
+                </div>
+                <div>
+                  <label>אימייל (לתזכורות במייל)</label>
+                  <input type="email" class="user-email" data-username="${escAttr(u.username)}" placeholder="name@example.com" value="${escAttr(u.email||'')}">
+                </div>
+              </div>
               <div class="modal-actions" style="margin-top:8px;">
                 <button class="btn-ghost" onclick="updateUser('${escAttr(u.username)}')">עדכן</button>
+                ${(u.phone||u.email) ? `
+                  ${u.phone ? `<button class="icon-btn" onclick="contactStaffMember('${escAttr(u.username)}','whatsapp')" title="שלח תזכורת בוואטסאפ">💬</button>` : ''}
+                  ${u.email ? `<button class="icon-btn" onclick="contactStaffMember('${escAttr(u.username)}','email')" title="שלח תזכורת באימייל">📧</button>` : ''}
+                ` : ''}
                 <button class="btn-ghost" style="color:var(--danger);border-color:var(--danger);" onclick="deleteUser('${escAttr(u.username)}')">מחק משתמש</button>
               </div>
             `}
@@ -6311,8 +6478,12 @@ async function updateUser(username){
   if(!u || u.role==='mainadmin') return;
   const pwInput = document.querySelector(`.user-reset-password[data-username="${CSS.escape(username)}"]`);
   const roleSelect = document.querySelector(`.user-role-select[data-username="${CSS.escape(username)}"]`);
+  const phoneInput = document.querySelector(`.user-phone[data-username="${CSS.escape(username)}"]`);
+  const emailInput = document.querySelector(`.user-email[data-username="${CSS.escape(username)}"]`);
   const newPassword = pwInput && pwInput.value.trim() ? pwInput.value.trim() : null;
   if(roleSelect && (roleSelect.value==='rep' || roleSelect.value==='admin')) u.role = roleSelect.value;
+  if(phoneInput) u.phone = phoneInput.value.trim();
+  if(emailInput) u.email = emailInput.value.trim();
   await saveUsers();
   if(newPassword) await ensureCredentials(username, newPassword);
   showToast('המשתמש עודכן');
@@ -7098,6 +7269,7 @@ async function initApp(){
   await loadOrders();
   await loadSpotSales();
   await loadCostSettings();
+  await loadAutomationSettings();
   await loadRoundDepartures();
   await loadDepot();
   await loadTrash();
