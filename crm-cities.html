@@ -676,6 +676,11 @@ async function sendPushToUsernames(title, message, usernames){
   }catch(e){ /* push delivery failures are non-critical - ignore */ }
 }
 async function sendPushToAdmins(title, message){ return sendPushToUsernames(title, message, []); }
+async function sendPushToMainAdmin(title, message){
+  const mainAdminUser = users.find(u=>u.role==='mainadmin');
+  if(!mainAdminUser) return;
+  return sendPushToUsernames(title, message, [mainAdminUser.username]);
+}
 // Lets any user opt in to real push notifications from a small banner (see renderPushOptInBanner).
 // Tags their OneSignal subscription by role (role_rep / role_admin / role_mainadmin - used by the
 // admin-configurable custom reminders), by exact username (used to route a manager-inquiry report
@@ -1319,7 +1324,7 @@ async function attemptLogin(){
   document.getElementById('appRoot').style.display = '';
   document.getElementById('logoutLink').textContent = `👤 ${u.username} (${roleLabel(u.role)}) · התנתקות`;
   document.getElementById('adminAreaLink').style.display = (u.role==='mainadmin' || u.role==='admin') ? '' : 'none';
-  document.getElementById('hoursTabBtn').style.display = (u.role==='rep') ? '' : 'none';
+  document.getElementById('hoursTabBtn').style.display = (u.role==='rep' || u.role==='admin') ? '' : 'none';
   renderInventoryAlertBanner();
   renderHoursReminderBanner();
   renderPushOptInBanner();
@@ -1365,7 +1370,7 @@ function tryAutoLogin(){
   document.getElementById('appRoot').style.display = '';
   document.getElementById('logoutLink').textContent = `👤 ${u.username} (${roleLabel(u.role)}) · התנתקות`;
   document.getElementById('adminAreaLink').style.display = (u.role==='mainadmin' || u.role==='admin') ? '' : 'none';
-  document.getElementById('hoursTabBtn').style.display = (u.role==='rep') ? '' : 'none';
+  document.getElementById('hoursTabBtn').style.display = (u.role==='rep' || u.role==='admin') ? '' : 'none';
   renderHoursReminderBanner();
   renderPushOptInBanner();
   resetInactivityTimer();
@@ -2721,6 +2726,145 @@ async function saveHourReports(){
   try{ hourReports = await reconcileArrayStore(HOUR_REPORTS_KEY, hourReports); }
   catch(e){ showToast('שגיאה בשמירת דוחות השעות'); }
 }
+
+/* ---------- admin (role='admin') monthly hour quota ----------
+   Different model than reps: an admin logs hours incrementally throughout the day (e.g. "worked
+   an hour" at 8:00, "another hour" at 10:00) rather than one total-for-the-day number, and there's
+   no wage/payment attached - this is purely about staying under a monthly hour ceiling.
+   { id, username, date, hours, loggedAt, reason } - reason is only set when a single entry pushes
+   a regular (non Fri/Sat) day's total past 8 hours, so there's always a documented explanation for
+   any long day. */
+const ADMIN_HOUR_LOGS_KEY = 'pet-crm-admin-hour-logs';
+const ADMIN_MONTHLY_HOUR_QUOTA = 160;
+// Friday+Saturday combined get only 3 hours of the monthly quota (1.5 each) since they're
+// short/non-working days for this business - the rest of the 160 is spread evenly across the
+// remaining ("regular") days of that specific month.
+const ADMIN_WEEKEND_DAY_HOURS = 1.5;
+let adminHourLogs = [];
+async function loadAdminHourLogs(){
+  try{
+    const res = await window.storage.get(ADMIN_HOUR_LOGS_KEY, true);
+    adminHourLogs = res && res.value ? JSON.parse(res.value) : [];
+    if(!Array.isArray(adminHourLogs)) adminHourLogs = [];
+  }catch(e){ adminHourLogs = []; }
+  markSyncedArray(ADMIN_HOUR_LOGS_KEY, adminHourLogs, 'id');
+}
+async function saveAdminHourLogs(){
+  try{ adminHourLogs = await reconcileArrayStore(ADMIN_HOUR_LOGS_KEY, adminHourLogs, 'id'); }
+  catch(e){ showToast('שגיאה בשמירת דיווח השעות'); }
+}
+function isWeekendDateStr(dateStr){
+  const wd = new Date(dateStr+'T00:00:00').getDay();
+  return wd===5 || wd===6; // Friday=5, Saturday=6
+}
+// For a given calendar month, works out how the 160-hour quota splits into a per-regular-day
+// figure once the reduced Friday/Saturday allowance is set aside.
+function computeAdminMonthQuotaInfo(year, monthIdx){
+  const totalDays = new Date(year, monthIdx+1, 0).getDate();
+  let weekendDays = 0;
+  for(let d=1; d<=totalDays; d++){
+    const wd = new Date(year, monthIdx, d).getDay();
+    if(wd===5 || wd===6) weekendDays++;
+  }
+  const regularDays = totalDays - weekendDays;
+  const weekendHours = weekendDays * ADMIN_WEEKEND_DAY_HOURS;
+  const regularHoursTotal = Math.max(0, ADMIN_MONTHLY_HOUR_QUOTA - weekendHours);
+  const dailyRegularQuota = regularDays>0 ? regularHoursTotal/regularDays : 0;
+  return { totalDays, weekendDays, regularDays, weekendHours, regularHoursTotal, dailyRegularQuota };
+}
+function quotaForDate(dateStr){
+  const d = new Date(dateStr+'T00:00:00');
+  if(isWeekendDateStr(dateStr)) return ADMIN_WEEKEND_DAY_HOURS;
+  return computeAdminMonthQuotaInfo(d.getFullYear(), d.getMonth()).dailyRegularQuota;
+}
+function computeAdminHoursForDate(username, dateStr){
+  return adminHourLogs.filter(l=>l.username===username && l.date===dateStr).reduce((s,l)=>s+(l.hours||0), 0);
+}
+function computeAdminHoursThisMonth(username, refDate){
+  const now = refDate || new Date();
+  const monthKey = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+  return adminHourLogs.filter(l=>l.username===username && l.date && l.date.startsWith(monthKey)).reduce((s,l)=>s+(l.hours||0), 0);
+}
+// Formats a Date using its LOCAL calendar fields (not toISOString, which converts to UTC first -
+// for any timezone ahead of UTC, like Israel, that silently shifts midnight back to the previous
+// day and would corrupt every date computed below).
+function localDateStr(d){
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+// Israeli work week: Sunday through Saturday. Given any date in the week, returns the Sunday
+// (week start) and Saturday (week end) as YYYY-MM-DD strings.
+function computeAdminWeekRange(dateStr){
+  const d = new Date(dateStr+'T00:00:00');
+  const sunday = new Date(d);
+  sunday.setDate(d.getDate() - d.getDay());
+  const saturday = new Date(sunday);
+  saturday.setDate(sunday.getDate() + 6);
+  return { weekStart: localDateStr(sunday), weekEnd: localDateStr(saturday) };
+}
+// Sums each day's own quota (quotaForDate already picks the right figure whether that day falls
+// on a weekend or not, and correctly handles a week that spans two different months at the edges).
+function computeAdminWeekQuota(weekStart){
+  const d = new Date(weekStart+'T00:00:00');
+  let total = 0;
+  for(let i=0; i<7; i++){
+    const day = new Date(d); day.setDate(d.getDate()+i);
+    total += quotaForDate(localDateStr(day));
+  }
+  return total;
+}
+function computeAdminHoursForWeek(username, weekStart, weekEnd){
+  return adminHourLogs.filter(l=>l.username===username && l.date>=weekStart && l.date<=weekEnd).reduce((s,l)=>s+(l.hours||0), 0);
+}
+// Logs one incremental hours entry for the currently-logged-in admin. There's no hard cap - an
+// admin can log as many hours as actually worked - but two things make sure nothing slips by
+// unnoticed: (1) a single entry that pushes today's running total past 8 hours on a regular
+// (non weekend) day requires a "reason" field, so any unusually long day is always documented; and
+// (2) the moment the admin's running total FOR THIS WEEK first crosses that week's allocated quota
+// (percentage-of-week-quota basis, not the monthly total), the main admin gets a push + in-app
+// popup - fires once per weekly crossing, not on every entry after that.
+async function submitAdminHourLog(){
+  if(!currentUser || currentUser.role!=='admin'){ return; }
+  const hoursInput = document.getElementById('adminHourLogInput');
+  const reasonInput = document.getElementById('adminHourLogReason');
+  const hours = parseFloat(hoursInput.value);
+  if(isNaN(hours) || hours<=0){ showToast('נא להזין מספר שעות תקין'); return; }
+  const today = todayStr();
+  const existingToday = computeAdminHoursForDate(currentUser.username, today);
+  const newDayTotal = existingToday + hours;
+  const weekend = isWeekendDateStr(today);
+  const reason = reasonInput ? reasonInput.value.trim() : '';
+  if(!weekend && newDayTotal>8 && !reason){
+    showToast('חריגה מ-8 שעות ביום רגיל - יש לציין סיבה לפני השמירה');
+    const wrap = document.getElementById('adminHourLogReasonWrap');
+    if(wrap) wrap.style.display = '';
+    return;
+  }
+  const { weekStart, weekEnd } = computeAdminWeekRange(today);
+  const weekQuota = computeAdminWeekQuota(weekStart);
+  const existingWeekTotal = computeAdminHoursForWeek(currentUser.username, weekStart, weekEnd);
+  const entry = { id: genExpenseId(), username: currentUser.username, date: today, hours, loggedAt: Date.now(), reason: reason||null };
+  adminHourLogs.push(entry);
+  await saveAdminHourLogs();
+  const newWeekTotal = computeAdminHoursForWeek(currentUser.username, weekStart, weekEnd);
+  if(existingWeekTotal<=weekQuota && newWeekTotal>weekQuota){
+    const percent = weekQuota>0 ? (newWeekTotal/weekQuota*100) : 100;
+    sendPushToMainAdmin('⚠️ חריגה ממכסת השעות השבועית', `${currentUser.username} עבר את מכסת השעות המוקצית לשבוע זה (${newWeekTotal.toFixed(1)} מתוך ${weekQuota.toFixed(1)} שעות · ${percent.toFixed(0)}%)`);
+    if(isAdminRole()) showPopupAlert('⚠️ חריגה ממכסת השעות השבועית', `${currentUser.username} עבר את מכסת השעות המוקצית לשבוע זה (${newWeekTotal.toFixed(1)} מתוך ${weekQuota.toFixed(1)} שעות)`, { dedupeId: 'weekquota-'+currentUser.username+'-'+weekStart });
+  }
+  showToast('השעה נרשמה');
+  hoursInput.value = '';
+  if(reasonInput){ reasonInput.value=''; }
+  const wrap = document.getElementById('adminHourLogReasonWrap');
+  if(wrap) wrap.style.display = 'none';
+  renderMyHoursTab();
+}
+function deleteAdminHourLog(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול למחוק רישום שעות'); return; }
+  adminHourLogs = adminHourLogs.filter(l=>l.id!==id);
+  saveAdminHourLogs();
+  showToast('הרישום נמחק');
+  renderAdminTabContent();
+}
 function repWageSettings(username){
   const u = findUser(username);
   return {
@@ -2898,6 +3042,7 @@ function deleteHourReport(id){
 function renderMyHoursTab(){
   const el = document.getElementById('myHoursCard');
   if(!el || !currentUser) return;
+  if(currentUser.role==='admin'){ renderMyAdminHoursTab(el); return; }
   const today = todayStr();
   const existing = findHourReport(currentUser.username, today);
   const activity = computeRepDailyActivity(currentUser.username, today);
@@ -2931,6 +3076,68 @@ function renderMyHoursTab(){
       </div>`;
     }).join('')}
     <div style="font-weight:800;color:var(--danger);margin-top:10px;">💰 סה"כ חוב פתוח כלפיך: ${totalOwed.toFixed(1)} ₪</div>
+  `;
+}
+// Admin-role hour reporting: an incremental log ("worked an hour" logged at 8:00, "another hour"
+// logged at 10:00, etc.) that sums up per day, checked against a monthly 160-hour quota where
+// Friday+Saturday only count for 1.5 hours each. No wages/payment involved here - purely a
+// compliance/visibility tool for the main admin.
+function renderMyAdminHoursTab(el){
+  const today = todayStr();
+  const now = new Date();
+  const quotaInfo = computeAdminMonthQuotaInfo(now.getFullYear(), now.getMonth());
+  const monthTotal = computeAdminHoursThisMonth(currentUser.username);
+  const monthPercent = Math.min(999, (monthTotal/ADMIN_MONTHLY_HOUR_QUOTA*100));
+  const todayTotal = computeAdminHoursForDate(currentUser.username, today);
+  const todayQuota = quotaForDate(today);
+  const { weekStart, weekEnd } = computeAdminWeekRange(today);
+  const weekQuota = computeAdminWeekQuota(weekStart);
+  const weekTotal = computeAdminHoursForWeek(currentUser.username, weekStart, weekEnd);
+  const weekPercent = weekQuota>0 ? Math.min(999, weekTotal/weekQuota*100) : 0;
+  const myLogs = adminHourLogs.filter(l=>l.username===currentUser.username).sort((a,b)=>b.loggedAt-a.loggedAt);
+  const barColor = monthPercent>=100 ? 'var(--danger)' : (monthPercent>=85 ? '#E0A100' : 'var(--route)');
+  const weekBarColor = weekPercent>=100 ? 'var(--danger)' : (weekPercent>=85 ? '#E0A100' : 'var(--route)');
+  el.innerHTML = `
+    <div style="font-weight:800;margin-bottom:8px;">⏱️ דיווח שעות</div>
+    <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:10px;">
+      <div style="display:flex;justify-content:space-between;font-weight:700;margin-bottom:6px;">
+        <span>מכסת השבוע (${formatDate(weekStart)}–${formatDate(weekEnd)})</span>
+        <span style="color:${weekBarColor};">${weekPercent.toFixed(0)}%</span>
+      </div>
+      <div style="background:#EEE;border-radius:8px;height:10px;overflow:hidden;">
+        <div style="background:${weekBarColor};height:100%;width:${Math.min(100,weekPercent)}%;"></div>
+      </div>
+      <div style="font-size:12.5px;color:var(--muted);margin-top:6px;">${weekTotal.toFixed(1)} מתוך ${weekQuota.toFixed(1)} שעות השבוע - חריגה משבוע זה שולחת התראה למנהל הראשי.</div>
+    </div>
+    <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;font-weight:700;margin-bottom:6px;">
+        <span>מכסה חודשית: ${ADMIN_MONTHLY_HOUR_QUOTA} שעות</span>
+        <span style="color:${barColor};">${monthPercent.toFixed(0)}%</span>
+      </div>
+      <div style="background:#EEE;border-radius:8px;height:10px;overflow:hidden;">
+        <div style="background:${barColor};height:100%;width:${Math.min(100,monthPercent)}%;"></div>
+      </div>
+      <div style="font-size:12.5px;color:var(--muted);margin-top:6px;">${monthTotal.toFixed(1)} מתוך ${ADMIN_MONTHLY_HOUR_QUOTA} שעות החודש · היום: ${todayTotal.toFixed(1)} מתוך ${todayQuota.toFixed(1)} שעות מוקצות ליום זה${isWeekendDateStr(today)?' (יום שישי/שבת)':''}</div>
+    </div>
+
+    <div class="field">
+      <label>כמה שעות עבדת עכשיו?</label>
+      <input type="number" step="0.25" min="0" id="adminHourLogInput" placeholder="לדוגמה: 1">
+    </div>
+    <div class="field" id="adminHourLogReasonWrap" style="display:none;">
+      <label>סיבת החריגה מ-8 שעות ביום (חובה)</label>
+      <input id="adminHourLogReason" placeholder="לדוגמה: אירוע חריג / כיסוי למשמרת נוספת">
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">כל דיווח מתווסף לסך השעות של היום (אפשר לדווח כמה פעמים ביום). ביום רגיל (לא שישי/שבת), דיווח שמעביר את סך היום מעל 8 שעות ידרוש סיבה.</div>
+    <button class="btn-primary" onclick="submitAdminHourLog()">➕ הוסף דיווח</button>
+
+    <div style="font-weight:800;margin:20px 0 8px;border-top:1px solid var(--border);padding-top:14px;">📋 היסטוריית הדיווחים שלי</div>
+    ${myLogs.length===0 ? '<div style="color:var(--muted);font-size:13px;">עדיין לא הזנת דיווחים.</div>' : myLogs.map(l=>`
+      <div style="border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin-bottom:8px;">
+        <div style="font-weight:700;">${formatDate(l.date)} — ${l.hours} שעות</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px;">נרשם ב-${new Date(l.loggedAt).toLocaleTimeString('he-IL',{hour:'2-digit',minute:'2-digit'})}${l.reason?' · סיבה: '+escHtml(l.reason):''}</div>
+      </div>
+    `).join('')}
   `;
 }
 function saveRepWageSettings(username){
@@ -5967,6 +6174,51 @@ function renderAdminTabContent(){
           </div>
           <button class="btn-ghost" onclick="saveRepWageSettings('${escAttr(u.username)}')">שמור הגדרות שכר</button>
 
+          ${u.role==='admin' ? (()=>{
+            const now = new Date();
+            const today = todayStr();
+            const quotaInfo = computeAdminMonthQuotaInfo(now.getFullYear(), now.getMonth());
+            const monthTotal = computeAdminHoursThisMonth(u.username);
+            const monthPercent = Math.min(999, (monthTotal/ADMIN_MONTHLY_HOUR_QUOTA*100));
+            const barColor = monthPercent>=100 ? 'var(--danger)' : (monthPercent>=85 ? '#E0A100' : 'var(--route)');
+            const { weekStart, weekEnd } = computeAdminWeekRange(today);
+            const weekQuota = computeAdminWeekQuota(weekStart);
+            const weekTotal = computeAdminHoursForWeek(u.username, weekStart, weekEnd);
+            const weekPercent = weekQuota>0 ? Math.min(999, weekTotal/weekQuota*100) : 0;
+            const weekBarColor = weekPercent>=100 ? 'var(--danger)' : (weekPercent>=85 ? '#E0A100' : 'var(--route)');
+            const myLogs = adminHourLogs.filter(l=>l.username===u.username).sort((a,b)=>b.loggedAt-a.loggedAt);
+            return `
+            <div style="border-top:1px solid var(--border);margin-top:12px;padding-top:10px;">
+              <div style="display:flex;justify-content:space-between;font-weight:700;margin-bottom:6px;">
+                <span>⏱️ מכסת השבוע (${formatDate(weekStart)}–${formatDate(weekEnd)})</span><span style="color:${weekBarColor};">${weekPercent.toFixed(0)}%</span>
+              </div>
+              <div style="background:#EEE;border-radius:8px;height:10px;overflow:hidden;">
+                <div style="background:${weekBarColor};height:100%;width:${Math.min(100,weekPercent)}%;"></div>
+              </div>
+              <div style="font-size:12.5px;color:var(--muted);margin:6px 0 8px;">${weekTotal.toFixed(1)} מתוך ${weekQuota.toFixed(1)} שעות השבוע</div>
+              <div style="display:flex;justify-content:space-between;font-weight:700;margin-bottom:6px;">
+                <span>מכסה חודשית</span><span style="color:${barColor};">${monthPercent.toFixed(0)}%</span>
+              </div>
+              <div style="background:#EEE;border-radius:8px;height:10px;overflow:hidden;">
+                <div style="background:${barColor};height:100%;width:${Math.min(100,monthPercent)}%;"></div>
+              </div>
+              <div style="font-size:12.5px;color:var(--muted);margin:6px 0 8px;">${monthTotal.toFixed(1)} מתוך ${ADMIN_MONTHLY_HOUR_QUOTA} שעות החודש · הקצאה יומית ליום רגיל: ${quotaInfo.dailyRegularQuota.toFixed(2)} שעות (שישי/שבת: ${ADMIN_WEEKEND_DAY_HOURS} שעות כל אחד)</div>
+              ${myLogs.length===0 ? '<div style="color:var(--muted);font-size:13px;">עדיין לא דיווח שעות.</div>' : `
+              <details>
+                <summary style="cursor:pointer;font-size:12.5px;color:var(--muted);">${myLogs.length} רישומים - הצג הכל</summary>
+                <div style="margin-top:6px;">
+                  ${myLogs.map(l=>`
+                    <div class="row2" style="align-items:center;margin-bottom:4px;">
+                      <div style="flex:2;font-size:12.5px;">${formatDate(l.date)} · ${l.hours} שעות · ${new Date(l.loggedAt).toLocaleTimeString('he-IL',{hour:'2-digit',minute:'2-digit'})}${l.reason?' · '+escHtml(l.reason):''}</div>
+                      <button class="icon-btn" onclick="deleteAdminHourLog('${l.id}')">🗑️</button>
+                    </div>
+                  `).join('')}
+                </div>
+              </details>`}
+            </div>
+            `;
+          })() : ''}
+
           ${(()=>{
             const reportedDates = new Set(myReports.map(r=>r.date));
             const unreportedActivity = computeRepActivityByDate(u.username).filter(d=>!reportedDates.has(d.date));
@@ -7265,6 +7517,7 @@ async function initApp(){
   await loadUsers();
   await loadStock();
   await loadHourReports();
+  await loadAdminHourLogs();
   const autoLoggedIn = tryAutoLogin();
   await loadOrders();
   await loadSpotSales();
