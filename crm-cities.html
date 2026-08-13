@@ -2750,7 +2750,7 @@ async function saveHourReports(){
    a regular (non Fri/Sat) day's total past 8 hours, so there's always a documented explanation for
    any long day. */
 const ADMIN_HOUR_LOGS_KEY = 'pet-crm-admin-hour-logs';
-const ADMIN_MONTHLY_HOUR_QUOTA = 160;
+const ADMIN_MONTHLY_HOUR_QUOTA = 173;
 // Friday+Saturday combined get only 3 hours of the monthly quota (1.5 each) since they're
 // short/non-working days for this business - the rest of the 160 is spread evenly across the
 // remaining ("regular") days of that specific month.
@@ -2772,7 +2772,7 @@ function isWeekendDateStr(dateStr){
   const wd = new Date(dateStr+'T00:00:00').getDay();
   return wd===5 || wd===6; // Friday=5, Saturday=6
 }
-// For a given calendar month, works out how the 160-hour quota splits into a per-regular-day
+// For a given calendar month, works out how the monthly hour quota splits into a per-regular-day
 // figure once the reduced Friday/Saturday allowance is set aside.
 function computeAdminMonthQuotaInfo(year, monthIdx){
   const totalDays = new Date(year, monthIdx+1, 0).getDate();
@@ -3106,7 +3106,7 @@ function renderMyHoursTab(){
   `;
 }
 // Admin-role hour reporting: an incremental log ("worked an hour" logged at 8:00, "another hour"
-// logged at 10:00, etc.) that sums up per day, checked against a monthly 160-hour quota where
+// logged at 10:00, etc.) that sums up per day, checked against the monthly hour quota where
 // Friday+Saturday only count for 1.5 hours each. No wages/payment involved here - purely a
 // compliance/visibility tool for the main admin.
 function renderMyAdminHoursTab(el){
