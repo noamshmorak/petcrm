@@ -442,6 +442,21 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="noteEditModal">
+  <div class="modal-box" style="text-align:right;max-width:420px;">
+    <button class="modal-close-x" onclick="closeEditNoteModal()">✕</button>
+    <p style="text-align:center;font-weight:800;">📝 הערה על ההזמנה</p>
+    <div class="field">
+      <label>הערה</label>
+      <textarea id="noteEditInput" rows="4" placeholder="לדוגמה: הלקוח ביקש שנתקשר לפני הביקור הבא"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-primary" style="flex:1;" onclick="saveOrderNote()">שמור</button>
+      <button class="btn-ghost" style="flex:1;" onclick="closeEditNoteModal()">ביטול</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="smsModal">
   <div class="modal-box" style="text-align:right;max-width:420px;">
     <button class="modal-close-x" onclick="closeSmsModal()">✕</button>
@@ -3886,6 +3901,18 @@ function openPackModal(city, round){
     });
   });
 
+  // Bundled items that physically ship inside every rabbit/hamster (RABBIT_HAMSTER_TYPES) cage
+  // regardless of what the customer explicitly ordered: one bedding bag + one food bag come with
+  // the package itself, and a water dispenser should always go out with these cages too (per
+  // "בארנב ושרקן צריך שהתווסף אוטומטי לכל הזמנה"). Counted once per cage/unit (typeStats[type].units,
+  // already computed above via computeOrderCageCounts), NOT per animal - a "2 ארנבות" pair-cage
+  // still gets one of each, same as a single-rabbit cage. These are packing reminders only and
+  // never touch order pricing.
+  let bundledBedding = 0, bundledFood = 0, bundledWater = 0;
+  RABBIT_HAMSTER_TYPES.forEach(type=>{
+    if(typeStats[type]) { bundledBedding += typeStats[type].units; bundledFood += typeStats[type].units; bundledWater += typeStats[type].units; }
+  });
+
   // food: merge "1-package" and "3-package" SKUs into a single unified package count per category (birds/rodents).
   // Sacks (שק) and bedding (נסורת) stay as their own distinct line items.
   let birdPackages = 0, rodentPackages = 0;
@@ -3986,6 +4013,25 @@ function openPackModal(city, round){
   });
   if(foodHtml){
     html += `<div style="font-weight:800;font-size:14px;margin-top:14px;padding-top:10px;border-top:2px solid var(--border);">🍽️ מזון ואביזרים</div>` + foodHtml;
+  }
+
+  if(bundledBedding>0 || bundledFood>0 || bundledWater>0){
+    html += `<div style="font-weight:800;font-size:14px;margin-top:14px;padding-top:10px;border-top:2px solid var(--border);">🎁 כלול אוטומטית בחבילת ארנב/שרקן (בנוסף למה שהלקוח הזמין)</div>`;
+    const bundledRows = [
+      bundledBedding>0 ? {label:'חבילת נסורת', qty:bundledBedding} : null,
+      bundledFood>0 ? {label:'חבילת מזון', qty:bundledFood} : null,
+      bundledWater>0 ? {label:'מתקן שתייה', qty:bundledWater} : null
+    ].filter(Boolean);
+    bundledRows.forEach(row=>{
+      html += `
+      <label class="pack-item">
+        <input type="checkbox" class="pack-check" style="width:19px;height:19px;margin-top:2px;flex-shrink:0;">
+        <div style="flex:1;text-align:right;">
+          <div class="pack-item-text" style="font-weight:700;font-size:14px;">${row.label}</div>
+          <div style="font-size:12.5px;color:var(--muted);margin-top:2px;">${row.qty} יח'</div>
+        </div>
+      </label>`;
+    });
   }
 
   const notedOrders = cityData.orders.filter(o=>o.note || o.fromYad2 || o.discount>0);
@@ -4494,6 +4540,34 @@ function resolveManagerInquiry(orderId){
     showToast('הפנייה סומנה כטופלה');
   });
 }
+
+/* ---------- editing the note on an order that already moved to history (delivered) ---------- */
+// Previously a note could only be set/edited while an order was still active - once it moved to
+// "היסטוריית משלוחים" there was no way to add or update it (e.g. to log something the customer
+// mentioned after delivery). This opens a small modal, pre-filled with the current note, and
+// saves through the normal saveOrders()/CAS path like any other order field.
+let noteEditOrderId = null;
+function openEditNoteModal(orderId){
+  const o = orders.find(x=>x.id===orderId);
+  if(!o) return;
+  noteEditOrderId = orderId;
+  document.getElementById('noteEditInput').value = o.note || '';
+  document.getElementById('noteEditModal').classList.add('open');
+}
+function closeEditNoteModal(){
+  document.getElementById('noteEditModal').classList.remove('open');
+  noteEditOrderId = null;
+}
+function saveOrderNote(){
+  const o = orders.find(x=>x.id===noteEditOrderId);
+  if(!o) return;
+  const note = document.getElementById('noteEditInput').value.trim();
+  o.note = note;
+  saveOrders();
+  logAudit('עדכן הערה על הזמנה (מהיסטוריה)', `${o.customer||'לקוח'}${note?' · '+note:' · (נמחקה)'}`);
+  showToast('ההערה נשמרה');
+  closeEditNoteModal();
+}
 // Best-effort refresh of the admin home tab if it happens to be open right now, so the
 // open-inquiries alert updates immediately without requiring the admin to switch tabs and back.
 function renderAdminHomeIfOpen(){
@@ -4521,6 +4595,7 @@ function renderHistory(){
         <div class="city-totals">${o.fromYad2?'🏷️ יד2 · ':''}${cityDisplayName(o.city, o.roundNumber||0)} · הוזמן ב-${formatDate(o.date)}</div>
         <div class="order-sub" style="margin-top:6px;">${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${o.address?' · '+escHtml(o.address):''}${o.note?' · 📝 '+escHtml(o.note):''}${isAdminRole()&&o.createdByUsername?' · 👤 '+escHtml(o.createdByUsername):''}</div>
         ${managerInquiryHtml(o)}
+        <button class="icon-btn" onclick="openEditNoteModal('${o.id}')" title="הוסף/ערוך הערה">📝</button>
         ${isAdminRole() ? `<button class="icon-btn" onclick="openMarkBlockedModal('${o.id}')" title="סמן לקוח כבעייתי">⛔</button>` : ''}
       </div>
     `).join('');
@@ -4540,6 +4615,7 @@ function renderHistory(){
           <div class="order-main">${o.fromYad2?'🏷️ יד2 · ':''}${escHtml(o.customer)} — ${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}</div>
           <div class="order-sub">הוזמן ב-${formatDate(o.date)}${o.address?' · '+escHtml(o.address):''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+escHtml(o.note):''}${o.discount>0?' · 🏷️ ניתנה הנחה של '+o.discount+'₪':''}${isAdminRole()&&o.createdByUsername?' · 👤 '+escHtml(o.createdByUsername):''}</div>
           ${managerInquiryHtml(o)}
+          <button class="icon-btn" onclick="openEditNoteModal('${o.id}')" title="הוסף/ערוך הערה">📝</button>
           ${isAdminRole() ? `<button class="icon-btn" onclick="openMarkBlockedModal('${o.id}')" title="סמן לקוח כבעייתי">⛔</button>` : ''}
         </div>
       </div>
