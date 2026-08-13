@@ -1,0 +1,1061 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>מכירות רגילות - חסד לישראל</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<style>
+  :root{
+    --bg:#FAF7F2;--surface:#FFFFFF;--ink:#1E2A38;--muted:#6B7280;
+    --accent:#D9A441;--accent-dark:#B8842E;--route:#3B6255;--route-light:#E4EEE9;
+    --danger:#C1544C;--border:#E5DFD3;--new-badge:#3E6FA8;--new-badge-light:#E6EEF7;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:'Heebo',sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased;}
+  .app{max-width:760px;margin:0 auto;padding:16px;padding-bottom:80px;}
+  header.top{display:flex;flex-direction:column;gap:2px;padding:14px 4px 18px;}
+  header.top h1{font-size:22px;font-weight:800;margin:0;letter-spacing:-0.2px;}
+  header.top p{margin:0;color:var(--muted);font-size:13px;}
+  .tabs{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:5px;margin-bottom:16px;}
+  .tab{text-align:center;padding:9px 6px;border-radius:10px;font-size:13.5px;font-weight:600;color:var(--muted);cursor:pointer;user-select:none;transition:all .15s ease;}
+  .tab.active{background:var(--ink);color:#fff;}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:16px;margin-bottom:12px;}
+  .stats-row{display:flex;gap:10px;margin-bottom:16px;}
+  .stat{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:12px 10px;text-align:center;}
+  .stat .num{font-size:20px;font-weight:800;color:var(--ink);}
+  .stat .lbl{font-size:11px;color:var(--muted);margin-top:2px;}
+  label{display:block;font-size:13px;font-weight:600;color:var(--muted);margin-bottom:6px;}
+  .field{margin-bottom:14px;}
+  input,select,textarea{width:100%;padding:11px 12px;border-radius:10px;border:1.5px solid var(--border);font-family:'Heebo',sans-serif;font-size:15px;background:#fff;color:var(--ink);}
+  textarea{resize:vertical;}
+  input:focus,select:focus{outline:none;border-color:var(--accent);}
+  .row2{display:flex;gap:10px;}
+  .row2>div{flex:1;}
+  button{font-family:'Heebo',sans-serif;cursor:pointer;border:none;border-radius:10px;font-weight:700;font-size:15px;padding:12px 16px;}
+  .btn-primary{background:var(--accent);color:#2A1F0A;width:100%;}
+  .btn-primary:active{background:var(--accent-dark);}
+  .btn-ghost{background:transparent;color:var(--muted);border:1px solid var(--border);}
+  .btn-danger-text{background:transparent;color:var(--danger);font-size:13px;padding:6px 10px;}
+  .btn-ship{background:var(--route-light);color:var(--route);font-size:13px;font-weight:700;padding:8px 14px;border-radius:10px;width:auto;margin-top:10px;margin-inline-end:8px;}
+  .btn-pack{background:var(--new-badge-light);color:var(--new-badge);font-size:13px;font-weight:700;padding:8px 14px;border-radius:10px;width:auto;margin-top:10px;}
+  .search{margin-bottom:14px;}
+
+  .animal-item{border:1px solid var(--border);border-radius:12px;padding:10px;margin-bottom:10px;background:#fdfcfa;}
+  .animal-row{display:flex;gap:8px;align-items:center;}
+  .animal-row select{flex:2;}
+  .animal-row input{flex:1;}
+  .remove-animal-btn{background:transparent;border:1px solid var(--border);color:var(--muted);width:38px;height:38px;padding:0;border-radius:10px;font-size:16px;flex-shrink:0;}
+  .info-btn{background:var(--new-badge-light);border:1px solid var(--new-badge-light);color:var(--new-badge);width:38px;height:38px;padding:0;border-radius:10px;font-size:16px;flex-shrink:0;}
+  .animalColorSelect{margin-top:8px;}
+  .row-price{font-size:12.5px;color:var(--accent-dark);font-weight:700;margin-top:6px;text-align:left;}
+  .add-animal{font-size:13.5px;font-weight:700;color:var(--accent-dark);cursor:pointer;display:inline-block;margin-top:2px;}
+
+  .pair-option{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:13.5px;font-weight:500;color:var(--ink);background:var(--new-badge-light);padding:9px 12px;border-radius:10px;flex-wrap:wrap;}
+  .pair-option input[type=checkbox]{width:auto;}
+  .cage-toggle{display:flex;gap:6px;margin-top:6px;width:100%;}
+  .cage-toggle button{flex:1;padding:6px 8px;font-size:12.5px;font-weight:600;border-radius:8px;background:#fff;border:1.5px solid var(--border);color:var(--muted);width:auto;}
+  .cage-toggle button.active{background:var(--new-badge);color:#fff;border-color:var(--new-badge);}
+
+  .total-price-box{background:var(--route-light);color:var(--route);border-radius:12px;padding:12px 14px;text-align:center;font-weight:800;font-size:16px;margin-bottom:14px;}
+
+  .route-list{position:relative;padding-inline-start:22px;}
+  .route-list::before{content:"";position:absolute;top:8px;bottom:8px;right:9px;width:2px;background:var(--route-light);}
+  .city-card{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px 16px;margin-bottom:12px;}
+  .city-card::before{content:"";position:absolute;top:20px;right:-22px;width:11px;height:11px;border-radius:50%;background:var(--route);border:2px solid var(--bg);}
+  .city-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;flex-wrap:wrap;gap:4px;}
+  .city-name-wrap{display:flex;align-items:center;gap:8px;}
+  .city-name{font-size:17px;font-weight:800;}
+  .city-last{font-size:12px;color:var(--muted);}
+  .badge-new{background:var(--new-badge-light);color:var(--new-badge);font-size:11px;font-weight:700;padding:3px 9px;border-radius:10px;}
+  .city-breakdown{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;}
+  .chip{background:var(--route-light);color:var(--route);font-size:12.5px;font-weight:600;padding:4px 10px;border-radius:20px;}
+  .city-totals{font-size:13px;color:var(--muted);}
+  .toggle-orders{font-size:13px;color:var(--accent-dark);font-weight:600;margin-top:8px;cursor:pointer;}
+  .city-orders{margin-top:10px;border-top:1px solid var(--border);padding-top:10px;display:none;}
+  .city-orders.open{display:block;}
+
+  .order-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);}
+  .order-row:last-child{border-bottom:none;}
+  .order-main{font-size:14.5px;font-weight:600;}
+  .order-sub{font-size:12.5px;color:var(--muted);margin-top:2px;}
+  .order-actions{display:flex;gap:4px;flex-shrink:0;}
+  .icon-btn{background:transparent;border:none;font-size:16px;padding:4px 6px;color:var(--muted);}
+
+  .empty{text-align:center;padding:40px 10px;color:var(--muted);}
+  .empty .big{font-size:34px;margin-bottom:8px;}
+
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 18px;border-radius:20px;font-size:13px;font-weight:600;opacity:0;transition:opacity .25s ease;pointer-events:none;z-index:50;}
+  .toast.show{opacity:1;}
+
+  .err{color:var(--danger);font-size:12px;margin-top:5px;font-weight:600;}
+  .cancelled{opacity:0.5;}
+  .cancelled .order-main, .cancelled .order-sub{text-decoration:line-through;}
+  .badge-cancelled{background:var(--danger);color:#fff;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;margin-inline-start:6px;text-decoration:none;display:inline-block;}
+  .badge-shipped{background:var(--route);color:#fff;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;margin-inline-start:6px;text-decoration:none;display:inline-block;}
+
+  .modal-overlay{display:none;position:fixed;inset:0;background:rgba(30,42,56,0.45);z-index:200;align-items:center;justify-content:center;padding:20px;}
+  .modal-overlay.open{display:flex;}
+  /* the confirm ("are you sure?") dialog can be triggered from inside another already-open
+     modal (e.g. admin panel) - it must always render above every other modal, regardless of
+     DOM order, or it ends up hidden behind whatever opened it and becomes unusable. */
+  #confirmModal{z-index:400;}
+  .modal-box{background:#fff;border-radius:16px;padding:22px;max-width:340px;width:100%;text-align:center;max-height:80vh;overflow-y:auto;position:relative;}
+  .modal-box p{font-size:15px;font-weight:600;margin:0 0 14px;color:var(--ink);}
+  .modal-box input{margin-bottom:16px;}
+  .modal-actions{display:flex;gap:10px;}
+  .modal-actions button{flex:1;}
+  .pack-item{display:flex;align-items:flex-start;gap:10px;padding:10px 2px;border-bottom:1px solid var(--border);cursor:pointer;}
+  .pack-item:last-child{border-bottom:none;}
+  .modal-close-x{position:absolute;top:10px;left:10px;background:var(--bg);border:1px solid var(--border);color:var(--muted);width:32px;height:32px;border-radius:50%;font-size:16px;font-weight:700;padding:0;display:flex;align-items:center;justify-content:center;line-height:1;}
+  .addr-suggestions{position:absolute;top:100%;right:0;left:0;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 6px 18px rgba(0,0,0,0.12);max-height:220px;overflow-y:auto;z-index:50;display:none;}
+  .addr-suggestions.open{display:block;}
+  .addr-suggestion-item{padding:9px 12px;font-size:13.5px;cursor:pointer;border-bottom:1px solid var(--border);}
+  .addr-suggestion-item:last-child{border-bottom:none;}
+  .addr-suggestion-item:hover{background:var(--bg);}
+  .addr-suggestion-hint{padding:8px 12px;font-size:12px;color:var(--muted);}
+
+  .login-overlay{position:fixed;inset:0;background:var(--bg);z-index:500;display:flex;align-items:center;justify-content:center;padding:20px;}
+  .login-overlay.hidden{display:none;}
+  .login-box{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:26px 22px;max-width:340px;width:100%;text-align:center;}
+  .login-box h2{margin:0 0 4px;font-size:20px;}
+  .login-box p{color:var(--muted);font-size:13px;margin:0 0 18px;}
+
+  .alert-banner{background:#FBEAEA;border:1.5px solid var(--danger);color:var(--danger);border-radius:14px;padding:12px 14px;margin-bottom:14px;font-size:13px;font-weight:600;line-height:1.6;}
+  .alert-banner .alert-title{font-weight:800;margin-bottom:4px;font-size:14px;}
+
+  .admin-tabs{display:flex;gap:6px;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:4px;margin-bottom:14px;flex-wrap:wrap;}
+  .admin-tab{flex:1;text-align:center;padding:8px 6px;border-radius:9px;font-size:12.5px;font-weight:700;color:var(--muted);cursor:pointer;user-select:none;min-width:80px;}
+  .admin-tab.active{background:var(--ink);color:#fff;}
+  .stock-row{display:flex;align-items:center;gap:10px;border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin-bottom:8px;}
+  .stock-row .stock-label{flex:1;font-size:13px;font-weight:600;text-align:right;}
+  .stock-row input{width:90px;flex-shrink:0;}
+  .stock-low{border-color:var(--danger);background:#FBEAEA;}
+  .user-row{border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;text-align:right;}
+  .user-row .user-name{font-weight:700;font-size:14px;}
+  .user-row .user-role{font-size:12px;color:var(--muted);}
+  .role-badge{background:var(--new-badge-light);color:var(--new-badge);font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;margin-inline-start:6px;}
+  .role-badge.mainadmin{background:var(--accent);color:#2A1F0A;}
+</style>
+
+<body>
+
+<div class="login-overlay" id="loginOverlay">
+  <div class="login-box">
+    <h2>🛍️ מכירות רגילות</h2>
+    <p>יש להתחבר כדי להיכנס למערכת</p>
+    <div class="field" style="text-align:right;">
+      <label>שם משתמש</label>
+      <input id="loginUsername" placeholder="שם משתמש">
+    </div>
+    <div class="field" style="text-align:right;">
+      <label>סיסמה</label>
+      <input id="loginPassword" type="password" placeholder="סיסמה">
+    </div>
+    <div id="loginErr" class="err" style="display:none;margin-bottom:10px;">שם משתמש או סיסמה שגויים</div>
+    <button class="btn-primary" onclick="attemptLogin()">כניסה</button>
+  </div>
+</div>
+
+<div class="app" id="appRoot" style="display:none;">
+  <header class="top">
+    <h1>🛍️ מכירות רגילות</h1>
+    <p id="subtitle">טוען נתונים...</p>
+    <div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap;align-items:center;">
+      <span style="font-size:12.5px;color:var(--muted);cursor:pointer;margin-inline-start:auto;" onclick="logout()" id="logoutLink"></span>
+    </div>
+  </header>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="sale">💵 מכירה חדשה</div>
+    <div class="tab" data-tab="history">היסטוריית מכירות</div>
+    <div class="tab" data-tab="expenses" id="expensesTabBtn" style="display:none;">💰 הוצאות</div>
+    <div class="tab" data-tab="prices" id="pricesTabBtn" style="display:none;">🏷️ מחירון</div>
+    <div class="tab" data-tab="users" id="usersTabBtn" style="display:none;">👥 משתמשים</div>
+    <div class="tab" data-tab="report" id="reportTabBtn" style="display:none;">📊 דוח משולב</div>
+  </div>
+
+  <div id="tab-sale">
+    <div class="card">
+      <div class="field">
+        <label>שם לקוח (לא חובה)</label>
+        <input id="saleCustomer" placeholder="שם הלקוח">
+      </div>
+      <div class="field">
+        <label>בעל חיים (לא חובה)</label>
+        <select id="saleAnimalType" onchange="updateSaleTotal()"></select>
+      </div>
+      <div class="field" id="saleAnimalQtyWrap">
+        <label>כמות</label>
+        <input type="number" id="saleAnimalQty" min="1" value="1" oninput="updateSaleTotal()">
+      </div>
+      <div class="field">
+        <label>מזון / אביזרים (לא חובה)</label>
+        <div id="saleFoodRows"></div>
+        <div class="add-animal" onclick="addSaleFoodRow()">+ הוסף מזון / אביזר</div>
+      </div>
+      <div class="total-price-box" id="saleTotalBox">סה"כ למכירה: 0 ₪</div>
+      <button class="btn-primary" style="margin-top:12px;width:100%;" onclick="submitSale()">✅ בצע מכירה</button>
+    </div>
+  </div>
+
+  <div id="tab-history" style="display:none;">
+    <div class="route-list" id="historyList"></div>
+  </div>
+
+  <div id="tab-expenses" style="display:none;">
+    <div class="card">
+      <div style="font-weight:800;margin-bottom:8px;">הוספת הוצאה (משותפת עם אפליקציית הערים)</div>
+      <div class="row2">
+        <div class="field"><label>שם ההוצאה</label><input id="newExpenseName" placeholder="לדוגמה: דלק"></div>
+        <div class="field"><label>סכום (₪)</label><input type="number" id="newExpenseAmount" min="0"></div>
+      </div>
+      <div class="field"><label>תאריך</label><input type="date" id="newExpenseDate"></div>
+      <button class="btn-primary" onclick="addManualExpense()">➕ הוסף הוצאה</button>
+    </div>
+    <div id="expensesList"></div>
+  </div>
+
+  <div id="tab-prices" style="display:none;">
+    <div class="card">
+      <div style="font-weight:800;margin-bottom:8px;">מחירי בעלי חיים (לאפליקציה זו בלבד)</div>
+      <div id="animalPricesList"></div>
+      <div style="font-weight:800;margin:16px 0 8px;">מחירי מזון ואביזרים (לאפליקציה זו בלבד)</div>
+      <div id="foodPricesList"></div>
+      <button class="btn-primary" style="margin-top:12px;" onclick="saveStorePrices()">💾 שמור מחירון</button>
+    </div>
+  </div>
+
+  <div id="tab-users" style="display:none;">
+    <div class="card">
+      <div style="font-weight:800;margin-bottom:8px;">הוספת משתמש חדש (נפרד לגמרי מאפליקציית הערים)</div>
+      <div class="row2">
+        <div class="field"><label>שם משתמש</label><input id="newUserUsername"></div>
+        <div class="field"><label>סיסמה</label><input id="newUserPassword" type="text"></div>
+      </div>
+      <div class="field">
+        <label>תפקיד</label>
+        <select id="newUserRole"><option value="rep">נציג</option><option value="admin">מנהל</option></select>
+      </div>
+      <button class="btn-primary" onclick="addStoreUser()">➕ הוסף משתמש</button>
+    </div>
+    <div id="usersList"></div>
+  </div>
+
+  <div id="tab-report" style="display:none;">
+    <div id="combinedReportContent">
+      <button class="btn-primary" onclick="loadCombinedReport()">🔄 טען דוח משולב</button>
+    </div>
+  </div>
+
+</div>
+
+<div class="modal-overlay" id="confirmModal">
+  <div class="modal-box">
+    <button class="modal-close-x" onclick="closeConfirm(false)">✕</button>
+    <p id="confirmMessage"></p>
+    <div class="modal-actions">
+      <button class="btn-ghost" onclick="closeConfirm(false)">ביטול</button>
+      <button class="btn-primary" onclick="closeConfirm(true)">אישור</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const SUPABASE_URL = 'https://vraxhwrirrrptawxgztf.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_-729QUM1pXlABgVUWijGiw_Xf0GTspj';
+const _sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+/* ---------- shared storage shim (identical to crm-cities.html, so both apps talk to the
+   exact same Supabase kv_store table/CAS protocol) ---------- */
+let _kvVersionColumnMissing = false;
+window.storage = {
+  async get(key, _shared){
+    if(_kvVersionColumnMissing){
+      const { data, error } = await _sb.from('kv_store').select('value').eq('key', key).maybeSingle();
+      if(error){ console.error('[storage.get] key=', key, error); throw error; }
+      if(!data) return null;
+      return { value: JSON.stringify(data.value), version: 0 };
+    }
+    const { data, error } = await _sb.from('kv_store').select('value, version').eq('key', key).maybeSingle();
+    if(error){
+      if(error.code === '42703'){
+        _kvVersionColumnMissing = true;
+        return this.get(key, _shared);
+      }
+      console.error('[storage.get] key=', key, error); throw error;
+    }
+    if(!data) return null;
+    return { value: JSON.stringify(data.value), version: typeof data.version === 'number' ? data.version : 0 };
+  },
+  async set(key, valueStr, _shared){
+    const parsed = JSON.parse(valueStr);
+    const { error } = await _sb.from('kv_store').upsert({ key, value: parsed, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+    if(error){ console.error('[storage.set] key=', key, error); throw error; }
+  },
+  async casSet(key, valueStr, expectedVersion){
+    if(_kvVersionColumnMissing) { await this.set(key, valueStr, true); return { ok:true, version:0, noVersioning:true }; }
+    const parsed = JSON.parse(valueStr);
+    const nowIso = new Date().toISOString();
+    if(expectedVersion == null){
+      const { error } = await _sb.from('kv_store').insert({ key, value: parsed, updated_at: nowIso, version: 1 });
+      if(error){
+        if(error.code === '42703'){ _kvVersionColumnMissing = true; await this.set(key, valueStr, true); return { ok:true, version:0, noVersioning:true }; }
+        if(error.code === '23505') return { ok:false, conflict:true };
+        throw error;
+      }
+      return { ok:true, version:1 };
+    }
+    const { data, error } = await _sb.from('kv_store')
+      .update({ value: parsed, updated_at: nowIso, version: expectedVersion+1 })
+      .eq('key', key).eq('version', expectedVersion)
+      .select('version');
+    if(error){
+      if(error.code === '42703'){ _kvVersionColumnMissing = true; await this.set(key, valueStr, true); return { ok:true, version:0, noVersioning:true }; }
+      throw error;
+    }
+    if(!data || data.length===0) return { ok:false, conflict:true };
+    return { ok:true, version: data[0].version };
+  }
+};
+
+/* ---------- generic CAS save infrastructure (identical to crm-cities.html) ---------- */
+const _saveQueues = {};
+function withSaveQueue(key, fn){
+  const prev = _saveQueues[key] || Promise.resolve();
+  const run = prev.then(fn, fn);
+  _saveQueues[key] = run.catch(()=>{});
+  return run;
+}
+async function casRetryWrite(key, buildFn, maxAttempts){
+  maxAttempts = maxAttempts || 8;
+  for(let attempt=0; attempt<maxAttempts; attempt++){
+    const res = await window.storage.get(key, true);
+    const remoteVersion = res ? res.version : null;
+    const remoteValue = res && res.value ? JSON.parse(res.value) : null;
+    const newValue = buildFn(remoteValue);
+    const writeRes = await window.storage.casSet(key, JSON.stringify(newValue), remoteVersion);
+    if(writeRes.ok) return newValue;
+  }
+  throw new Error('שמירה נכשלה אחרי כמה ניסיונות (התנגשות עם מכשיר אחר) - key: '+key);
+}
+const _reconcileSnapshots = {};
+function _snapshotArrayById(list, idField){
+  idField = idField || 'id';
+  const m = new Map();
+  (list||[]).forEach(o => { if(o && o[idField]!=null) m.set(o[idField], JSON.stringify(o)); });
+  return m;
+}
+function markSyncedArray(storageKey, list, idField){
+  _reconcileSnapshots[storageKey] = _snapshotArrayById(list, idField);
+}
+function _mergeArraysById(remoteList, localList, lastSynced, idField){
+  idField = idField || 'id';
+  const remoteMap = new Map((remoteList||[]).filter(o=>o && o[idField]!=null).map(o=>[o[idField], o]));
+  const localIds = new Set((localList||[]).filter(o=>o && o[idField]!=null).map(o=>o[idField]));
+  const deletedByMe = [...lastSynced.keys()].filter(id => !localIds.has(id));
+  const changedOrNewByMe = (localList||[]).filter(o => o && o[idField]!=null && lastSynced.get(o[idField]) !== JSON.stringify(o));
+  deletedByMe.forEach(id => remoteMap.delete(id));
+  changedOrNewByMe.forEach(o => remoteMap.set(o[idField], o));
+  return [...remoteMap.values()];
+}
+async function reconcileArrayStore(storageKey, localList, idField){
+  idField = idField || 'id';
+  return withSaveQueue(storageKey, async ()=>{
+    const lastSynced = _reconcileSnapshots[storageKey] || new Map();
+    const finalList = await casRetryWrite(storageKey, (remoteValue)=>{
+      return _mergeArraysById(remoteValue || [], localList, lastSynced, idField);
+    });
+    markSyncedArray(storageKey, finalList, idField);
+    return finalList;
+  });
+}
+function markSyncedObject(storageKey, obj){
+  const m = new Map();
+  Object.keys(obj||{}).forEach(k => m.set(k, JSON.stringify(obj[k])));
+  _reconcileSnapshots[storageKey] = m;
+}
+async function reconcileObjectStore(storageKey, localObj){
+  return withSaveQueue(storageKey, async ()=>{
+    const lastSynced = _reconcileSnapshots[storageKey] || new Map();
+    const merged = await casRetryWrite(storageKey, (remoteValue)=>{
+      const remoteObj = remoteValue || {};
+      const m = Object.assign({}, remoteObj);
+      Object.keys(localObj||{}).forEach(k=>{
+        if(lastSynced.get(k) !== JSON.stringify(localObj[k])) m[k] = localObj[k];
+      });
+      [...lastSynced.keys()].forEach(k=>{ if(!localObj || !(k in localObj)) delete m[k]; });
+      return m;
+    });
+    markSyncedObject(storageKey, merged);
+    return merged;
+  });
+}
+
+/* ---------- utils (identical to crm-cities.html) ---------- */
+function escAttr(str){ return String(str).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+function escHtml(str){
+  if(str==null) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+function showToast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 1800);
+}
+let confirmCallback = null;
+function showConfirm(message, onConfirm){
+  document.getElementById('confirmMessage').textContent = message;
+  confirmCallback = onConfirm;
+  document.getElementById('confirmModal').classList.add('open');
+}
+function closeConfirm(result){
+  document.getElementById('confirmModal').classList.remove('open');
+  const cb = confirmCallback;
+  confirmCallback = null;
+  if(result && cb) cb();
+}
+function genId(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+
+/* ---------- shared catalog + shared stock structure (must match crm-cities.html exactly,
+   since both apps deduct from the SAME stock keyed by these exact species/cage-group names) ---------- */
+const ANIMAL_OPTIONS = [
+  'תוכון מותאם לאילוף כולל כלוב',
+  '2 תוכונים מותאמים לאילוף כולל כלוב',
+  'קוקטייל כולל כלוב',
+  'קוואקר כולל כלוב',
+  'ארנב כולל כלוב נסורת ואוכל',
+  'ארנב ננסי הולנדי ישראלי כולל כלוב נסורת ואוכל',
+  'שרקן כולל כלוב נסורת ואוכל',
+  '2 אוגרים כולל כלוב',
+  '2 תוכונים לא מותאמים לאילוף כולל כלוב',
+  '2 ארנבות כולל כלוב מוגדל',
+  '2 שרקנים כולל כלוב מוגדל'
+];
+const FOOD_OPTIONS = [
+  'חבילת מזון לתוכים (1 יח\')',
+  '3 חבילות מזון לתוכים',
+  '6 חבילות מזון לתוכים',
+  'שק מזון לתוכים (20 ק"ג)',
+  'חבילת מזון למכרסמים (1 יח\')',
+  '3 חבילות מזון למכרסמים',
+  '6 חבילות מזון למכרסמים',
+  'שק מזון למכרסמים (25 ק"ג)',
+  'נסורת פשוטה - 1 יח\'',
+  'נסורת פשוטה - 2 יח\'',
+  'נסורת פשוטה - 4 יח\'',
+  'נסורת איכותית (10 ליטר)',
+  'שק נסורת איכותית (15 ק"ג)',
+  'תא הטלה',
+  'כלי אוכל גדול לארנב',
+  'כלי אוכל קטן לארנב',
+  'מתקן שתייה לארנב 250 מ"ל',
+  'מתקן שתייה לארנב 500 מ"ל',
+  'כלי אוכל גדול לתוכי',
+  'כלי אוכל ענק לתוכי',
+  'כלי שתייה קטן',
+  'כלי שתייה גדול לתוכי בינוני',
+  'כלי שתייה גדול לתוכי',
+  'כלי שתייה ענק לתוכי'
+];
+const CAGE_GROUP_MAP = {
+  'תוכון מותאם לאילוף כולל כלוב': 'כלוב תוכון',
+  '2 תוכונים מותאמים לאילוף כולל כלוב': 'כלוב תוכון',
+  '2 תוכונים לא מותאמים לאילוף כולל כלוב': 'כלוב תוכון',
+  'קוקטייל כולל כלוב': 'כלוב קוקטייל',
+  'קוואקר כולל כלוב': 'כלוב קוואקר',
+  'ארנב כולל כלוב נסורת ואוכל': 'כלוב ארנב',
+  'ארנב ננסי הולנדי ישראלי כולל כלוב נסורת ואוכל': 'כלוב ארנב',
+  '2 ארנבות כולל כלוב מוגדל': 'כלוב ארנב מוגדל',
+  'שרקן כולל כלוב נסורת ואוכל': 'כלוב שרקן',
+  '2 שרקנים כולל כלוב מוגדל': 'כלוב שרקן מוגדל',
+  '2 אוגרים כולל כלוב': 'כלוב אוגרים'
+};
+const ANIMAL_SPECIES_MAP = {
+  'תוכון מותאם לאילוף כולל כלוב': 'תוכון',
+  '2 תוכונים מותאמים לאילוף כולל כלוב': 'תוכון',
+  '2 תוכונים לא מותאמים לאילוף כולל כלוב': 'תוכון',
+  'קוקטייל כולל כלוב': 'קוקטייל',
+  'קוואקר כולל כלוב': 'קוואקר',
+  'ארנב כולל כלוב נסורת ואוכל': 'ארנב',
+  '2 ארנבות כולל כלוב מוגדל': 'ארנב',
+  'ארנב ננסי הולנדי ישראלי כולל כלוב נסורת ואוכל': 'ארנב ננסי הולנדי ישראלי',
+  'שרקן כולל כלוב נסורת ואוכל': 'שרקן',
+  '2 שרקנים כולל כלוב מוגדל': 'שרקן',
+  '2 אוגרים כולל כלוב': 'אוגר'
+};
+const ANIMAL_SPECIES_LIST = ['תוכון','קוקטייל','קוואקר','ארנב','ארנב ננסי הולנדי ישראלי','שרקן','אוגר'];
+const CAGE_TYPES_LIST = ['כלוב תוכון','כלוב קוקטייל','כלוב קוואקר','כלוב ארנב','כלוב ארנב מוגדל','כלוב שרקן','כלוב שרקן מוגדל','כלוב אוגרים'];
+const ANIMALS_PER_UNIT = {
+  'תוכון מותאם לאילוף כולל כלוב': 1,
+  '2 תוכונים מותאמים לאילוף כולל כלוב': 2,
+  '2 תוכונים לא מותאמים לאילוף כולל כלוב': 2,
+  'קוקטייל כולל כלוב': 1,
+  'קוואקר כולל כלוב': 1,
+  'ארנב כולל כלוב נסורת ואוכל': 1,
+  'ארנב ננסי הולנדי ישראלי כולל כלוב נסורת ואוכל': 1,
+  '2 ארנבות כולל כלוב מוגדל': 2,
+  'שרקן כולל כלוב נסורת ואוכל': 1,
+  '2 שרקנים כולל כלוב מוגדל': 2,
+  '2 אוגרים כולל כלוב': 2
+};
+
+/* ---------- shared keys (same Supabase project as crm-cities.html) ---------- */
+const STOCK_KEY = 'pet-crm-stock';           // shared with crm-cities.html
+const EXPENSES_KEY = 'pet-crm-expenses';     // shared with crm-cities.html
+const OTHER_APP_ORDERS_KEY = 'pet-crm-orders';       // read-only, for the combined report
+const OTHER_APP_SPOT_SALES_KEY = 'pet-crm-spot-sales'; // read-only, for the combined report
+
+/* ---------- this app's OWN separate keys ---------- */
+const STORE_USERS_KEY = 'pet-crm-store-users';
+const STORE_SALES_KEY = 'pet-crm-store-sales';
+const STORE_PRICES_KEY = 'pet-crm-store-prices';
+
+const MAIN_ADMIN_USERNAME = 'נועם';
+
+/* ---------- stock (shared - identical logic to crm-cities.html) ---------- */
+let stock = { animals:{}, cages:{} };
+let lastSyncedStock = { animals:{}, cages:{} };
+function defaultStock(){
+  const animals = {}; ANIMAL_SPECIES_LIST.forEach(s=>animals[s]=0);
+  const cages = {}; CAGE_TYPES_LIST.forEach(c=>cages[c]=0);
+  return { animals, cages };
+}
+function cleanStockShape(s){
+  const def = defaultStock();
+  const out = { animals: Object.assign(def.animals, s && s.animals || {}), cages: Object.assign(def.cages, s && s.cages || {}) };
+  Object.keys(out.animals).forEach(k=>{ if(out.animals[k] < 0) out.animals[k] = 0; });
+  Object.keys(out.cages).forEach(k=>{ if(out.cages[k] < 0) out.cages[k] = 0; });
+  return out;
+}
+async function loadStock(){
+  try{
+    const res = await window.storage.get(STOCK_KEY, true);
+    stock = res && res.value ? JSON.parse(res.value) : defaultStock();
+  }catch(e){ stock = defaultStock(); }
+  stock = cleanStockShape(stock);
+  lastSyncedStock = JSON.parse(JSON.stringify(stock));
+}
+async function saveStock(){
+  try{
+    await withSaveQueue(STOCK_KEY, async ()=>{
+      const localAnimals = stock.animals, localCages = stock.cages;
+      const lastAnimals = lastSyncedStock.animals, lastCages = lastSyncedStock.cages;
+      const merged = await casRetryWrite(STOCK_KEY, (remoteValue)=>{
+        const remoteStock = cleanStockShape(remoteValue || defaultStock());
+        const m = { animals: Object.assign({}, remoteStock.animals), cages: Object.assign({}, remoteStock.cages) };
+        Object.keys(localAnimals).forEach(k=>{
+          const delta = (localAnimals[k]||0) - (lastAnimals[k]||0);
+          if(delta !== 0) m.animals[k] = Math.max(0, (m.animals[k]||0) + delta);
+        });
+        Object.keys(localCages).forEach(k=>{
+          const delta = (localCages[k]||0) - (lastCages[k]||0);
+          if(delta !== 0) m.cages[k] = Math.max(0, (m.cages[k]||0) + delta);
+        });
+        return m;
+      });
+      stock = merged;
+      lastSyncedStock = JSON.parse(JSON.stringify(merged));
+    });
+  }catch(e){ showToast('שגיאה בשמירת המלאי'); }
+}
+function stockDeduct(map, key, qty){ if(!key || !qty) return; map[key] = Math.max(0, (map[key]||0) - qty); }
+function stockRestore(map, key, qty){ if(!key || !qty) return; map[key] = (map[key]||0) + qty; }
+
+/* ---------- expenses (shared - identical logic to crm-cities.html) ---------- */
+let manualExpenses = [];
+let businessLoans = [];
+let businessDebts = [];
+async function loadExpensesData(){
+  try{
+    const res = await window.storage.get(EXPENSES_KEY, true);
+    const data = res && res.value ? JSON.parse(res.value) : {};
+    manualExpenses = Array.isArray(data.manualExpenses) ? data.manualExpenses : [];
+    businessLoans = Array.isArray(data.businessLoans) ? data.businessLoans : [];
+    businessDebts = Array.isArray(data.businessDebts) ? data.businessDebts : [];
+    markSyncedArray('EXPENSES::expenses', manualExpenses);
+    markSyncedArray('EXPENSES::loans', businessLoans);
+    markSyncedArray('EXPENSES::debts', businessDebts);
+  }catch(e){ manualExpenses = []; businessLoans = []; businessDebts = []; }
+}
+async function saveExpensesData(){
+  try{
+    await withSaveQueue(EXPENSES_KEY, async ()=>{
+      const localExpenses = manualExpenses, localLoans = businessLoans, localDebts = businessDebts;
+      const snapExpenses = _reconcileSnapshots['EXPENSES::expenses']||new Map();
+      const snapLoans = _reconcileSnapshots['EXPENSES::loans']||new Map();
+      const snapDebts = _reconcileSnapshots['EXPENSES::debts']||new Map();
+      const result = await casRetryWrite(EXPENSES_KEY, (remoteValue)=>{
+        const data = remoteValue || {};
+        const remoteExpenses = Array.isArray(data.manualExpenses) ? data.manualExpenses : [];
+        const remoteLoans = Array.isArray(data.businessLoans) ? data.businessLoans : [];
+        const remoteDebts = Array.isArray(data.businessDebts) ? data.businessDebts : [];
+        return {
+          manualExpenses: _mergeArraysById(remoteExpenses, localExpenses, snapExpenses),
+          businessLoans: _mergeArraysById(remoteLoans, localLoans, snapLoans),
+          businessDebts: _mergeArraysById(remoteDebts, localDebts, snapDebts)
+        };
+      });
+      manualExpenses = result.manualExpenses;
+      businessLoans = result.businessLoans;
+      businessDebts = result.businessDebts;
+      markSyncedArray('EXPENSES::expenses', manualExpenses);
+      markSyncedArray('EXPENSES::loans', businessLoans);
+      markSyncedArray('EXPENSES::debts', businessDebts);
+    });
+  }catch(e){ showToast('שגיאה בשמירת הנתונים הכספיים'); }
+}
+function addManualExpense(){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול להוסיף הוצאה'); return; }
+  const name = document.getElementById('newExpenseName').value.trim();
+  const amount = parseFloat(document.getElementById('newExpenseAmount').value);
+  const date = document.getElementById('newExpenseDate').value || todayStr();
+  if(!name || !amount){ showToast('יש למלא שם וסכום להוצאה'); return; }
+  manualExpenses.push({ id: genId(), name, amount, date, createdAt: Date.now() });
+  saveExpensesData().then(renderExpensesList);
+  showToast('ההוצאה נוספה');
+  document.getElementById('newExpenseName').value=''; document.getElementById('newExpenseAmount').value='';
+}
+function deleteManualExpense(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול למחוק הוצאה'); return; }
+  showConfirm('למחוק את ההוצאה הזו?', ()=>{
+    manualExpenses = manualExpenses.filter(e=>e.id!==id);
+    saveExpensesData().then(renderExpensesList);
+    showToast('ההוצאה נמחקה');
+  });
+}
+function renderExpensesList(){
+  const el = document.getElementById('expensesList');
+  if(!el) return;
+  const total = manualExpenses.reduce((s,e)=>s+(e.amount||0),0);
+  el.innerHTML = `<div style="font-weight:800;margin:10px 0;">סה"כ הוצאות: ${total} ₪</div>` +
+    manualExpenses.slice().sort((a,b)=>b.createdAt-a.createdAt).map(e=>`
+      <div class="city-card">
+        <div class="city-head"><div class="city-name">${escHtml(e.name)}</div><div class="city-last">${formatDate(e.date)}</div></div>
+        <div class="city-totals">💸 ${e.amount} ₪</div>
+        <button class="icon-btn" onclick="deleteManualExpense('${e.id}')" title="מחק">🗑️</button>
+      </div>
+    `).join('');
+}
+function formatDate(d){
+  if(!d) return '';
+  const parts = d.split('-');
+  if(parts.length!==3) return d;
+  return `${parts[2]}/${parts[1]}/${parts[0]}`;
+}
+
+/* ---------- this app's OWN users (separate login list; password verification is shared
+   server-side via the same RPCs, but role/authorization is ALWAYS resolved from THIS app's
+   own list - a valid password for a username that only exists in the other app does NOT
+   grant access here, by design). ---------- */
+let currentUser = null;
+let storeUsers = [];
+function defaultStoreUsers(){ return [{ username: MAIN_ADMIN_USERNAME, role: 'mainadmin' }]; }
+function findStoreUser(username){ return storeUsers.find(u=>u.username===username); }
+async function loadStoreUsers(){
+  let fetchFailed = false;
+  try{
+    const res = await window.storage.get(STORE_USERS_KEY, true);
+    storeUsers = res && res.value ? JSON.parse(res.value) : [];
+  }catch(e){ storeUsers = []; fetchFailed = true; }
+  markSyncedArray(STORE_USERS_KEY, storeUsers, 'username');
+  if(fetchFailed) return;
+  // IMPORTANT: never call set_user_password/ensureCredentials for the main admin here - his
+  // password already exists (shared with crm-cities.html) and must never be touched/reset from
+  // this app. Only the local profile record (role) is bootstrapped if missing.
+  if(!Array.isArray(storeUsers) || storeUsers.length===0) storeUsers = defaultStoreUsers();
+  if(!storeUsers.some(u=>u.role==='mainadmin')) storeUsers.unshift({ username: MAIN_ADMIN_USERNAME, role: 'mainadmin' });
+  await saveStoreUsers();
+}
+async function saveStoreUsers(){
+  try{ storeUsers = await reconcileArrayStore(STORE_USERS_KEY, storeUsers, 'username'); }
+  catch(e){ showToast('שגיאה בשמירת המשתמשים'); }
+}
+function roleLabel(role){
+  if(role==='mainadmin') return 'מנהל ראשי';
+  if(role==='admin') return 'מנהל';
+  return 'נציג';
+}
+async function ensureCredentials(username, password){
+  try{ await _sb.rpc('set_user_password', { p_username: username, p_new_password: password }); }
+  catch(e){ console.error('[ensureCredentials]', e); }
+}
+async function attemptLogin(){
+  const username = document.getElementById('loginUsername').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  const errEl = document.getElementById('loginErr');
+  let ok = false;
+  try{
+    const { data, error } = await _sb.rpc('verify_login', { p_username: username, p_password: password });
+    if(error){ console.error('[verify_login]', error); }
+    else if(data && data.length){ ok = true; }
+  }catch(e){ console.error('[verify_login]', e); }
+  if(!ok){ errEl.textContent = 'שם משתמש או סיסמה שגויים'; errEl.style.display = 'block'; return; }
+  const u = findStoreUser(username);
+  if(!u){
+    errEl.textContent = 'המשתמש הזה לא רשום לאפליקציית המכירות הזו - פנה/י למנהל הראשי כדי שיוסיף אותך כאן בנפרד';
+    errEl.style.display = 'block';
+    return;
+  }
+  errEl.style.display = 'none';
+  currentUser = { username: u.username, role: u.role };
+  try{ sessionStorage.setItem('pet-crm-store-current-user', username); }catch(e){}
+  document.getElementById('loginOverlay').classList.add('hidden');
+  document.getElementById('appRoot').style.display = '';
+  document.getElementById('logoutLink').textContent = `👤 ${u.username} (${roleLabel(u.role)}) · התנתקות`;
+  applyRoleVisibility();
+  initAppData();
+}
+function tryAutoLogin(){
+  let username = null;
+  try{ username = sessionStorage.getItem('pet-crm-store-current-user'); }catch(e){}
+  if(!username) return false;
+  const u = findStoreUser(username);
+  if(!u) return false;
+  currentUser = { username: u.username, role: u.role };
+  document.getElementById('loginOverlay').classList.add('hidden');
+  document.getElementById('appRoot').style.display = '';
+  document.getElementById('logoutLink').textContent = `👤 ${u.username} (${roleLabel(u.role)}) · התנתקות`;
+  applyRoleVisibility();
+  return true;
+}
+function logout(){
+  currentUser = null;
+  try{ sessionStorage.removeItem('pet-crm-store-current-user'); }catch(e){}
+  document.getElementById('loginOverlay').classList.remove('hidden');
+  document.getElementById('appRoot').style.display = 'none';
+}
+function applyRoleVisibility(){
+  const isAdmin = currentUser && (currentUser.role==='admin' || currentUser.role==='mainadmin');
+  const isMain = currentUser && currentUser.role==='mainadmin';
+  document.getElementById('expensesTabBtn').style.display = isMain ? '' : 'none';
+  document.getElementById('pricesTabBtn').style.display = isMain ? '' : 'none';
+  document.getElementById('usersTabBtn').style.display = isMain ? '' : 'none';
+  document.getElementById('reportTabBtn').style.display = isMain ? '' : 'none';
+}
+function isAdminRole(){ return currentUser && (currentUser.role==='admin' || currentUser.role==='mainadmin'); }
+
+async function addStoreUser(){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול להוסיף משתמשים'); return; }
+  const username = document.getElementById('newUserUsername').value.trim();
+  const password = document.getElementById('newUserPassword').value;
+  const role = document.getElementById('newUserRole').value;
+  if(!username || !password){ showToast('יש למלא שם משתמש וסיסמה'); return; }
+  if(findStoreUser(username)){ showToast('שם משתמש כבר קיים באפליקציה הזו'); return; }
+  // Safety check: credentials (passwords) are shared globally across both apps by username -
+  // warn before silently overwriting a password that belongs to someone in the OTHER app.
+  try{
+    const res = await window.storage.get('pet-crm-users', true);
+    const otherUsers = res && res.value ? JSON.parse(res.value) : [];
+    if(otherUsers.some(u=>u.username===username)){
+      showToast(`שם המשתמש "${username}" כבר קיים באפליקציית הערים - בחר/י שם אחר כדי לא לדרוס את הסיסמה שלו/שלה`);
+      return;
+    }
+  }catch(e){ /* if this check fails, proceed anyway - not critical */ }
+  storeUsers.push({ username, role });
+  await saveStoreUsers();
+  await ensureCredentials(username, password);
+  showToast('המשתמש נוסף');
+  document.getElementById('newUserUsername').value=''; document.getElementById('newUserPassword').value='';
+  renderUsersList();
+}
+function deleteStoreUser(username){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול למחוק משתמשים'); return; }
+  const u = findStoreUser(username);
+  if(!u || u.role==='mainadmin') return;
+  showConfirm(`למחוק את המשתמש "${username}" מאפליקציית המכירות?`, async ()=>{
+    storeUsers = storeUsers.filter(x=>x.username!==username);
+    await saveStoreUsers();
+    try{ await _sb.rpc('delete_user_credentials', { p_username: username }); }catch(e){ console.error(e); }
+    showToast('המשתמש נמחק');
+    renderUsersList();
+  });
+}
+function updateStoreUserRole(username, role){
+  if(!currentUser || currentUser.role!=='mainadmin') return;
+  const u = findStoreUser(username);
+  if(!u || u.role==='mainadmin') return;
+  u.role = role;
+  saveStoreUsers();
+  showToast('התפקיד עודכן');
+}
+function renderUsersList(){
+  const el = document.getElementById('usersList');
+  if(!el) return;
+  el.innerHTML = storeUsers.map(u=>`
+    <div class="user-row" style="display:flex;align-items:center;gap:8px;padding:10px;border:1px solid var(--border);border-radius:10px;margin-bottom:8px;">
+      <div style="flex:1;">
+        <span class="user-name">${escHtml(u.username)}</span>
+        <span class="role-badge ${u.role==='mainadmin'?'mainadmin':''}">${roleLabel(u.role)}</span>
+      </div>
+      ${u.role!=='mainadmin' ? `
+        <select onchange="updateStoreUserRole('${escAttr(u.username)}', this.value)">
+          <option value="rep" ${u.role==='rep'?'selected':''}>נציג</option>
+          <option value="admin" ${u.role==='admin'?'selected':''}>מנהל</option>
+        </select>
+        <button class="icon-btn" onclick="deleteStoreUser('${escAttr(u.username)}')" title="מחק">🗑️</button>
+      ` : ''}
+    </div>
+  `).join('');
+}
+
+/* ---------- this app's OWN, separately editable price list (same item names as the other
+   app's catalog, for stock compatibility - only the numbers differ) ---------- */
+let storePrices = { animalPrices: {}, foodPrices: {} };
+async function loadStorePrices(){
+  try{
+    const res = await window.storage.get(STORE_PRICES_KEY, true);
+    storePrices = res && res.value ? JSON.parse(res.value) : { animalPrices:{}, foodPrices:{} };
+  }catch(e){ storePrices = { animalPrices:{}, foodPrices:{} }; }
+  if(!storePrices.animalPrices) storePrices.animalPrices = {};
+  if(!storePrices.foodPrices) storePrices.foodPrices = {};
+  markSyncedObject(STORE_PRICES_KEY, storePrices);
+}
+async function saveStorePrices(){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך מחירים'); return; }
+  ANIMAL_OPTIONS.forEach(t=>{
+    const inp = document.querySelector(`.price-animal[data-type="${CSS.escape(t)}"]`);
+    if(inp){ const v = parseFloat(inp.value); storePrices.animalPrices[t] = isNaN(v) ? 0 : v; }
+  });
+  FOOD_OPTIONS.forEach(t=>{
+    const inp = document.querySelector(`.price-food[data-type="${CSS.escape(t)}"]`);
+    if(inp){ const v = parseFloat(inp.value); storePrices.foodPrices[t] = isNaN(v) ? 0 : v; }
+  });
+  try{
+    storePrices = await reconcileObjectStore(STORE_PRICES_KEY, storePrices);
+    showToast('המחירון נשמר');
+  }catch(e){ showToast('שגיאה בשמירת המחירון'); }
+}
+function renderPricesEditor(){
+  const a = document.getElementById('animalPricesList');
+  const f = document.getElementById('foodPricesList');
+  if(!a || !f) return;
+  a.innerHTML = ANIMAL_OPTIONS.map(t=>`
+    <div class="row2" style="align-items:center;">
+      <div style="flex:2;font-size:13.5px;">${t}</div>
+      <input type="number" class="price-animal" data-type="${escAttr(t)}" min="0" value="${storePrices.animalPrices[t]||0}" style="flex:1;">
+    </div>
+  `).join('');
+  f.innerHTML = FOOD_OPTIONS.map(t=>`
+    <div class="row2" style="align-items:center;">
+      <div style="flex:2;font-size:13.5px;">${t}</div>
+      <input type="number" class="price-food" data-type="${escAttr(t)}" min="0" value="${storePrices.foodPrices[t]||0}" style="flex:1;">
+    </div>
+  `).join('');
+}
+
+/* ---------- sale (point-of-sale) screen ---------- */
+let saleFoodRowCounter = 0;
+function populateSaleForm(){
+  const sel = document.getElementById('saleAnimalType');
+  sel.innerHTML = '<option value="">— ללא בעל חיים (ציוד בלבד) —</option>' +
+    ANIMAL_OPTIONS.map(t=>`<option value="${escAttr(t)}">${t} — ${storePrices.animalPrices[t]||0} ₪</option>`).join('');
+  document.getElementById('saleFoodRows').innerHTML = '';
+  updateSaleTotal();
+}
+function addSaleFoodRow(){
+  saleFoodRowCounter++;
+  const id = 'sfrow'+saleFoodRowCounter;
+  const opts = FOOD_OPTIONS.map(f=>`<option value="${escAttr(f)}">${f} — ${storePrices.foodPrices[f]||0} ₪</option>`).join('');
+  document.getElementById('saleFoodRows').insertAdjacentHTML('beforeend', `
+    <div class="animal-item" data-food-row-id="${id}">
+      <div class="animal-row">
+        <select class="saleFoodTypeSelect" onchange="updateSaleTotal()">${opts}</select>
+        <input type="number" class="saleFoodQtyInput" min="1" value="1" oninput="updateSaleTotal()">
+        <button type="button" class="remove-animal-btn" onclick="removeSaleFoodRow('${id}')">✕</button>
+      </div>
+    </div>
+  `);
+  updateSaleTotal();
+}
+function removeSaleFoodRow(id){
+  const el = document.querySelector(`[data-food-row-id="${id}"]`);
+  if(el) el.remove();
+  updateSaleTotal();
+}
+function collectSaleFoodRows(){
+  const rows = [];
+  document.querySelectorAll('#saleFoodRows .animal-item').forEach(r=>{
+    const type = r.querySelector('.saleFoodTypeSelect').value;
+    const qty = parseInt(r.querySelector('.saleFoodQtyInput').value) || 1;
+    rows.push({ type, quantity: qty });
+  });
+  return rows;
+}
+function updateSaleTotal(){
+  const animalType = document.getElementById('saleAnimalType').value;
+  const animalQty = parseInt(document.getElementById('saleAnimalQty').value) || 1;
+  document.getElementById('saleAnimalQtyWrap').style.display = animalType ? '' : 'none';
+  let total = 0;
+  if(animalType) total += (storePrices.animalPrices[animalType]||0) * animalQty;
+  collectSaleFoodRows().forEach(f=>{ total += (storePrices.foodPrices[f.type]||0) * f.quantity; });
+  document.getElementById('saleTotalBox').textContent = `סה"כ למכירה: ${total} ₪`;
+}
+
+let storeSales = [];
+async function loadStoreSales(){
+  try{
+    const res = await window.storage.get(STORE_SALES_KEY, true);
+    storeSales = res && res.value ? JSON.parse(res.value) : [];
+  }catch(e){ storeSales = []; }
+  markSyncedArray(STORE_SALES_KEY, storeSales, 'id');
+}
+async function saveStoreSales(){
+  try{ storeSales = await reconcileArrayStore(STORE_SALES_KEY, storeSales, 'id'); }
+  catch(e){ showToast('שגיאה בשמירת המכירה'); }
+}
+
+async function submitSale(){
+  const btn = document.querySelector('#tab-sale .btn-primary');
+  if(btn.disabled) return;
+  const customer = document.getElementById('saleCustomer').value.trim();
+  const animalType = document.getElementById('saleAnimalType').value;
+  const animalQty = parseInt(document.getElementById('saleAnimalQty').value) || 1;
+  const foodItems = collectSaleFoodRows();
+  if(!animalType && foodItems.length===0){ showToast('יש לבחור לפחות בעל חיים אחד או מזון/אביזר אחד'); return; }
+  let totalPrice = 0;
+  if(animalType) totalPrice += (storePrices.animalPrices[animalType]||0) * animalQty;
+  foodItems.forEach(f=>{ totalPrice += (storePrices.foodPrices[f.type]||0) * f.quantity; });
+
+  btn.disabled = true;
+  const sale = {
+    id: genId(), customer, animalType, animalQty: animalType ? animalQty : 0, foodItems,
+    totalPrice, date: todayStr(), createdAt: Date.now(),
+    createdByUsername: currentUser ? currentUser.username : '', cancelled: false
+  };
+  storeSales.push(sale);
+  await saveStoreSales();
+
+  if(animalType){
+    const species = ANIMAL_SPECIES_MAP[animalType];
+    if(species) stockDeduct(stock.animals, species, animalQty*(ANIMALS_PER_UNIT[animalType]||1));
+    const cageGroup = CAGE_GROUP_MAP[animalType];
+    if(cageGroup) stockDeduct(stock.cages, cageGroup, animalQty);
+    await saveStock();
+  }
+
+  showToast(`המכירה נשמרה - סה"כ ${totalPrice} ₪`);
+  document.getElementById('saleCustomer').value = '';
+  document.getElementById('saleAnimalType').value = '';
+  document.getElementById('saleAnimalQty').value = '1';
+  document.getElementById('saleFoodRows').innerHTML = '';
+  updateSaleTotal();
+  renderHistory();
+  btn.disabled = false;
+}
+function cancelSale(id){
+  if(!isAdminRole()){ showToast('רק מנהל יכול לבטל מכירה'); return; }
+  const s = storeSales.find(x=>x.id===id);
+  if(!s || s.cancelled) return;
+  showConfirm('לבטל את המכירה הזו? המלאי יוחזר.', async ()=>{
+    s.cancelled = true;
+    await saveStoreSales();
+    if(s.animalType){
+      const species = ANIMAL_SPECIES_MAP[s.animalType];
+      if(species) stockRestore(stock.animals, species, s.animalQty*(ANIMALS_PER_UNIT[s.animalType]||1));
+      const cageGroup = CAGE_GROUP_MAP[s.animalType];
+      if(cageGroup) stockRestore(stock.cages, cageGroup, s.animalQty);
+      await saveStock();
+    }
+    showToast('המכירה בוטלה והמלאי הוחזר');
+    renderHistory();
+  });
+}
+function formatFoodItemsList(items){
+  if(!items || !items.length) return '';
+  return items.map(f=>`${f.type} ×${f.quantity}`).join(', ');
+}
+function renderHistory(){
+  const el = document.getElementById('historyList');
+  if(!el) return;
+  let list = storeSales.slice().sort((a,b)=>b.createdAt-a.createdAt);
+  if(!isAdminRole()) list = list.filter(s=>s.createdByUsername===currentUser.username);
+  if(list.length===0){ el.innerHTML = `<div class="empty"><div class="big">🛍️</div>עדיין אין מכירות.</div>`; return; }
+  el.innerHTML = list.map(s=>`
+    <div class="city-card" style="${s.cancelled?'opacity:0.5;':''}">
+      <div class="city-head">
+        <div class="city-name-wrap"><div class="city-name">${s.customer ? escHtml(s.customer) : 'ללא שם לקוח'}</div></div>
+        <div class="city-last">${formatDate(s.date)}</div>
+      </div>
+      <div class="city-totals">${s.animalType ? escHtml(s.animalType)+' ×'+s.animalQty : ''}${s.foodItems&&s.foodItems.length ? (s.animalType?' · ':'')+formatFoodItemsList(s.foodItems) : ''}</div>
+      <div class="city-totals" style="color:var(--accent-dark);font-weight:700;">💰 ${s.totalPrice} ₪${s.cancelled?' · בוטלה':''}</div>
+      <div class="order-sub">נציג: ${escHtml(s.createdByUsername)}</div>
+      ${(isAdminRole() && !s.cancelled) ? `<button class="icon-btn" onclick="cancelSale('${s.id}')" title="בטל מכירה">🗑️ בטל</button>` : ''}
+    </div>
+  `).join('');
+}
+
+/* ---------- combined report (mainadmin only): reads the OTHER app's order/spot-sale data
+   read-only (no writes here, so no need for the full reconcile machinery) plus this app's own
+   sales and the shared expenses, and adds up revenue/profit across both apps together. ---------- */
+async function loadCombinedReport(){
+  const el = document.getElementById('combinedReportContent');
+  el.innerHTML = '<div style="color:var(--muted);">טוען...</div>';
+  let otherOrders = [], otherSpotSales = [];
+  try{
+    const res1 = await window.storage.get(OTHER_APP_ORDERS_KEY, true);
+    otherOrders = res1 && res1.value ? JSON.parse(res1.value) : [];
+  }catch(e){}
+  try{
+    const res2 = await window.storage.get(OTHER_APP_SPOT_SALES_KEY, true);
+    otherSpotSales = res2 && res2.value ? JSON.parse(res2.value) : [];
+  }catch(e){}
+  const otherRevenue = otherOrders.filter(o=>!o.cancelled).reduce((s,o)=>s+(o.totalPrice||0),0)
+    + otherSpotSales.reduce((s,o)=>s+(o.totalPrice||0),0);
+  const storeRevenue = storeSales.filter(s=>!s.cancelled).reduce((s,x)=>s+(x.totalPrice||0),0);
+  const totalExpenses = manualExpenses.reduce((s,e)=>s+(e.amount||0),0);
+  const combinedRevenue = otherRevenue + storeRevenue;
+  const netCombined = combinedRevenue - totalExpenses;
+  el.innerHTML = `
+    <div class="card">
+      <div style="font-weight:800;margin-bottom:10px;">📊 דוח משולב - שתי האפליקציות</div>
+      <div class="stats-row">
+        <div class="stat"><div class="num">${otherRevenue}</div><div class="lbl">הכנסות אפליקציית ערים ₪</div></div>
+        <div class="stat"><div class="num">${storeRevenue}</div><div class="lbl">הכנסות מכירות רגילות ₪</div></div>
+        <div class="stat"><div class="num">${combinedRevenue}</div><div class="lbl">סה"כ הכנסות משולב ₪</div></div>
+      </div>
+      <div style="margin-top:12px;font-size:13.5px;color:var(--muted);">סה"כ הוצאות (משותפות): ${totalExpenses} ₪</div>
+      <div style="margin-top:6px;font-weight:800;font-size:16px;color:var(--route);">רווח נטו משולב: ${netCombined} ₪</div>
+      <button class="btn-primary" style="margin-top:12px;" onclick="loadCombinedReport()">🔄 רענן</button>
+    </div>
+  `;
+}
+
+/* ---------- tabs + init ---------- */
+document.querySelectorAll('.tab').forEach(tab=>{
+  tab.addEventListener('click', ()=>{
+    document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+    tab.classList.add('active');
+    ['sale','history','expenses','prices','users','report'].forEach(name=>{
+      const el = document.getElementById('tab-'+name);
+      if(el) el.style.display = (tab.dataset.tab===name) ? '' : 'none';
+    });
+    if(tab.dataset.tab==='history') renderHistory();
+    if(tab.dataset.tab==='expenses') renderExpensesList();
+    if(tab.dataset.tab==='prices') renderPricesEditor();
+    if(tab.dataset.tab==='users') renderUsersList();
+  });
+});
+
+async function initAppData(){
+  document.getElementById('subtitle').textContent = 'טוען נתונים...';
+  await loadStock();
+  await loadExpensesData();
+  await loadStorePrices();
+  await loadStoreSales();
+  populateSaleForm();
+  document.getElementById('subtitle').textContent = 'הנתונים משותפים עם אפליקציית הערים (מלאי + הוצאות)';
+}
+
+async function initApp(){
+  await loadStoreUsers();
+  document.getElementById('newExpenseDate').value = todayStr();
+  if(tryAutoLogin()) await initAppData();
+}
+initApp();
+</script>
+</body></html>
