@@ -1047,7 +1047,10 @@ async function loadCombinedReport(){
     const res2 = await window.storage.get(OTHER_APP_SPOT_SALES_KEY, true);
     otherSpotSales = res2 && res2.value ? JSON.parse(res2.value) : [];
   }catch(e){}
-  const otherRevenue = otherOrders.filter(o=>!o.cancelled).reduce((s,o)=>s+(o.totalPrice||0),0)
+  // Only revenue that's actually already realized: delivered orders (not just active/pending
+  // ones), plus spot sales (which are always an immediate on-the-spot sale, so already realized
+  // by definition) - not a projection of everything currently in the pipeline.
+  const otherRevenue = otherOrders.filter(o=>!o.cancelled && o.delivered).reduce((s,o)=>s+(o.totalPrice||0),0)
     + otherSpotSales.reduce((s,o)=>s+(o.totalPrice||0),0);
   const storeRevenue = storeSales.filter(s=>!s.cancelled).reduce((s,x)=>s+(x.totalPrice||0),0);
   const totalExpenses = manualExpenses.reduce((s,e)=>s+(e.amount||0),0);
@@ -1057,7 +1060,7 @@ async function loadCombinedReport(){
     <div class="card">
       <div style="font-weight:800;margin-bottom:10px;">📊 דוח משולב - שתי האפליקציות</div>
       <div class="stats-row">
-        <div class="stat"><div class="num">${otherRevenue}</div><div class="lbl">הכנסות אפליקציית ערים ₪</div></div>
+        <div class="stat"><div class="num">${otherRevenue}</div><div class="lbl">הכנסות שהתקבלו בפועל - ערים ₪</div></div>
         <div class="stat"><div class="num">${storeRevenue}</div><div class="lbl">הכנסות מכירות רגילות ₪</div></div>
         <div class="stat"><div class="num">${combinedRevenue}</div><div class="lbl">סה"כ הכנסות משולב ₪</div></div>
       </div>

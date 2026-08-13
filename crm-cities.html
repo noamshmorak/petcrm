@@ -6816,7 +6816,10 @@ async function loadCombinedReportInMainApp(){
     const res = await window.storage.get('pet-crm-store-sales', true);
     storeSales = res && res.value ? JSON.parse(res.value) : [];
   }catch(e){}
-  const thisAppRevenue = orders.filter(o=>!o.cancelled).reduce((s,o)=>s+(o.totalPrice||0),0)
+  // Only revenue that's actually already realized: delivered orders (not just active/pending
+  // ones), plus spot sales (which are always an immediate on-the-spot sale, so already realized
+  // by definition) - not a projection of everything currently in the pipeline.
+  const thisAppRevenue = orders.filter(o=>!o.cancelled && o.delivered).reduce((s,o)=>s+(o.totalPrice||0),0)
     + spotSales.reduce((s,o)=>s+(o.totalPrice||0),0);
   const storeRevenue = storeSales.filter(s=>!s.cancelled).reduce((s,x)=>s+(x.totalPrice||0),0);
   const totalExpenses = manualExpenses.reduce((s,e)=>s+(e.amount||0),0);
@@ -6824,7 +6827,7 @@ async function loadCombinedReportInMainApp(){
   const netCombined = combinedRevenue - totalExpenses;
   el.innerHTML = `
     <div class="stats-row">
-      <div class="stat"><div class="num">${thisAppRevenue}</div><div class="lbl">הכנסות אפליקציית ערים ₪</div></div>
+      <div class="stat"><div class="num">${thisAppRevenue}</div><div class="lbl">הכנסות שהתקבלו בפועל - ערים ₪</div></div>
       <div class="stat"><div class="num">${storeRevenue}</div><div class="lbl">הכנסות מכירות רגילות ₪</div></div>
       <div class="stat"><div class="num">${combinedRevenue}</div><div class="lbl">סה"כ הכנסות משולב ₪</div></div>
     </div>
