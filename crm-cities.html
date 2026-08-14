@@ -955,6 +955,7 @@ const AD_LIBRARY_KEY = 'pet-crm-ad-library'; // array of {id, name, tag, path, u
 const AD_MESSAGE_TEMPLATES_KEY = 'pet-crm-ad-message-templates'; // {full, half} - default WhatsApp texts
 const AD_STRONG_MONTHLY_KEY = 'pet-crm-strong-ad-monthly-reminder'; // {lastHandledMonth: 'YYYY-MM'}
 const AD_STORAGE_BUCKET = 'pet-crm-ads';
+const AD_LIBRARY_CATEGORIES_KEY = 'pet-crm-ad-library-categories'; // mainadmin-managed array of category names for tagging PDFs in the ad library
 const AD_ROTATION_EPOCH = '2024-01-07'; // any fixed Sunday - used purely as a counting origin for the region rotation
 let depot = { city:'', street:'' };
 async function loadDepot(){
@@ -5414,6 +5415,44 @@ function sendAdWhatsApp(placeId, pageType){
 }
 
 /* ---------- PDF ad library - tagged by occasion (e.g. "לפני חג"), stored in Supabase Storage bucket AD_STORAGE_BUCKET ---------- */
+let adLibraryCategories = [];
+const AD_LIBRARY_DEFAULT_CATEGORIES = ['לפני חג','לפני החופש הגדול','פסח','ראש השנה וסוכות','חנוכה','עמוד שלם - ברירת מחדל','חצי עמוד - ברירת מחדל','מבצע/כללי'];
+async function loadAdLibraryCategories(){
+  try{
+    const res = await window.storage.get(AD_LIBRARY_CATEGORIES_KEY, true);
+    adLibraryCategories = res && res.value ? JSON.parse(res.value) : null;
+    if(!Array.isArray(adLibraryCategories) || adLibraryCategories.length===0) adLibraryCategories = AD_LIBRARY_DEFAULT_CATEGORIES.slice();
+  }catch(e){ adLibraryCategories = AD_LIBRARY_DEFAULT_CATEGORIES.slice(); }
+  markSyncedStringArray(AD_LIBRARY_CATEGORIES_KEY, adLibraryCategories);
+}
+async function saveAdLibraryCategories(){
+  try{ adLibraryCategories = await reconcileStringArrayStore(AD_LIBRARY_CATEGORIES_KEY, adLibraryCategories); }
+  catch(e){ showToast('שגיאה בשמירת הקטגוריות'); }
+}
+async function addAdLibraryCategory(){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך קטגוריות'); return; }
+  const input = document.getElementById('newAdLibraryCategoryName');
+  const name = input.value.trim();
+  if(!name){ showToast('נא להזין שם קטגוריה'); return; }
+  if(adLibraryCategories.includes(name)){ showToast('הקטגוריה כבר קיימת'); return; }
+  adLibraryCategories.push(name);
+  await saveAdLibraryCategories();
+  logAudit('הוספת קטגוריית מודעות', name);
+  input.value = '';
+  renderAdminTabContent();
+}
+async function deleteAdLibraryCategory(name){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך קטגוריות'); return; }
+  const inUse = adLibrary.some(a=>a.tag===name);
+  showConfirm(inUse ? `הקטגוריה "${name}" עדיין בשימוש במודעות קיימות - הן יישארו עם הקטגוריה הזו גם אם תימחק מהרשימה. למחוק בכל זאת?` : `למחוק את הקטגוריה "${name}"?`, async ()=>{
+    adLibraryCategories = adLibraryCategories.filter(c=>c!==name);
+    await saveAdLibraryCategories();
+    logAudit('מחיקת קטגוריית מודעות', name);
+    renderAdminTabContent();
+  });
+}
+let adLibraryFilterTag = '';
+function setAdLibraryFilter(tag){ adLibraryFilterTag = tag; renderAdminTabContent(); }
 let adLibrary = [];
 async function loadAdLibrary(){
   try{
@@ -5431,11 +5470,11 @@ async function uploadAdLibraryFile(){
   if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול להעלות מודעות'); return; }
   const fileInput = document.getElementById('newAdLibraryFile');
   const nameInput = document.getElementById('newAdLibraryName');
-  const tagInput = document.getElementById('newAdLibraryTag');
+  const tagSelect = document.getElementById('newAdLibraryTag');
   const file = fileInput.files && fileInput.files[0];
   if(!file){ showToast('נא לבחור קובץ PDF'); return; }
   if(file.type!=='application/pdf' && !file.name.toLowerCase().endsWith('.pdf')){ showToast('רק קבצי PDF נתמכים'); return; }
-  const tag = tagInput.value.trim() || 'כללי';
+  const tag = tagSelect.value || adLibraryCategories[0] || 'כללי';
   const name = nameInput.value.trim() || file.name;
   const path = `${Date.now()}_${Math.random().toString(36).slice(2,8)}_${file.name}`;
   try{
@@ -5445,7 +5484,7 @@ async function uploadAdLibraryFile(){
     adLibrary.push({ id: 'adl_'+Date.now()+'_'+Math.random().toString(36).slice(2,7), name, tag, path, url: urlData.publicUrl, uploadedAt: todayStr() });
     await saveAdLibraryList();
     logAudit('העלאת מודעה לספרייה', `${name} (${tag})`);
-    fileInput.value=''; nameInput.value=''; tagInput.value='';
+    fileInput.value=''; nameInput.value='';
     showToast('המודעה הועלתה בהצלחה');
     renderAdminTabContent();
   }catch(e){ showToast('שגיאה בהעלאת הקובץ - ודא/י שנוצר Bucket בשם "'+AD_STORAGE_BUCKET+'" ב-Supabase Storage'); }
@@ -6800,19 +6839,45 @@ function renderAdminTabContent(){
       </div>
 
       <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:14px;">
-        <div style="font-weight:700;margin-bottom:8px;">🖼️ ספריית מודעות (PDF) - לפי תגית/עונה</div>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">העלו כאן מודעות PDF מוכנות (למשל "לפני חג", "לפני החופש הגדול", "עמוד שלם", "חצי עמוד") כדי לגשת אליהן מהר ולצרף אותן ידנית בוואטסאפ.</div>
+        <div style="font-weight:700;margin-bottom:8px;">🖼️ ספריית מודעות (PDF) - לפי קטגוריה</div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">העלו כאן מודעות PDF מוכנות ובחרו קטגוריה (עונה/אירוע) כדי לגשת אליהן מהר ולצרף אותן ידנית בוואטסאפ.</div>
+
+        <details style="margin-bottom:10px;">
+          <summary style="cursor:pointer;font-size:12.5px;color:var(--muted);">⚙️ ניהול קטגוריות (${adLibraryCategories.length})</summary>
+          <div style="margin-top:8px;">
+            ${adLibraryCategories.map(c=>`
+              <div class="row2" style="align-items:center;margin-bottom:4px;">
+                <div style="flex:1;font-size:12.5px;">${escHtml(c)}</div>
+                <button class="icon-btn" onclick="deleteAdLibraryCategory('${escAttr(c)}')">🗑️</button>
+              </div>`).join('')}
+            <div class="row2" style="margin-top:8px;">
+              <input id="newAdLibraryCategoryName" placeholder="קטגוריה חדשה (למשל: פורים)">
+              <button class="btn-ghost" onclick="addAdLibraryCategory()">➕ הוסף קטגוריה</button>
+            </div>
+          </div>
+        </details>
+
         <div class="row2" style="margin-bottom:8px;">
           <input id="newAdLibraryName" placeholder="שם המודעה (אופציונלי)">
-          <input id="newAdLibraryTag" placeholder="תגית (למשל: לפני חג)" list="adTagDatalist">
+          <select id="newAdLibraryTag">${adLibraryCategories.map(c=>`<option value="${escAttr(c)}">${escHtml(c)}</option>`).join('')}</select>
         </div>
-        <datalist id="adTagDatalist">${[...new Set(adLibrary.map(a=>a.tag))].map(t=>`<option value="${escAttr(t)}">`).join('')}</datalist>
         <input id="newAdLibraryFile" type="file" accept="application/pdf" style="margin-bottom:8px;">
         <button class="btn-primary" onclick="uploadAdLibraryFile()">⬆️ העלה PDF</button>
-        ${adLibrary.length===0 ? '<div style="color:var(--muted);font-size:13px;margin-top:10px;">אין עדיין מודעות בספרייה.</div>' : (()=>{
+
+        ${adLibrary.length===0 ? '<div style="color:var(--muted);font-size:13px;margin-top:10px;">אין עדיין מודעות בספרייה.</div>' : `
+        <div style="margin-top:14px;">
+          <label style="font-size:12px;margin-bottom:3px;">סינון לפי קטגוריה:</label>
+          <select onchange="setAdLibraryFilter(this.value)">
+            <option value="" ${adLibraryFilterTag===''?'selected':''}>הכל</option>
+            ${[...new Set(adLibrary.map(a=>a.tag))].map(t=>`<option value="${escAttr(t)}" ${adLibraryFilterTag===t?'selected':''}>${escHtml(t)}</option>`).join('')}
+          </select>
+        </div>
+        ${(()=>{
           const byTag = {};
-          adLibrary.forEach(a=>{ (byTag[a.tag]=byTag[a.tag]||[]).push(a); });
-          return Object.entries(byTag).map(([tag, items])=>`
+          adLibrary.filter(a=>!adLibraryFilterTag || a.tag===adLibraryFilterTag).forEach(a=>{ (byTag[a.tag]=byTag[a.tag]||[]).push(a); });
+          const entries = Object.entries(byTag);
+          if(entries.length===0) return '<div style="color:var(--muted);font-size:13px;margin-top:10px;">אין מודעות בקטגוריה הזו.</div>';
+          return entries.map(([tag, items])=>`
             <div style="margin-top:14px;font-weight:700;font-size:13px;">${escHtml(tag)} (${items.length})</div>
             ${items.map(a=>`
               <div class="row2" style="align-items:center;margin-bottom:4px;">
@@ -6821,6 +6886,7 @@ function renderAdminTabContent(){
               </div>`).join('')}
           `).join('');
         })()}
+        `}
       </div>
 
       <div style="font-weight:800;margin:22px 0 8px;border-top:1px solid var(--border);padding-top:14px;">🔥 פרסום חזק ארצי</div>
@@ -7955,6 +8021,7 @@ async function initApp(){
   await loadStrongAdRoster();
   await loadAdPlaces();
   await loadAdLibrary();
+  await loadAdLibraryCategories();
   await loadAdMessageTemplates();
   await loadAdStrongMonthlyState();
   await loadBlockedCustomers();
