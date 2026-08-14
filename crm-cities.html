@@ -179,6 +179,7 @@
     </div>
     <div id="inventoryAlertBanner"></div>
     <div id="hoursReminderBanner"></div>
+    <div id="adRotationBanner"></div>
     <div id="pushOptInBanner"></div>
   </header>
 
@@ -947,6 +948,14 @@ const STRONG_AD_ROUNDS_KEY = 'pet-crm-strong-ad-rounds'; // {'city|round': true}
 const STRONG_AD_CAMPAIGN_KEY = 'pet-crm-strong-ad-campaign'; // {defaultWeeklyCost, weekOverrides:{weekStart:amount}} - shared cost of the nationwide campaign
 const STRONG_AD_ROSTER_KEY = 'pet-crm-strong-ad-roster'; // array of city names that participate in the nationwide campaign whenever it's "activated"
 const STRONG_AD_BUCKET = '🔥 פרסום חזק';
+// Weekly newspaper-ad rotation, organized by region, plus a monthly reminder for the strong-ad campaign above.
+const AD_REGIONS = ['דרום','מרכז','ירושלים והסביבה','שרון','צפון'];
+const AD_PLACES_KEY = 'pet-crm-ad-places'; // array of {id, name, cities:[...], phone, region}
+const AD_LIBRARY_KEY = 'pet-crm-ad-library'; // array of {id, name, tag, path, url, uploadedAt} - PDFs in Supabase Storage
+const AD_MESSAGE_TEMPLATES_KEY = 'pet-crm-ad-message-templates'; // {full, half} - default WhatsApp texts
+const AD_STRONG_MONTHLY_KEY = 'pet-crm-strong-ad-monthly-reminder'; // {lastHandledMonth: 'YYYY-MM'}
+const AD_STORAGE_BUCKET = 'pet-crm-ads';
+const AD_ROTATION_EPOCH = '2024-01-07'; // any fixed Sunday - used purely as a counting origin for the region rotation
 let depot = { city:'', street:'' };
 async function loadDepot(){
   try{
@@ -5294,6 +5303,213 @@ async function saveStrongAdRoster(){
   catch(e){ showToast('שגיאה בשמירה'); }
 }
 
+/* ---------- weekly newspaper-ad rotation (by region) + PDF ad library + monthly strong-ad reminder ----------
+   adPlaces: mainadmin-managed list of publishing "places" (one or more cities bundled under one
+   publisher phone number), each tagged with one of the 5 fixed AD_REGIONS. Every week the rotation
+   deterministically picks the next region in AD_REGIONS order (pure function of the calendar week,
+   no stored cursor needed), and within that region round-robins 2 places at a time so every place
+   in the region gets covered before any repeats - see computeAdRotationForWeek(). */
+let adPlaces = [];
+async function loadAdPlaces(){
+  try{
+    const res = await window.storage.get(AD_PLACES_KEY, true);
+    adPlaces = res && res.value ? JSON.parse(res.value) : [];
+    if(!Array.isArray(adPlaces)) adPlaces = [];
+  }catch(e){ adPlaces = []; }
+  markSyncedArray(AD_PLACES_KEY, adPlaces);
+}
+async function saveAdPlaces(){
+  try{ adPlaces = await reconcileArrayStore(AD_PLACES_KEY, adPlaces); }
+  catch(e){ showToast('שגיאה בשמירת רשימת המקומות'); }
+}
+async function addAdPlace(){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך את רשימת המקומות'); return; }
+  const nameEl = document.getElementById('newAdPlaceName');
+  const citiesEl = document.getElementById('newAdPlaceCities');
+  const phoneEl = document.getElementById('newAdPlacePhone');
+  const regionEl = document.getElementById('newAdPlaceRegion');
+  const name = nameEl.value.trim();
+  const citiesRaw = citiesEl.value.trim();
+  const phone = phoneEl.value.trim();
+  const region = regionEl.value;
+  if(!name || !citiesRaw || !phone || !region){ showToast('נא למלא שם, ערים (מופרדות בפסיק), טלפון ואזור'); return; }
+  const cities = citiesRaw.split(',').map(c=>c.trim()).filter(Boolean);
+  adPlaces.push({ id: 'adp_'+Date.now()+'_'+Math.random().toString(36).slice(2,7), name, cities, phone, region });
+  await saveAdPlaces();
+  logAudit('הוספת מקום פרסום', `${name} (${region})`);
+  nameEl.value=''; citiesEl.value=''; phoneEl.value='';
+  renderAdminTabContent();
+  renderAdvertisingBanner();
+}
+async function deleteAdPlace(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך את רשימת המקומות'); return; }
+  const p = adPlaces.find(x=>x.id===id);
+  if(!p) return;
+  showConfirm(`למחוק את "${p.name}" מרשימת המקומות?`, async ()=>{
+    adPlaces = adPlaces.filter(x=>x.id!==id);
+    await saveAdPlaces();
+    logAudit('מחיקת מקום פרסום', p.name);
+    renderAdminTabContent();
+    renderAdvertisingBanner();
+  });
+}
+// Number of full weeks between two YYYY-MM-DD week-start dates (can be negative if b is before a).
+function weeksBetween(aDateStr, bDateStr){
+  const a = new Date(aDateStr+'T00:00:00');
+  const b = new Date(bDateStr+'T00:00:00');
+  return Math.round((b-a)/(7*86400000));
+}
+// Pure function of the calendar week - no stored "current region"/cursor state at all, so it can
+// never drift or get corrupted: region = AD_REGIONS[weekIndex % 5] (fixed cyclic order), and within
+// that region the 2 selected places are a sliding window of size 2 over that region's place list,
+// advancing by 2 every time the region comes up again (every 5 weeks) - so all places in a region
+// are covered before any repeat, regardless of how many weeks the app goes unopened.
+function computeAdRotationForWeek(weekStart){
+  const weekIdx = weeksBetween(AD_ROTATION_EPOCH, weekStart);
+  const ri = ((weekIdx % AD_REGIONS.length) + AD_REGIONS.length) % AD_REGIONS.length;
+  const region = AD_REGIONS[ri];
+  const visitCount = Math.floor(weekIdx / AD_REGIONS.length);
+  const regionPlaces = adPlaces.filter(p=>p.region===region);
+  let places = [];
+  if(regionPlaces.length>0){
+    const startIdx = ((visitCount*2) % regionPlaces.length + regionPlaces.length) % regionPlaces.length;
+    const seen = new Set();
+    for(let i=0;i<Math.min(2, regionPlaces.length);i++){
+      const p = regionPlaces[(startIdx+i) % regionPlaces.length];
+      if(!seen.has(p.id)){ seen.add(p.id); places.push(p); }
+    }
+  }
+  return { region, places };
+}
+function waPhoneDigits(phone){
+  let d = (phone||'').replace(/\D/g,'');
+  if(d.startsWith('0')) d = '972'+d.slice(1);
+  return d;
+}
+let adMessageTemplates = { full: 'שלום, רציתי להזמין עמוד פרסום להשבוע', half: 'שלום, רציתי להזמין חצי עמוד פרסום להשבוע' };
+async function loadAdMessageTemplates(){
+  try{
+    const res = await window.storage.get(AD_MESSAGE_TEMPLATES_KEY, true);
+    if(res && res.value){
+      const parsed = JSON.parse(res.value);
+      adMessageTemplates = { full: parsed.full || adMessageTemplates.full, half: parsed.half || adMessageTemplates.half };
+    }
+    markSyncedObject(AD_MESSAGE_TEMPLATES_KEY, adMessageTemplates);
+  }catch(e){ /* use defaults */ }
+}
+async function saveAdMessageTemplates(){
+  try{ adMessageTemplates = await reconcileObjectStore(AD_MESSAGE_TEMPLATES_KEY, adMessageTemplates); }
+  catch(e){ showToast('שגיאה בשמירה'); }
+}
+async function updateAdMessageTemplate(kind, value){
+  if(!currentUser || currentUser.role!=='mainadmin') return;
+  adMessageTemplates[kind] = value;
+  await saveAdMessageTemplates();
+}
+function sendAdWhatsApp(placeId, pageType){
+  const p = adPlaces.find(x=>x.id===placeId);
+  if(!p) return;
+  const msg = adMessageTemplates[pageType] || '';
+  window.open('https://wa.me/'+waPhoneDigits(p.phone)+'?text='+encodeURIComponent(msg), '_blank');
+}
+
+/* ---------- PDF ad library - tagged by occasion (e.g. "לפני חג"), stored in Supabase Storage bucket AD_STORAGE_BUCKET ---------- */
+let adLibrary = [];
+async function loadAdLibrary(){
+  try{
+    const res = await window.storage.get(AD_LIBRARY_KEY, true);
+    adLibrary = res && res.value ? JSON.parse(res.value) : [];
+    if(!Array.isArray(adLibrary)) adLibrary = [];
+  }catch(e){ adLibrary = []; }
+  markSyncedArray(AD_LIBRARY_KEY, adLibrary);
+}
+async function saveAdLibraryList(){
+  try{ adLibrary = await reconcileArrayStore(AD_LIBRARY_KEY, adLibrary); }
+  catch(e){ showToast('שגיאה בשמירת ספריית המודעות'); }
+}
+async function uploadAdLibraryFile(){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול להעלות מודעות'); return; }
+  const fileInput = document.getElementById('newAdLibraryFile');
+  const nameInput = document.getElementById('newAdLibraryName');
+  const tagInput = document.getElementById('newAdLibraryTag');
+  const file = fileInput.files && fileInput.files[0];
+  if(!file){ showToast('נא לבחור קובץ PDF'); return; }
+  if(file.type!=='application/pdf' && !file.name.toLowerCase().endsWith('.pdf')){ showToast('רק קבצי PDF נתמכים'); return; }
+  const tag = tagInput.value.trim() || 'כללי';
+  const name = nameInput.value.trim() || file.name;
+  const path = `${Date.now()}_${Math.random().toString(36).slice(2,8)}_${file.name}`;
+  try{
+    const { error: upErr } = await _sb.storage.from(AD_STORAGE_BUCKET).upload(path, file, { contentType: 'application/pdf' });
+    if(upErr){ showToast('שגיאה בהעלאת הקובץ - ודא/י שנוצר Bucket בשם "'+AD_STORAGE_BUCKET+'" ב-Supabase Storage: '+upErr.message); return; }
+    const { data: urlData } = _sb.storage.from(AD_STORAGE_BUCKET).getPublicUrl(path);
+    adLibrary.push({ id: 'adl_'+Date.now()+'_'+Math.random().toString(36).slice(2,7), name, tag, path, url: urlData.publicUrl, uploadedAt: todayStr() });
+    await saveAdLibraryList();
+    logAudit('העלאת מודעה לספרייה', `${name} (${tag})`);
+    fileInput.value=''; nameInput.value=''; tagInput.value='';
+    showToast('המודעה הועלתה בהצלחה');
+    renderAdminTabContent();
+  }catch(e){ showToast('שגיאה בהעלאת הקובץ - ודא/י שנוצר Bucket בשם "'+AD_STORAGE_BUCKET+'" ב-Supabase Storage'); }
+}
+async function deleteAdLibraryFile(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול למחוק מודעות'); return; }
+  const item = adLibrary.find(x=>x.id===id);
+  if(!item) return;
+  showConfirm(`למחוק את המודעה "${item.name}"?`, async ()=>{
+    try{ await _sb.storage.from(AD_STORAGE_BUCKET).remove([item.path]); }catch(e){}
+    adLibrary = adLibrary.filter(x=>x.id!==id);
+    await saveAdLibraryList();
+    logAudit('מחיקת מודעה מהספרייה', item.name);
+    renderAdminTabContent();
+  });
+}
+
+/* ---------- monthly reminder for the "strong ad" nationwide campaign - skips (silently, tries
+   again next week) any week whose rotation-selected places include בני ברק or ירושלים ---------- */
+let adStrongMonthlyState = { lastHandledMonth: '' };
+async function loadAdStrongMonthlyState(){
+  try{
+    const res = await window.storage.get(AD_STRONG_MONTHLY_KEY, true);
+    if(res && res.value){
+      const parsed = JSON.parse(res.value);
+      adStrongMonthlyState = { lastHandledMonth: parsed.lastHandledMonth || '' };
+    }
+    markSyncedObject(AD_STRONG_MONTHLY_KEY, adStrongMonthlyState);
+  }catch(e){ /* use defaults */ }
+}
+async function saveAdStrongMonthlyState(){
+  try{ adStrongMonthlyState = await reconcileObjectStore(AD_STRONG_MONTHLY_KEY, adStrongMonthlyState); }
+  catch(e){ /* non-critical */ }
+}
+function currentMonthStr(){ return todayStr().slice(0,7); }
+function weekIncludesBneiBrakOrJerusalem(rotation){
+  return rotation.places.some(p=>p.cities.some(c=>c.includes('בני ברק') || c.includes('ירושלים')));
+}
+async function dismissAdStrongMonthlyReminder(activate){
+  adStrongMonthlyState.lastHandledMonth = currentMonthStr();
+  await saveAdStrongMonthlyState();
+  if(activate) activateStrongAdThisWeek();
+  renderAdvertisingBanner();
+}
+// Dashboard banner (mainadmin only): shows this week's 2 rotation places, plus - at most once a
+// month - a reminder to activate the nationwide "strong ad" campaign, automatically staying quiet
+// on any week whose 2 places include בני ברק/ירושלים (will simply reappear the following week).
+function renderAdvertisingBanner(){
+  const el = document.getElementById('adRotationBanner');
+  if(!el) return;
+  if(!currentUser || currentUser.role!=='mainadmin'){ el.innerHTML=''; return; }
+  const weekStart = weekStartOf(todayStr());
+  const rotation = computeAdRotationForWeek(weekStart);
+  let html = '';
+  if(rotation.places.length>0){
+    html += `<div class="alert-banner" style="cursor:pointer;" onclick="openAdminGate();switchAdminTab('advertising');"><div class="alert-title">📰 פרסום השבוע - אזור ${rotation.region}</div><div>${rotation.places.map(p=>escHtml(p.name)+' ('+escHtml(p.cities.join(', '))+')').join(' · ')} - לחצ/י למעבר לטאב "פרסום"</div></div>`;
+  }
+  if(adStrongMonthlyState.lastHandledMonth !== currentMonthStr() && !weekIncludesBneiBrakOrJerusalem(rotation)){
+    html += `<div class="alert-banner"><div class="alert-title">🔥 תזכורת חודשית: פרסום חזק ארצי</div><div>עדיין לא הופעל החודש (השבוע הנוכחי לא כולל בני ברק/ירושלים). <button class="btn-primary" style="margin-top:6px;margin-left:6px;" onclick="dismissAdStrongMonthlyReminder(true)">🔥 הפעל עכשיו</button> <button class="btn-ghost" style="margin-top:6px;" onclick="dismissAdStrongMonthlyReminder(false)">דלג החודש</button></div></div>`;
+  }
+  el.innerHTML = html;
+}
+
+
 /* ---------- problematic ("blocked") customers ---------- */
 // A customer matched here (by exact phone or exact name, after normalization) cannot have a new
 // order opened for them by a rep at all - only an admin/mainadmin can see the past-incident
@@ -6529,6 +6745,84 @@ function renderAdminTabContent(){
         </div>
       `).join('')}
 
+      <div style="font-weight:800;margin:22px 0 8px;border-top:1px solid var(--border);padding-top:14px;">📰 פרסום שבועי בעיתונים - רוטציית אזורים</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">בכל שבוע המערכת עוברת אוטומטית לאזור הבא (${AD_REGIONS.join(' ← ')} ← חוזר לדרום...), ובתוך האזור בוחרת 2 מקומות במחזור פנימי - כך שכל המקומות באזור עוברים לפני שחוזרים על אחד מהם.</div>
+      ${(()=>{
+        const weekStart = weekStartOf(todayStr());
+        const rotation = computeAdRotationForWeek(weekStart);
+        if(rotation.places.length===0){
+          return `<div style="color:var(--muted);font-size:13px;margin-bottom:14px;">אין עדיין מקומות מוגדרים באזור "${rotation.region}" (האזור של השבוע הנוכחי). הוסיפו מקומות למטה.</div>`;
+        }
+        return `
+        <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:14px;background:var(--card-alt,transparent);">
+          <div style="font-weight:700;margin-bottom:8px;">🗓️ השבוע (${formatDate(weekStart)}) - אזור: ${rotation.region}</div>
+          ${rotation.places.map(p=>`
+            <div style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px;">
+              <div style="font-weight:700;">${escHtml(p.name)}</div>
+              <div style="font-size:12.5px;color:var(--muted);margin-bottom:6px;">${escHtml(p.cities.join(', '))} · ${escHtml(p.phone)}</div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button class="btn-primary" onclick="sendAdWhatsApp('${p.id}','full')">💬 שלח וואטסאפ - עמוד שלם</button>
+                <button class="btn-ghost" onclick="sendAdWhatsApp('${p.id}','half')">💬 שלח וואטסאפ - חצי עמוד</button>
+              </div>
+            </div>
+          `).join('')}
+        </div>`;
+      })()}
+
+      <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:14px;">
+        <div style="font-weight:700;margin-bottom:8px;">✏️ נוסח הודעות ברירת מחדל</div>
+        <label style="font-size:12px;margin-bottom:3px;">עמוד שלם:</label>
+        <input id="adMsgFull" value="${escAttr(adMessageTemplates.full)}" onchange="updateAdMessageTemplate('full', this.value)" style="margin-bottom:8px;">
+        <label style="font-size:12px;margin-bottom:3px;">חצי עמוד:</label>
+        <input id="adMsgHalf" value="${escAttr(adMessageTemplates.half)}" onchange="updateAdMessageTemplate('half', this.value)">
+      </div>
+
+      <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:14px;">
+        <div style="font-weight:700;margin-bottom:8px;">🗺️ ניהול רשימת המקומות (${adPlaces.length})</div>
+        <div class="row2" style="margin-bottom:8px;">
+          <input id="newAdPlaceName" placeholder="שם המקום (למשל: עיתון X)">
+          <select id="newAdPlaceRegion">${AD_REGIONS.map(r=>`<option value="${escAttr(r)}">${r}</option>`).join('')}</select>
+        </div>
+        <div class="row2" style="margin-bottom:8px;">
+          <input id="newAdPlaceCities" placeholder="ערים (מופרדות בפסיק, למשל: בני ברק, גבעת שמואל)">
+          <input id="newAdPlacePhone" placeholder="טלפון המפרסם">
+        </div>
+        <button class="btn-primary" onclick="addAdPlace()">➕ הוסף מקום</button>
+        ${AD_REGIONS.map(region=>{
+          const list = adPlaces.filter(p=>p.region===region);
+          if(list.length===0) return '';
+          return `<div style="margin-top:14px;font-weight:700;font-size:13px;">${region} (${list.length})</div>` + list.map(p=>`
+            <div class="row2" style="align-items:center;margin-bottom:4px;">
+              <div style="flex:1;font-size:12.5px;">${escHtml(p.name)} - ${escHtml(p.cities.join(', '))} · ${escHtml(p.phone)}</div>
+              <button class="icon-btn" onclick="deleteAdPlace('${p.id}')">🗑️</button>
+            </div>`).join('');
+        }).join('') || '<div style="color:var(--muted);font-size:13px;margin-top:10px;">אין מקומות ברשימה עדיין.</div>'}
+      </div>
+
+      <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:14px;">
+        <div style="font-weight:700;margin-bottom:8px;">🖼️ ספריית מודעות (PDF) - לפי תגית/עונה</div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">העלו כאן מודעות PDF מוכנות (למשל "לפני חג", "לפני החופש הגדול", "עמוד שלם", "חצי עמוד") כדי לגשת אליהן מהר ולצרף אותן ידנית בוואטסאפ.</div>
+        <div class="row2" style="margin-bottom:8px;">
+          <input id="newAdLibraryName" placeholder="שם המודעה (אופציונלי)">
+          <input id="newAdLibraryTag" placeholder="תגית (למשל: לפני חג)" list="adTagDatalist">
+        </div>
+        <datalist id="adTagDatalist">${[...new Set(adLibrary.map(a=>a.tag))].map(t=>`<option value="${escAttr(t)}">`).join('')}</datalist>
+        <input id="newAdLibraryFile" type="file" accept="application/pdf" style="margin-bottom:8px;">
+        <button class="btn-primary" onclick="uploadAdLibraryFile()">⬆️ העלה PDF</button>
+        ${adLibrary.length===0 ? '<div style="color:var(--muted);font-size:13px;margin-top:10px;">אין עדיין מודעות בספרייה.</div>' : (()=>{
+          const byTag = {};
+          adLibrary.forEach(a=>{ (byTag[a.tag]=byTag[a.tag]||[]).push(a); });
+          return Object.entries(byTag).map(([tag, items])=>`
+            <div style="margin-top:14px;font-weight:700;font-size:13px;">${escHtml(tag)} (${items.length})</div>
+            ${items.map(a=>`
+              <div class="row2" style="align-items:center;margin-bottom:4px;">
+                <a href="${escAttr(a.url)}" target="_blank" style="flex:1;font-size:12.5px;">📄 ${escHtml(a.name)}</a>
+                <button class="icon-btn" onclick="deleteAdLibraryFile('${a.id}')">🗑️</button>
+              </div>`).join('')}
+          `).join('');
+        })()}
+      </div>
+
       <div style="font-weight:800;margin:22px 0 8px;border-top:1px solid var(--border);padding-top:14px;">🔥 פרסום חזק ארצי</div>
       <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:10px;">
         <div style="font-weight:700;margin-bottom:6px;">🏙️ רשימת הערים בקמפיין (מוגדרת פעם אחת, אפשר לערוך בכל זמן)</div>
@@ -7659,11 +7953,16 @@ async function initApp(){
   await loadStrongAdRounds();
   await loadStrongAdCampaign();
   await loadStrongAdRoster();
+  await loadAdPlaces();
+  await loadAdLibrary();
+  await loadAdMessageTemplates();
+  await loadAdStrongMonthlyState();
   await loadBlockedCustomers();
   renderSummary();
   renderCuFeatureToggleLabel();
   renderInventoryAlertBanner();
   renderHoursReminderBanner();
+  renderAdvertisingBanner();
   renderPushOptInBanner();
   checkInquiryEscalations();
 }
