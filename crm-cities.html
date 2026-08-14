@@ -5501,6 +5501,18 @@ async function deleteAdLibraryFile(id){
     renderAdminTabContent();
   });
 }
+async function renameAdLibraryFile(id, newName){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך שם מודעה'); return; }
+  const item = adLibrary.find(x=>x.id===id);
+  if(!item) return;
+  const trimmed = (newName||'').trim();
+  if(!trimmed || trimmed===item.name) return;
+  const oldName = item.name;
+  item.name = trimmed;
+  await saveAdLibraryList();
+  logAudit('שינוי שם מודעה', `${oldName} → ${trimmed}`);
+  showToast('שם המודעה עודכן');
+}
 
 /* ---------- monthly reminder for the "strong ad" nationwide campaign - skips (silently, tries
    again next week) any week whose rotation-selected places include בני ברק or ירושלים ---------- */
@@ -6881,7 +6893,8 @@ function renderAdminTabContent(){
             <div style="margin-top:14px;font-weight:700;font-size:13px;">${escHtml(tag)} (${items.length})</div>
             ${items.map(a=>`
               <div class="row2" style="align-items:center;margin-bottom:4px;">
-                <a href="${escAttr(a.url)}" target="_blank" style="flex:1;font-size:12.5px;">📄 ${escHtml(a.name)}</a>
+                <a href="${escAttr(a.url)}" target="_blank" title="פתח PDF" style="text-decoration:none;">📄</a>
+                <input value="${escAttr(a.name)}" style="flex:1;font-size:12.5px;" onchange="renameAdLibraryFile('${a.id}', this.value)">
                 <button class="icon-btn" onclick="deleteAdLibraryFile('${a.id}')">🗑️</button>
               </div>`).join('')}
           `).join('');
