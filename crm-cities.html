@@ -956,6 +956,7 @@ const AD_MESSAGE_TEMPLATES_KEY = 'pet-crm-ad-message-templates'; // {full, half}
 const AD_STRONG_MONTHLY_KEY = 'pet-crm-strong-ad-monthly-reminder'; // {lastHandledMonth: 'YYYY-MM'}
 const AD_STORAGE_BUCKET = 'pet-crm-ads';
 const AD_LIBRARY_CATEGORIES_KEY = 'pet-crm-ad-library-categories'; // mainadmin-managed array of category names for tagging PDFs in the ad library
+const AD_CHANNEL_ROTATION_KEY = 'pet-crm-ad-channel-rotation-cities'; // array of city names where the 2+ local ad channels auto-alternate week to week instead of using a fixed default
 const AD_ROTATION_EPOCH = '2024-01-07'; // any fixed Sunday - used purely as a counting origin for the region rotation
 let depot = { city:'', street:'' };
 async function loadDepot(){
@@ -5733,6 +5734,38 @@ async function setAdChannelDefault(id, checked){
 // Which channel an order's marketing cost should be attributed to: explicitly picked one, else -
 // if the city has exactly one channel, that one (no ambiguity, no need to ask); else the channel
 // marked as default for that city, if any; else none (falls back to the general estimate).
+let adChannelRotationCities = [];
+async function loadAdChannelRotationCities(){
+  try{
+    const res = await window.storage.get(AD_CHANNEL_ROTATION_KEY, true);
+    adChannelRotationCities = res && res.value ? JSON.parse(res.value) : [];
+    if(!Array.isArray(adChannelRotationCities)) adChannelRotationCities = [];
+  }catch(e){ adChannelRotationCities = []; }
+  markSyncedStringArray(AD_CHANNEL_ROTATION_KEY, adChannelRotationCities);
+}
+async function saveAdChannelRotationCities(){
+  try{ adChannelRotationCities = await reconcileStringArrayStore(AD_CHANNEL_ROTATION_KEY, adChannelRotationCities); }
+  catch(e){ showToast('שגיאה בשמירה'); }
+}
+async function toggleAdChannelRotation(city, checked){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך ערוצי פרסום'); return; }
+  if(checked){ if(!adChannelRotationCities.includes(city)) adChannelRotationCities.push(city); }
+  else{ adChannelRotationCities = adChannelRotationCities.filter(c=>c!==city); }
+  await saveAdChannelRotationCities();
+  logAudit(checked?'הפעלת סבב שבועי בין ערוצים':'ביטול סבב שבועי בין ערוצים', city);
+  renderAdminTabContent();
+}
+// Deterministic weekly alternation between a city's local channels (e.g. "פעם עיתון א', פעם עיתון
+// ב'") - same style as computeAdRotationForWeek: a pure function of the calendar week, no stored
+// cursor, so it can never drift. Channels are sorted by id for a stable order.
+function suggestedAdChannelForCity(city, weekStart){
+  const channels = adChannelsForCity(city).slice().sort((a,b)=>a.id.localeCompare(b.id));
+  if(channels.length===0) return null;
+  if(channels.length===1) return channels[0];
+  const weekIdx = weeksBetween(AD_ROTATION_EPOCH, weekStart);
+  const idx = ((weekIdx % channels.length) + channels.length) % channels.length;
+  return channels[idx];
+}
 function resolveEffectiveChannel(o){
   if(o.adChannelId){
     const ch = adChannels.find(c=>c.id===o.adChannelId);
@@ -5741,6 +5774,10 @@ function resolveEffectiveChannel(o){
   const cityChannels = adChannelsForCity(o.city);
   if(cityChannels.length===1) return cityChannels[0];
   if(cityChannels.length>1){
+    if(adChannelRotationCities.includes(o.city) && o.date){
+      const suggested = suggestedAdChannelForCity(o.city, weekStartOf(o.date));
+      if(suggested) return suggested;
+    }
     const def = cityChannels.find(c=>c.isDefault);
     if(def) return def;
   }
@@ -5853,8 +5890,11 @@ function renderAdChannelSelect(){
   if(list.length===0){ wrap.style.display='none'; sel.innerHTML='<option value="">לא ידוע / אחר</option>'; return; }
   wrap.style.display='';
   const cur = sel.value;
-  sel.innerHTML = '<option value="">לא ידוע / אחר</option>' + list.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
+  const rotationOn = city && list.length>1 && adChannelRotationCities.includes(city);
+  const suggested = rotationOn ? suggestedAdChannelForCity(city, weekStartOf(todayStr())) : null;
+  sel.innerHTML = '<option value="">לא ידוע / אחר</option>' + list.map(c=>`<option value="${c.id}">${c.name}${suggested && suggested.id===c.id ? ' (מומלץ השבוע)' : ''}</option>`).join('');
   if(list.some(c=>c.id===cur)) sel.value = cur;
+  else if(suggested) sel.value = suggested.id;
 }
 
 // Per-order marketing cost for a city: if an admin entered a total ad-spend for that city
@@ -5876,21 +5916,29 @@ function getCityMarketingRate(city){
 function computeOrderMarketingCost(o){
   if(!o.date) return getCityMarketingRate(o.city);
   const week = weekStartOf(o.date);
-  if(isStrongAdRound(o.city, o.roundNumber)){
-    const weekCost = weeklyCostFor(strongAdCampaign, week);
-    const ordersThisWeek = orders.filter(x=>!x.cancelled && x.date && isStrongAdRound(x.city, x.roundNumber) && weekStartOf(x.date)===week).length;
-    return ordersThisWeek>0 ? weekCost/ordersThisWeek : 0;
-  }
+  let cost = 0;
+  let attributed = false;
+  // Local channel and the nationwide "strong ad" campaign are independent costs - if an order's
+  // week/round genuinely ran under both at once (e.g. the local paper AND the national campaign
+  // both went out that week), both shares get added together instead of picking just one.
   const channel = resolveEffectiveChannel(o);
   if(channel){
     const weekCost = weeklyCostFor(channel, week);
     const ordersThisWeek = orders.filter(x=>!x.cancelled && x.date && weekStartOf(x.date)===week && resolveEffectiveChannel(x)?.id===channel.id).length;
-    return ordersThisWeek>0 ? weekCost/ordersThisWeek : 0;
+    cost += ordersThisWeek>0 ? weekCost/ordersThisWeek : 0;
+    attributed = true;
   }
-  return getCityMarketingRate(o.city);
+  if(isStrongAdRound(o.city, o.roundNumber)){
+    const weekCost = weeklyCostFor(strongAdCampaign, week);
+    const ordersThisWeek = orders.filter(x=>!x.cancelled && x.date && isStrongAdRound(x.city, x.roundNumber) && weekStartOf(x.date)===week).length;
+    cost += ordersThisWeek>0 ? weekCost/ordersThisWeek : 0;
+    attributed = true;
+  }
+  if(!attributed) return getCityMarketingRate(o.city);
+  return cost;
 }
 function marketingSourceLabel(cityBucket){
-  if(cityBucket===STRONG_AD_BUCKET) return 'לפי עלות קמפיין הפרסום החזק שהוגדרה';
+  if(cityBucket===STRONG_AD_BUCKET) return 'לפי עלות קמפיין הפרסום החזק שהוגדרה (בתוספת עלות ערוץ מקומי, אם ההזמנה גם שויכה לאחד)';
   if(adChannelsForCity(cityBucket).length>0) return 'לפי ערוצי הפרסום שהוגדרו לעיר זו';
   if(cityMarketingSpend[cityBucket]!=null && cityMarketingSpend[cityBucket]!=='') return 'לפי הוצאה שהוזנה לעיר זו';
   return 'לפי ההערכה הכללית';
@@ -6777,7 +6825,14 @@ function renderAdminTabContent(){
           <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:12.5px;">
             <input type="checkbox" style="width:auto;margin-bottom:0;" ${ch.isDefault?'checked':''} onchange="setAdChannelDefault('${ch.id}', this.checked)">
             ערוץ ברירת מחדל לעיר זו (הזמנה בלי בחירה מפורשת תיוחס אליו)
-          </label>` : `<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">הערוץ היחיד בעיר זו - כל הזמנה בעיר תיוחס אליו אוטומטית, גם בלי לבחור.</div>`}
+          </label>
+          ${cityReport.filter(x=>x.city===ch.city)[0].id===ch.id ? `
+          <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:12.5px;background:var(--card-alt,transparent);border:1px dashed var(--border);border-radius:8px;padding:6px 8px;">
+            <input type="checkbox" style="width:auto;margin-bottom:0;" ${adChannelRotationCities.includes(ch.city)?'checked':''} onchange="toggleAdChannelRotation('${escAttr(ch.city)}', this.checked)">
+            🔁 סבב שבועי אוטומטי בין הערוצים בעיר זו (פעם זה, פעם זה) - כשמופעל, זה גובר על "ברירת מחדל" למעלה, ומוצע אוטומטית בטופס ההזמנה. עדיין אפשר לבחור ערוץ אחר ידנית לכל הזמנה.
+          </label>
+          ${adChannelRotationCities.includes(ch.city) ? (()=>{ const s = suggestedAdChannelForCity(ch.city, weekStartOf(todayStr())); return s ? `<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">📅 מומלץ השבוע: <b>${escHtml(s.name)}</b></div>` : ''; })() : ''}
+          ` : ''}` : `<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">הערוץ היחיד בעיר זו - כל הזמנה בעיר תיוחס אליו אוטומטית, גם בלי לבחור.</div>`}
           <details style="margin-bottom:8px;">
             <summary style="cursor:pointer;font-size:12.5px;color:var(--muted);">שבועות עם עלות שונה מהרגיל (${Object.keys(ch.weekOverrides||{}).length})</summary>
             <div style="margin-top:8px;">
@@ -8029,6 +8084,7 @@ async function initApp(){
   await loadAuditLog();
   await loadCustomReminders();
   await loadAdChannels();
+  await loadAdChannelRotationCities();
   await loadStrongAdRounds();
   await loadStrongAdCampaign();
   await loadStrongAdRoster();
