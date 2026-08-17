@@ -3981,7 +3981,11 @@ function openPackModal(city, round){
   });
 
   document.getElementById('packTitle').textContent = `📦 רשימת ליקוט למשלוח — ${cityDisplayName(city,round)}`;
-  let entries = Object.entries(typeStats).filter(([t,v])=>v.units>0);
+  // Was filtering on v.units>0 (cages needed) - but a "ללא כלוב" animal legitimately needs 0
+  // cages while still needing to be picked/delivered, so that line was silently vanishing from
+  // the whole picking list. v.animals (populated for every animal row regardless of noCage) is
+  // the correct signal for "does this line need to appear at all."
+  let entries = Object.entries(typeStats).filter(([t,v])=>v.animals>0);
   entries.sort((a,b)=> ANIMAL_OPTIONS.indexOf(a[0]) - ANIMAL_OPTIONS.indexOf(b[0]));
 
   const content = document.getElementById('packContent');
