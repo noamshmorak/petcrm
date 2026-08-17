@@ -8121,7 +8121,7 @@ initApp();
 
 if('serviceWorker' in navigator){
   window.addEventListener('load', ()=>{
-    navigator.serviceWorker.register('sw.js').catch(()=>{ /* offline shell is a bonus, not critical */ });
+    navigator.serviceWorker.register('sw.js', {scope: './crm-cities.html'}).catch(()=>{ /* offline shell is a bonus, not critical */ });
   });
 }
 </script>

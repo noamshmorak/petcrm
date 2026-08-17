@@ -1103,5 +1103,15 @@ async function initApp(){
   if(tryAutoLogin()) await initAppData();
 }
 initApp();
+
+if('serviceWorker' in navigator){
+  window.addEventListener('load', ()=>{
+    // Explicit scope keeps this PWA's own identity/service-worker limited to just this page,
+    // separate from the cities app's PWA (which shares the same origin) - without this, opening
+    // this page used to get swallowed into the already-installed crm-cities app shell instead of
+    // being installable as its own distinct app.
+    navigator.serviceWorker.register('sw-store.js', {scope: './crm-store.html'}).catch(()=>{ /* offline shell is a bonus, not critical */ });
+  });
+}
 </script>
 </body></html>

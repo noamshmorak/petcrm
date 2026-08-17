@@ -2,7 +2,7 @@
   "name": "מכירות רגילות - חסד לישראל",
   "short_name": "מכירות רגילות",
   "start_url": "./crm-store.html",
-  "scope": "./",
+  "scope": "./crm-store.html",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#FAF7F2",
@@ -10,9 +10,30 @@
   "lang": "he",
   "dir": "rtl",
   "icons": [
-    { "src": "icon-store-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "icon-store-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "icon-store-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
-    { "src": "icon-store.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
-  ]
+    {
+      "src": "icon-store-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-store-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-store-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icon-store.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "id": "./crm-store.html"
 }
