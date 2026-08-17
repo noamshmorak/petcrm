@@ -3321,12 +3321,22 @@ function migrateOrder(o){
   if(!o.animals){
     o.animals = o.animalType ? [{type:o.animalType, quantity:o.quantity||1}] : [];
   }
-  o.animals = o.animals.map(a=>({
-    type: OLD_TO_NEW_ANIMAL_LABEL[a.type] || a.type,
-    quantity: a.quantity,
-    color: a.color || '',
-    color2: a.color2 || ''
-  }));
+  // BUGFIX (found via a real report - "ללא כלוב" was checked and the price reflected the
+  // discount, but the pack list/summary still counted a cage and never showed the "(ללא כלוב)"
+  // note): this rebuild used to only copy type/quantity/color/color2 onto the migrated row,
+  // silently dropping a.noCage every single time an order passed through here - which is EVERY
+  // load and EVERY save (see reconcileAndSaveOrders), so the flag was lost almost immediately
+  // after being set, even though it was written correctly to Supabase in that one instant.
+  o.animals = o.animals.map(a=>{
+    const migrated = {
+      type: OLD_TO_NEW_ANIMAL_LABEL[a.type] || a.type,
+      quantity: a.quantity,
+      color: a.color || '',
+      color2: a.color2 || ''
+    };
+    if(a.noCage) migrated.noCage = true;
+    return migrated;
+  });
   o.foodItems = o.foodItems || [];
   if(typeof o.cancelled !== 'boolean') o.cancelled = false;
   if(typeof o.delivered !== 'boolean') o.delivered = false;
@@ -3700,7 +3710,8 @@ function computeCitySummary(){
     Object.values(cageCounts).forEach(n=>{ c.totalCages += n; });
     (o.animals||[]).forEach(a=>{
       c.totalQty += a.quantity;
-      c.breakdown[a.type] = (c.breakdown[a.type]||0) + a.quantity;
+      const label = a.noCage ? `${a.type} (ללא כלוב)` : a.type;
+      c.breakdown[label] = (c.breakdown[label]||0) + a.quantity;
     });
     if(o.date > c.lastDate) c.lastDate = o.date;
     if(o.date < c.firstDate) c.firstDate = o.date;
