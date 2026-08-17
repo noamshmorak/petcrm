@@ -223,6 +223,18 @@
 
   <div id="tab-prices" style="display:none;">
     <div class="card">
+      <div style="font-weight:800;margin-bottom:8px;">➕ הוספת מוצר חדש (לאפליקציה זו בלבד)</div>
+      <div class="row2">
+        <input id="newStoreProductName" placeholder="שם המוצר">
+        <select id="newStoreProductCategory">
+          <option value="animal">בעל חיים</option>
+          <option value="food">מזון / אביזר</option>
+        </select>
+      </div>
+      <div class="field"><label>מחיר (₪)</label><input type="number" id="newStoreProductPrice" min="0"></div>
+      <button class="btn-primary" onclick="addStoreCustomProduct()">➕ הוסף מוצר</button>
+    </div>
+    <div class="card">
       <div style="font-weight:800;margin-bottom:8px;">מחירי בעלי חיים (לאפליקציה זו בלבד)</div>
       <div id="animalPricesList"></div>
       <div style="font-weight:800;margin:16px 0 8px;">מחירי מזון ואביזרים (לאפליקציה זו בלבד)</div>
@@ -531,6 +543,7 @@ const OTHER_APP_SPOT_SALES_KEY = 'pet-crm-spot-sales'; // read-only, for the com
 const STORE_USERS_KEY = 'pet-crm-store-users';
 const STORE_SALES_KEY = 'pet-crm-store-sales';
 const STORE_PRICES_KEY = 'pet-crm-store-prices';
+const STORE_CUSTOM_CATALOG_KEY = 'pet-crm-store-custom-catalog'; // extra product names added ONLY in this app - never touches the shared crm-cities catalog
 
 const MAIN_ADMIN_USERNAME = 'נועם';
 
@@ -750,7 +763,7 @@ function applyRoleVisibility(){
   const isAdmin = currentUser && (currentUser.role==='admin' || currentUser.role==='mainadmin');
   const isMain = currentUser && currentUser.role==='mainadmin';
   document.getElementById('expensesTabBtn').style.display = isMain ? '' : 'none';
-  document.getElementById('pricesTabBtn').style.display = isMain ? '' : 'none';
+  document.getElementById('pricesTabBtn').style.display = isAdmin ? '' : 'none'; // any admin (not just mainadmin) can maintain the price list
   document.getElementById('usersTabBtn').style.display = isMain ? '' : 'none';
   document.getElementById('reportTabBtn').style.display = isMain ? '' : 'none';
 }
@@ -859,12 +872,12 @@ async function loadStorePrices(){
   markSyncedObject(STORE_PRICES_KEY, storePrices);
 }
 async function saveStorePrices(){
-  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך מחירים'); return; }
-  ANIMAL_OPTIONS.forEach(t=>{
+  if(!isAdminRole()){ showToast('אין לך הרשאה לערוך מחירים'); return; }
+  storeAnimalCatalog().forEach(t=>{
     const inp = document.querySelector(`.price-animal[data-type="${CSS.escape(t)}"]`);
     if(inp){ const v = parseFloat(inp.value); storePrices.animalPrices[t] = isNaN(v) ? 0 : v; }
   });
-  FOOD_OPTIONS.forEach(t=>{
+  storeFoodCatalog().forEach(t=>{
     const inp = document.querySelector(`.price-food[data-type="${CSS.escape(t)}"]`);
     if(inp){ const v = parseFloat(inp.value); storePrices.foodPrices[t] = isNaN(v) ? 0 : v; }
   });
@@ -873,20 +886,76 @@ async function saveStorePrices(){
     showToast('המחירון נשמר');
   }catch(e){ showToast('שגיאה בשמירת המחירון'); }
 }
+
+/* ---------- custom product catalog - EXTRA product names added only in this app, on top of
+   the shared ANIMAL_OPTIONS/FOOD_OPTIONS list copied from crm-cities.html. Never touches the
+   other app's catalog or data - purely additive, this-app-only. Any admin (not just mainadmin)
+   can manage these, so a store manager can keep the price list current without needing the
+   main admin's login. ---------- */
+let storeCustomCatalog = { animals: [], food: [] };
+async function loadStoreCustomCatalog(){
+  try{
+    const res = await window.storage.get(STORE_CUSTOM_CATALOG_KEY, true);
+    storeCustomCatalog = res && res.value ? JSON.parse(res.value) : { animals: [], food: [] };
+  }catch(e){ storeCustomCatalog = { animals: [], food: [] }; }
+  if(!Array.isArray(storeCustomCatalog.animals)) storeCustomCatalog.animals = [];
+  if(!Array.isArray(storeCustomCatalog.food)) storeCustomCatalog.food = [];
+  markSyncedObject(STORE_CUSTOM_CATALOG_KEY, storeCustomCatalog);
+}
+async function saveStoreCustomCatalog(){
+  try{ storeCustomCatalog = await reconcileObjectStore(STORE_CUSTOM_CATALOG_KEY, storeCustomCatalog); }
+  catch(e){ showToast('שגיאה בשמירת רשימת המוצרים'); }
+}
+function storeAnimalCatalog(){ return [...ANIMAL_OPTIONS, ...storeCustomCatalog.animals]; }
+function storeFoodCatalog(){ return [...FOOD_OPTIONS, ...storeCustomCatalog.food]; }
+async function addStoreCustomProduct(){
+  if(!isAdminRole()){ showToast('אין לך הרשאה להוסיף מוצרים'); return; }
+  const nameEl = document.getElementById('newStoreProductName');
+  const categoryEl = document.getElementById('newStoreProductCategory');
+  const priceEl = document.getElementById('newStoreProductPrice');
+  const name = nameEl.value.trim();
+  const category = categoryEl.value;
+  const price = parseFloat(priceEl.value) || 0;
+  if(!name){ showToast('נא להזין שם מוצר'); return; }
+  if(storeAnimalCatalog().includes(name) || storeFoodCatalog().includes(name)){ showToast('מוצר בשם הזה כבר קיים ברשימה'); return; }
+  if(category==='animal') storeCustomCatalog.animals.push(name); else storeCustomCatalog.food.push(name);
+  await saveStoreCustomCatalog();
+  if(category==='animal') storePrices.animalPrices[name] = price; else storePrices.foodPrices[name] = price;
+  await reconcileObjectStore(STORE_PRICES_KEY, storePrices).then(v=>{ storePrices = v; }).catch(()=>{});
+  showToast('המוצר נוסף');
+  nameEl.value=''; priceEl.value='';
+  renderPricesEditor();
+  populateSaleForm();
+}
+async function deleteStoreCustomProduct(category, name){
+  if(!isAdminRole()){ showToast('אין לך הרשאה למחוק מוצרים'); return; }
+  showConfirm(`למחוק את "${name}" מרשימת המוצרים?`, async ()=>{
+    if(category==='animal') storeCustomCatalog.animals = storeCustomCatalog.animals.filter(n=>n!==name);
+    else storeCustomCatalog.food = storeCustomCatalog.food.filter(n=>n!==name);
+    await saveStoreCustomCatalog();
+    if(category==='animal') delete storePrices.animalPrices[name]; else delete storePrices.foodPrices[name];
+    await reconcileObjectStore(STORE_PRICES_KEY, storePrices).then(v=>{ storePrices = v; }).catch(()=>{});
+    showToast('המוצר נמחק');
+    renderPricesEditor();
+    populateSaleForm();
+  });
+}
 function renderPricesEditor(){
   const a = document.getElementById('animalPricesList');
   const f = document.getElementById('foodPricesList');
   if(!a || !f) return;
-  a.innerHTML = ANIMAL_OPTIONS.map(t=>`
+  a.innerHTML = storeAnimalCatalog().map(t=>`
     <div class="row2" style="align-items:center;">
       <div style="flex:2;font-size:13.5px;">${t}</div>
       <input type="number" class="price-animal" data-type="${escAttr(t)}" min="0" value="${storePrices.animalPrices[t]||0}" style="flex:1;">
+      ${storeCustomCatalog.animals.includes(t) ? `<button class="icon-btn" onclick="deleteStoreCustomProduct('animal','${escAttr(t)}')">🗑️</button>` : ''}
     </div>
   `).join('');
-  f.innerHTML = FOOD_OPTIONS.map(t=>`
+  f.innerHTML = storeFoodCatalog().map(t=>`
     <div class="row2" style="align-items:center;">
       <div style="flex:2;font-size:13.5px;">${t}</div>
       <input type="number" class="price-food" data-type="${escAttr(t)}" min="0" value="${storePrices.foodPrices[t]||0}" style="flex:1;">
+      ${storeCustomCatalog.food.includes(t) ? `<button class="icon-btn" onclick="deleteStoreCustomProduct('food','${escAttr(t)}')">🗑️</button>` : ''}
     </div>
   `).join('');
 }
@@ -896,14 +965,14 @@ let saleFoodRowCounter = 0;
 function populateSaleForm(){
   const sel = document.getElementById('saleAnimalType');
   sel.innerHTML = '<option value="">— ללא בעל חיים (ציוד בלבד) —</option>' +
-    ANIMAL_OPTIONS.map(t=>`<option value="${escAttr(t)}">${t} — ${storePrices.animalPrices[t]||0} ₪</option>`).join('');
+    storeAnimalCatalog().map(t=>`<option value="${escAttr(t)}">${t} — ${storePrices.animalPrices[t]||0} ₪</option>`).join('');
   document.getElementById('saleFoodRows').innerHTML = '';
   updateSaleTotal();
 }
 function addSaleFoodRow(){
   saleFoodRowCounter++;
   const id = 'sfrow'+saleFoodRowCounter;
-  const opts = FOOD_OPTIONS.map(f=>`<option value="${escAttr(f)}">${f} — ${storePrices.foodPrices[f]||0} ₪</option>`).join('');
+  const opts = storeFoodCatalog().map(f=>`<option value="${escAttr(f)}">${f} — ${storePrices.foodPrices[f]||0} ₪</option>`).join('');
   document.getElementById('saleFoodRows').insertAdjacentHTML('beforeend', `
     <div class="animal-item" data-food-row-id="${id}">
       <div class="animal-row">
@@ -1092,6 +1161,7 @@ async function initAppData(){
   await loadStock();
   await loadExpensesData();
   await loadStorePrices();
+  await loadStoreCustomCatalog();
   await loadStoreSales();
   populateSaleForm();
   document.getElementById('subtitle').textContent = 'הנתונים משותפים עם אפליקציית הערים (מלאי + הוצאות)';
