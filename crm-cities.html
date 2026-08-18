@@ -940,6 +940,7 @@ const DEPOT_KEY = 'pet-crm-depot';
 const TRASH_KEY = 'pet-crm-trash';
 const EXPENSES_KEY = 'pet-crm-expenses';
 const BUG_REPORTS_KEY = 'pet-crm-bug-reports'; // shared with crm-store.html - array of {id, reporter, role, app, text, createdAt, status}
+const GEOCODE_OVERRIDES_KEY = 'pet-crm-geocode-overrides'; // {'street|city': {lat, lon}} - manual corrections for addresses the free geocoder can't find, entered once, reused forever
 const HOUR_REPORTS_KEY = 'pet-crm-hour-reports';
 const AUDIT_LOG_KEY = 'pet-crm-audit-log';
 const CUSTOM_REMINDERS_KEY = 'pet-crm-custom-reminders'; // array of {id, enabled, time, targetRole, title, message} - admin-editable, read by an external GitHub Actions cron job that sends the actual push
@@ -7678,11 +7679,62 @@ function expandStreetPrefix(name){
   }
   return null;
 }
+// Manual per-address corrections: when the free geocoder (Nominatim) genuinely can't find an
+// address (not a "ה" prefix issue - a real gap in OpenStreetMap's data, common for streets in
+// some cities), mainadmin/admin can paste in the correct coordinates once via the route modal's
+// failed-geocode list, and every future route calculation reuses it forever - no more repeat failures.
+let geocodeOverrides = {};
+async function loadGeocodeOverrides(){
+  try{
+    const res = await window.storage.get(GEOCODE_OVERRIDES_KEY, true);
+    geocodeOverrides = res && res.value ? JSON.parse(res.value) : {};
+  }catch(e){ geocodeOverrides = {}; }
+  markSyncedObject(GEOCODE_OVERRIDES_KEY, geocodeOverrides);
+}
+async function saveGeocodeOverrides(){
+  try{ geocodeOverrides = await reconcileObjectStore(GEOCODE_OVERRIDES_KEY, geocodeOverrides); }
+  catch(e){ showToast('שגיאה בשמירת תיקון הכתובת'); }
+}
+// Accepts either a plain "lat, lon" pair or a Google Maps URL/share-link containing @lat,lon or
+// a q=lat,lon / ll=lat,lon parameter, so the admin can just paste whatever Google Maps gives them.
+function parseLatLonInput(raw){
+  const s = (raw||'').trim();
+  if(!s) return null;
+  let m = s.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+  if(!m) m = s.match(/[?&](?:q|ll)=(-?\d+\.\d+),(-?\d+\.\d+)/);
+  if(!m) m = s.match(/^(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)$/);
+  if(!m) return null;
+  const lat = parseFloat(m[1]), lon = parseFloat(m[2]);
+  if(!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if(lat < 29 || lat > 34 || lon < 33 || lon > 36) return null; // sanity check: must be roughly inside Israel
+  return { lat, lon };
+}
+async function setGeocodeOverride(street, city, rawInput){
+  const coords = parseLatLonInput(rawInput);
+  if(!coords){ showToast('לא הצלחתי לקרוא קואורדינטות מהטקסט שהודבק - העתיקו קישור מגוגל מפות או "lat, lon"'); return false; }
+  const cacheKey = `${street}|${city}`;
+  geocodeOverrides[cacheKey] = coords;
+  geocodeCache[cacheKey] = coords;
+  await saveGeocodeOverrides();
+  showToast('הכתובת תוקנה - תשמש מעכשיו בכל חישוב מסלול');
+  return true;
+}
 async function geocodeAddress(street, city){
   const cacheKey = `${street}|${city}`;
   if(geocodeCache[cacheKey]) return geocodeCache[cacheKey];
+  const manualOverride = geocodeOverrides[cacheKey];
+  if(manualOverride){ geocodeCache[cacheKey] = manualOverride; return manualOverride; }
   const expanded = expandStreetPrefix(street);
-  const variants = expanded ? [expanded, street] : [street]; // try the spelled-out form first, it's more likely to match OSM data
+  let variants = expanded ? [expanded, street] : [street]; // try the spelled-out form first, it's more likely to match OSM data
+  // Streets named after a person/title are very often written colloquially with a leading "ה"
+  // ("the") - e.g. "הרשב"ם" - but OSM's own street name is frequently just the bare name
+  // ("רשב"ם") without it. Only added as a LAST-RESORT extra variant (tried after everything
+  // above fails), so a street that genuinely keeps its "ה" in OSM (like "הרצל") is never affected -
+  // real match attempts above will already have succeeded and returned before this ever runs.
+  const heStripped = variants.map(v=>{
+    const m = v.match(/^ה([\u05d0-\u05ea].*)$/);
+    return m ? m[1] : null;
+  }).filter(Boolean);
   try{
     for(const variant of variants){
       const data = await nominatimFetch(`https://nominatim.openstreetmap.org/search?format=json&countrycodes=il&limit=1&street=${encodeURIComponent(variant)}&city=${encodeURIComponent(city)}&country=Israel`);
@@ -7696,6 +7748,20 @@ async function geocodeAddress(street, city){
       const data = await nominatimFetch(`https://nominatim.openstreetmap.org/search?format=json&countrycodes=il&limit=1&q=${encodeURIComponent(variant+', '+city+', ישראל')}`);
       if(data && data.length){
         const coords = { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
+        geocodeCache[cacheKey] = coords;
+        return coords;
+      }
+    }
+    for(const variant of heStripped){
+      const data = await nominatimFetch(`https://nominatim.openstreetmap.org/search?format=json&countrycodes=il&limit=1&street=${encodeURIComponent(variant)}&city=${encodeURIComponent(city)}&country=Israel`);
+      if(data && data.length){
+        const coords = { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
+        geocodeCache[cacheKey] = coords;
+        return coords;
+      }
+      const data2 = await nominatimFetch(`https://nominatim.openstreetmap.org/search?format=json&countrycodes=il&limit=1&q=${encodeURIComponent(variant+', '+city+', ישראל')}`);
+      if(data2 && data2.length){
+        const coords = { lat: parseFloat(data2[0].lat), lon: parseFloat(data2[0].lon) };
         geocodeCache[cacheKey] = coords;
         return coords;
       }
@@ -8092,7 +8158,7 @@ async function openRouteModal(city, round){
   const fullAddress = (o)=> o.address + (o.address.includes(city) ? '' : ', '+city);
   orders.forEach(o=>{ o._fullAddress = fullAddress(o); });
 
-  content.innerHTML = `<div style="text-align:center;color:var(--muted);padding:16px 0;">🧭 מחשב מסלול אידיאלי...</div>`;
+  content.innerHTML = `<div style="text-align:center;color:var(--muted);padding:16px 0;">🧭 מחשב מסלול אידיאלי... (יכול לקחת עד כ-15 שניות בסבבים גדולים, זה תקין)</div>`;
 
   const result = await optimizeRouteOrder(depot, city, orders);
 
@@ -8113,7 +8179,17 @@ async function openRouteModal(city, round){
     </div>
   `).join('');
   const warnHtml = noAddress.length ? `<div style="color:var(--danger);font-size:12.5px;margin-top:8px;">⚠️ ${noAddress.length} הזמנות בעיר זו בלי כתובת רשומה, לא נכללות: ${escHtml(noAddress.map(o=>o.customer).join(', '))}</div>` : '';
-  const geocodeFailedHtml = geocodeFailed.length ? `<div style="color:var(--danger);font-size:12.5px;margin-top:6px;">⚠️ לא הצלחנו לאתר מיקום מדויק עבור: ${escHtml(geocodeFailed.map(o=>`${o.customer} (${o.address})`).join(', '))} - הן נכללות בקישור אבל לא בסדר המחושב, כדאי לבדוק ידנית.</div>` : '';
+  // Admins can fix a failing address permanently: paste in a Google Maps link/coordinates once,
+  // it's saved as a manual override and every future route calculation for that exact address
+  // reuses it instead of hitting the geocoder again - so recurring gaps only need fixing once.
+  const geocodeFixHtml = geocodeFailed.length && isAdminRole() ? geocodeFailed.map(o=>{
+    const inputId = 'geoFix_'+btoa(unescape(encodeURIComponent(o.address+'|'+city))).replace(/[^a-zA-Z0-9]/g,'');
+    return `<div style="display:flex;gap:6px;margin-top:6px;align-items:center;">
+      <input id="${inputId}" type="text" placeholder="הדביקו קישור גוגל מפות או lat, lon עבור: ${escAttr(o.address)}" style="flex:1;margin-bottom:0;font-size:12.5px;">
+      <button class="btn-secondary" style="white-space:nowrap;padding:6px 10px;font-size:12.5px;" onclick="fixGeocodeFromModal('${escAttr(o.address)}','${escAttr(city)}','${inputId}',${JSON.stringify(round)})">תקן כתובת</button>
+    </div>`;
+  }).join('') : '';
+  const geocodeFailedHtml = geocodeFailed.length ? `<div style="color:var(--danger);font-size:12.5px;margin-top:6px;">⚠️ לא הצלחנו לאתר מיקום מדויק עבור: ${escHtml(geocodeFailed.map(o=>`${o.customer} (${o.address})`).join(', '))} - הן נכללות בקישור אבל לא בסדר המחושב, כדאי לבדוק ידנית.${geocodeFixHtml}</div>` : '';
   const errorMessages = {
     depot: 'לא הצלחנו לאתר את נקודת המוצא במפה - בדוק/י שהעיר והרחוב שהוגדרו באזור מנהל נכונים.',
     none: 'לא הצלחנו לאתר במפה אף אחת מהכתובות בסבב הזה.',
@@ -8153,6 +8229,11 @@ async function openRouteModal(city, round){
     ${linksHtml}
   `;
 }
+async function fixGeocodeFromModal(address, city, inputId, round){
+  const input = document.getElementById(inputId);
+  const ok = await setGeocodeOverride(address, city, input ? input.value : '');
+  if(ok) await openRouteModal(city, round);
+}
 function closeRouteModal(){ document.getElementById('routeModal').classList.remove('open'); }
 
 document.getElementById('citySearch').addEventListener('input', renderSummary);
@@ -8179,6 +8260,7 @@ async function initApp(){
   await loadCustomReminders();
   await loadAdChannels();
   await loadAdChannelRotationCities();
+  await loadGeocodeOverrides();
   await loadStrongAdRounds();
   await loadStrongAdCampaign();
   await loadStrongAdRoster();
