@@ -178,6 +178,7 @@
     <div class="tab" data-tab="prices" id="pricesTabBtn" style="display:none;">🏷️ מחירון</div>
     <div class="tab" data-tab="users" id="usersTabBtn" style="display:none;">👥 משתמשים</div>
     <div class="tab" data-tab="report" id="reportTabBtn" style="display:none;">📊 דוח משולב</div>
+    <div class="tab" data-tab="bugreports" id="bugReportsTabBtn" style="display:none;">🐛 באגים</div>
   </div>
 
   <div id="tab-sale">
@@ -275,6 +276,16 @@
     <div id="combinedReportContent">
       <button class="btn-primary" onclick="loadCombinedReport()">🔄 טען דוח משולב</button>
     </div>
+  </div>
+
+  <div id="tab-bugreports" style="display:none;">
+    <div class="card">
+      <div style="font-weight:800;margin-bottom:8px;">➕ דיווח באג חדש</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">הדיווח משותף גם עם אפליקציית הערים. הוא לא נשלח אוטומטית ל-Claude - מנהל ראשי צריך להעתיק/לצלם אותו ולהדביק בשיחה כדי שהוא יבדוק ויתקן.</div>
+      <textarea id="newBugReportText" rows="3" style="width:100%;" placeholder="תאר/י מה קרה, איפה, ואיזה מקרה - ככל שיהיה יותר מפורט, כך יהיה קל יותר למצוא ולתקן"></textarea>
+      <button class="btn-primary" style="margin-top:8px;width:100%;" onclick="submitBugReport()">🐛 שלח דיווח</button>
+    </div>
+    <div id="bugReportsList"></div>
   </div>
 
 </div>
@@ -544,6 +555,7 @@ const STORE_USERS_KEY = 'pet-crm-store-users';
 const STORE_SALES_KEY = 'pet-crm-store-sales';
 const STORE_PRICES_KEY = 'pet-crm-store-prices';
 const STORE_CUSTOM_CATALOG_KEY = 'pet-crm-store-custom-catalog'; // extra product names added ONLY in this app - never touches the shared crm-cities catalog
+const BUG_REPORTS_KEY = 'pet-crm-bug-reports'; // shared with crm-cities.html
 
 const MAIN_ADMIN_USERNAME = 'נועם';
 
@@ -766,6 +778,7 @@ function applyRoleVisibility(){
   document.getElementById('pricesTabBtn').style.display = isAdmin ? '' : 'none'; // any admin (not just mainadmin) can maintain the price list
   document.getElementById('usersTabBtn').style.display = isMain ? '' : 'none';
   document.getElementById('reportTabBtn').style.display = isMain ? '' : 'none';
+  document.getElementById('bugReportsTabBtn').style.display = isAdmin ? '' : 'none';
 }
 function isAdminRole(){ return currentUser && (currentUser.role==='admin' || currentUser.role==='mainadmin'); }
 
@@ -939,6 +952,74 @@ async function deleteStoreCustomProduct(category, name){
     renderPricesEditor();
     populateSaleForm();
   });
+}
+
+/* ---------- bug reports (shared with crm-cities.html) ---------- */
+let bugReports = [];
+async function loadBugReports(){
+  try{
+    const res = await window.storage.get(BUG_REPORTS_KEY, true);
+    bugReports = res && res.value ? JSON.parse(res.value) : [];
+    if(!Array.isArray(bugReports)) bugReports = [];
+  }catch(e){ bugReports = []; }
+  markSyncedArray(BUG_REPORTS_KEY, bugReports);
+}
+async function saveBugReports(){
+  try{ bugReports = await reconcileArrayStore(BUG_REPORTS_KEY, bugReports); }
+  catch(e){ showToast('שגיאה בשמירת דיווח הבאג'); }
+}
+async function submitBugReport(){
+  if(!isAdminRole()){ showToast('רק מנהלים יכולים לדווח על באגים'); return; }
+  const textEl = document.getElementById('newBugReportText');
+  const text = textEl.value.trim();
+  if(!text){ showToast('נא לתאר את הבאג'); return; }
+  bugReports.push({
+    id: 'bug_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
+    reporter: currentUser.username, role: currentUser.role, app: 'store',
+    text, createdAt: Date.now(), status: 'open'
+  });
+  await saveBugReports();
+  textEl.value = '';
+  showToast('הדיווח נשלח - תוכל לראות אותו ברשימה למטה');
+  renderBugReportsList();
+}
+async function setBugReportStatus(id, status){
+  if(!isAdminRole()){ showToast('רק מנהלים יכולים לעדכן סטטוס באג'); return; }
+  const r = bugReports.find(x=>x.id===id);
+  if(!r) return;
+  r.status = status;
+  await saveBugReports();
+  renderBugReportsList();
+}
+async function deleteBugReport(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול למחוק דיווח באג'); return; }
+  showConfirm('למחוק את הדיווח הזה?', async ()=>{
+    bugReports = bugReports.filter(x=>x.id!==id);
+    await saveBugReports();
+    renderBugReportsList();
+  });
+}
+function renderBugReportsList(){
+  const el = document.getElementById('bugReportsList');
+  if(!el) return;
+  const isMain = currentUser && currentUser.role==='mainadmin';
+  const statusLabel = {open:'🔴 פתוח', fixed:'✅ טופל', dismissed:'⚪ נדחה'};
+  const sorted = bugReports.slice().sort((a,b)=>b.createdAt-a.createdAt);
+  el.innerHTML = sorted.length===0 ? '<div style="color:var(--muted);font-size:13px;">אין עדיין דיווחים.</div>' : sorted.map(r=>`
+    <div class="card" style="padding:10px 14px;margin-bottom:8px;">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;">
+        <div style="font-weight:700;">${statusLabel[r.status]||r.status} · ${escHtml(r.reporter)} (${r.app==='store'?'מכירות רגילות':'ערים'})</div>
+        ${isMain ? `<button class="icon-btn" onclick="deleteBugReport('${r.id}')" title="מחק">🗑️</button>` : ''}
+      </div>
+      <div style="font-size:13.5px;margin-top:6px;white-space:pre-wrap;">${escHtml(r.text)}</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:6px;">${new Date(r.createdAt).toLocaleDateString('he-IL')}</div>
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+        ${r.status!=='open' ? `<button class="btn-ghost" onclick="setBugReportStatus('${r.id}','open')">🔴 סמן כפתוח</button>` : ''}
+        ${r.status!=='fixed' ? `<button class="btn-ghost" onclick="setBugReportStatus('${r.id}','fixed')">✅ סמן כטופל</button>` : ''}
+        ${r.status!=='dismissed' ? `<button class="btn-ghost" onclick="setBugReportStatus('${r.id}','dismissed')">⚪ סמן כנדחה</button>` : ''}
+      </div>
+    </div>
+  `).join('');
 }
 function renderPricesEditor(){
   const a = document.getElementById('animalPricesList');
@@ -1145,7 +1226,7 @@ document.querySelectorAll('.tab').forEach(tab=>{
   tab.addEventListener('click', ()=>{
     document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
     tab.classList.add('active');
-    ['sale','history','expenses','prices','users','report'].forEach(name=>{
+    ['sale','history','expenses','prices','users','report','bugreports'].forEach(name=>{
       const el = document.getElementById('tab-'+name);
       if(el) el.style.display = (tab.dataset.tab===name) ? '' : 'none';
     });
@@ -1153,6 +1234,7 @@ document.querySelectorAll('.tab').forEach(tab=>{
     if(tab.dataset.tab==='expenses') renderExpensesList();
     if(tab.dataset.tab==='prices') renderPricesEditor();
     if(tab.dataset.tab==='users') renderUsersList();
+    if(tab.dataset.tab==='bugreports') renderBugReportsList();
   });
 });
 
@@ -1162,6 +1244,7 @@ async function initAppData(){
   await loadExpensesData();
   await loadStorePrices();
   await loadStoreCustomCatalog();
+  await loadBugReports();
   await loadStoreSales();
   populateSaleForm();
   document.getElementById('subtitle').textContent = 'הנתונים משותפים עם אפליקציית הערים (מלאי + הוצאות)';
