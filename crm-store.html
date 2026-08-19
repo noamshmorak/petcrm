@@ -991,6 +991,19 @@ async function setBugReportStatus(id, status){
   await saveBugReports();
   renderBugReportsList();
 }
+// Claude's daily auto-triage classifies some reports as a request to CHANGE how the system
+// behaves (pricing, permissions, business rules) rather than a plain bug - those get parked at
+// 'needs_approval' and Claude will NOT touch code for them until the mainadmin explicitly signs
+// off here. Approval is intentionally restricted to mainadmin only (not a regular admin like
+// David) since these are changes to the rules of the system itself, not just a broken feature.
+async function approveBugReportChange(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לאשר שינוי'); return; }
+  const r = bugReports.find(x=>x.id===id);
+  if(!r) return;
+  r.status = 'approved';
+  await saveBugReports();
+  renderBugReportsList();
+}
 async function deleteBugReport(id){
   if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול למחוק דיווח באג'); return; }
   showConfirm('למחוק את הדיווח הזה?', async ()=>{
@@ -1003,7 +1016,7 @@ function renderBugReportsList(){
   const el = document.getElementById('bugReportsList');
   if(!el) return;
   const isMain = currentUser && currentUser.role==='mainadmin';
-  const statusLabel = {open:'🔴 פתוח', fixed:'✅ טופל', dismissed:'⚪ נדחה'};
+  const statusLabel = {open:'🔴 פתוח', needs_approval:'🟡 ממתין לאישור מנהל ראשי', approved:'🟢 מאושר - ממתין לביצוע', fixed:'✅ טופל', dismissed:'⚪ נדחה'};
   const sorted = bugReports.slice().sort((a,b)=>b.createdAt-a.createdAt);
   el.innerHTML = sorted.length===0 ? '<div style="color:var(--muted);font-size:13px;">אין עדיין דיווחים.</div>' : sorted.map(r=>`
     <div class="card" style="padding:10px 14px;margin-bottom:8px;">
@@ -1013,6 +1026,7 @@ function renderBugReportsList(){
       </div>
       <div style="font-size:13.5px;margin-top:6px;white-space:pre-wrap;">${escHtml(r.text)}</div>
       <div style="font-size:12px;color:var(--muted);margin-top:6px;">${new Date(r.createdAt).toLocaleDateString('he-IL')}</div>
+      ${r.status==='needs_approval' ? `<div style="background:#fffbea;border:1px solid #e0c250;border-radius:8px;padding:8px 10px;margin-top:8px;font-size:12.5px;">🟡 Claude זיהה שזו בקשה לשינוי בכללי המערכת (לא באג) - נדרש אישור מנהל ראשי לפני שהוא יבצע את זה.${isMain ? `<button class="btn-primary" style="display:block;width:100%;margin-top:6px;" onclick="approveBugReportChange('${r.id}')">✅ אשר לביצוע</button>` : ''}</div>` : ''}
       <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
         ${r.status!=='open' ? `<button class="btn-ghost" onclick="setBugReportStatus('${r.id}','open')">🔴 סמן כפתוח</button>` : ''}
         ${r.status!=='fixed' ? `<button class="btn-ghost" onclick="setBugReportStatus('${r.id}','fixed')">✅ סמן כטופל</button>` : ''}
