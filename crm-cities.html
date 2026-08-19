@@ -7845,18 +7845,29 @@ function isPlausibleRoadDistance(roadMeters, straightMeters){
 // straight-line distance can't tell that two "close" points are actually separated by a highway
 // with no direct crossing, or that a "far" point is actually just around the corner via a back
 // road. index 0 in the returned matrix is always the depot.
-async function fetchRoadMatrix(coordsList){
+// OSRM's public demo server (free, no key needed) is explicitly NOT meant for heavy production
+// traffic and occasionally has brief hiccups/rate-limiting under real-world load - a single failed
+// attempt here used to mean the whole route fell back to straight-line ("aerial") ordering, even
+// though a retry a moment later would likely have succeeded. One quick retry with a short pause
+// fixes most of those transient cases before giving up and falling back.
+async function fetchRoadMatrix(coordsList, isRetry){
   try{
     const coordsStr = coordsList.map(c=>`${c.lon},${c.lat}`).join(';');
     const url = `https://router.project-osrm.org/table/v1/driving/${coordsStr}?annotations=distance,duration`;
     const res = await fetch(url);
     const data = await res.json();
-    if(data.code !== 'Ok' || !Array.isArray(data.distances)) return null;
+    if(data.code !== 'Ok' || !Array.isArray(data.distances)){
+      if(!isRetry){ await sleep(1500); return fetchRoadMatrix(coordsList, true); }
+      return null;
+    }
     const n = coordsList.length;
     if(data.distances.length !== n || data.distances.some(row=>!Array.isArray(row) || row.length!==n)) return null;
     for(const row of data.distances){ if(row.some(v=>v==null)) return null; } // OSRM couldn't route between some pair
     return { distances: data.distances, durations: data.durations || null };
-  }catch(e){ return null; }
+  }catch(e){
+    if(!isRetry){ await sleep(1500); return fetchRoadMatrix(coordsList, true); }
+    return null;
+  }
 }
 
 // Exact Held-Karp TSP solve over a real road-distance matrix. Index 0 is always the depot (fixed
@@ -8203,7 +8214,10 @@ async function openRouteModal(city, round){
     : (result && result.durationMin!=null ? ' · ללא נתוני פקקים בזמן אמת' : '');
   const exactNote = (result && result.exact) ? ' · ✓ מסלול מיטבי מדויק (נבדקו כל הסדרים האפשריים)' : '';
   const statsHtml = (!optimizationFailed && result && result.distanceKm!=null) ? `<div style="font-size:12.5px;color:var(--muted);margin-top:4px;">מרחק כולל משוער: כ-${result.distanceKm} ק"מ · זמן נסיעה משוער: כ-${result.durationMin} דק'${trafficNote} (לא כולל עצירות)${exactNote}</div>` : '';
-  const localOnlyHtml = (optimizationOk && localOnly) ? `<div style="color:var(--danger);font-size:12.5px;margin-top:6px;">⚠️ שירותי הניתוב לא היו זמינים כרגע - הסדר למטה מחושב לפי מרחק אווירי בין הכתובות (עדיין סדר משופר, אבל לא מבוסס כבישים/פקקים בפועל).</div>` : '';
+  // Rendered as a large, hard-to-miss banner (not a small line easily lost among the stops) -
+  // this is the ONE case the computed order is genuinely straight-line/"aerial" instead of real
+  // roads, so it needs to be obvious at a glance, not something the courier has to notice in fine print.
+  const localOnlyHtml = (optimizationOk && localOnly) ? `<div style="background:#fff3f3;border:2px solid var(--danger);border-radius:8px;padding:10px 12px;margin-bottom:10px;color:var(--danger);font-size:14px;font-weight:600;">✈️ שים לב: שירותי הניתוב לפי כבישים לא היו זמינים כרגע (עומס/תקלה זמנית בשירות) - הסדר למטה חושב לפי קו אווירי בין הכתובות בלבד, לא לפי כבישים או פקקים בפועל. מומלץ לנסות שוב בעוד כמה דקות כדי לקבל מסלול מבוסס-כבישים אמיתי.</div>` : '';
 
   // The optimized order above already covers ALL stops. Google's own consumer directions link
   // caps out around 9 stops though, so if there are more than that, split the (already-optimal)
