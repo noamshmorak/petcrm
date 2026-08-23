@@ -960,6 +960,32 @@ const STRONG_AD_BUCKET = '🔥 פרסום חזק';
 // Weekly newspaper-ad rotation, organized by region, plus a monthly reminder for the strong-ad campaign above.
 const AD_REGIONS = ['דרום','מרכז','ירושלים והסביבה','שרון','צפון'];
 const AD_PLACES_KEY = 'pet-crm-ad-places'; // array of {id, name, cities:[...], phone, region}
+const AD_TARGET_CITIES_KEY = 'pet-crm-ad-target-cities'; // array of {id, region, text} - planning/target list of cities to expand advertising into, grouped by AD_REGIONS. Separate from adPlaces (which are actual paid publishers with a phone number) - this is just a checklist for cities being considered, before a real ad place exists for them.
+// Seeded once (only if the key has never been written before) from נועם's initial list.
+const DEFAULT_AD_TARGET_CITIES = [
+  {region:'דרום', text:'באר שבע'},
+  {region:'דרום', text:'אשדוד'},
+  {region:'דרום', text:'אשקלון + קרית גת'},
+  {region:'דרום', text:'קרית מלאכי'},
+  {region:'דרום', text:'נתיבות'},
+  {region:'מרכז', text:'רחובות'},
+  {region:'מרכז', text:'בני ברק'},
+  {region:'מרכז', text:'בת ים חולון - קול קורא'},
+  {region:'מרכז', text:'ראשון לציון - לבדוק חרדים'},
+  {region:'מרכז', text:'אלעד - פתח תקווה'},
+  {region:'מרכז', text:'באר יעקב'},
+  {region:'מרכז', text:'גני הדר'},
+  {region:'מרכז', text:'רעננה - לבדוק חרדים'},
+  {region:'ירושלים והסביבה', text:'בית שמש ירושלים'},
+  {region:'ירושלים והסביבה', text:'ביתר עילית'},
+  {region:'ירושלים והסביבה', text:'מודיעין עילית'},
+  {region:'ירושלים והסביבה', text:'חריש'},
+  {region:'צפון', text:'נתניה'},
+  {region:'צפון', text:'חיפה'},
+  {region:'צפון', text:'חדרה - לבדוק חרדים'},
+  {region:'צפון', text:'טבריה'},
+  {region:'צפון', text:'יוקנעם - לבדוק חרדים'}
+].map((e,i)=>({ id:'adtc_seed_'+i, region:e.region, text:e.text }));
 const AD_LIBRARY_KEY = 'pet-crm-ad-library'; // array of {id, name, tag, path, url, uploadedAt} - PDFs in Supabase Storage
 const AD_MESSAGE_TEMPLATES_KEY = 'pet-crm-ad-message-templates'; // {full, half} - default WhatsApp texts
 const AD_STRONG_MONTHLY_KEY = 'pet-crm-strong-ad-monthly-reminder'; // {lastHandledMonth: 'YYYY-MM'}
@@ -5451,6 +5477,52 @@ async function addAdPlace(){
   renderAdminTabContent();
   renderAdvertisingBanner();
 }
+
+// Planning checklist of cities being considered for advertising expansion, grouped by region -
+// separate from adPlaces (real, already-active paid publishers with a phone number). Editable by
+// both mainadmin and admin (isAdminRole) since it's just a shared to-do list, lower stakes than
+// an actual paid ad contract.
+let adTargetCities = [];
+async function loadAdTargetCities(){
+  try{
+    const res = await window.storage.get(AD_TARGET_CITIES_KEY, true);
+    if(res && res.value){
+      adTargetCities = JSON.parse(res.value);
+      if(!Array.isArray(adTargetCities)) adTargetCities = [];
+    }else{
+      // key never written before - seed once with נועם's initial list
+      adTargetCities = DEFAULT_AD_TARGET_CITIES.slice();
+      await saveAdTargetCities();
+    }
+  }catch(e){ adTargetCities = []; }
+  markSyncedArray(AD_TARGET_CITIES_KEY, adTargetCities);
+}
+async function saveAdTargetCities(){
+  try{ adTargetCities = await reconcileArrayStore(AD_TARGET_CITIES_KEY, adTargetCities); }
+  catch(e){ showToast('שגיאה בשמירת רשימת ערי היעד'); }
+}
+async function addAdTargetCity(){
+  if(!isAdminRole()){ showToast('רק מנהלים יכולים לערוך את רשימת ערי היעד'); return; }
+  const textEl = document.getElementById('newAdTargetCityText');
+  const regionEl = document.getElementById('newAdTargetCityRegion');
+  const text = textEl.value.trim();
+  const region = regionEl.value;
+  if(!text || !region){ showToast('נא למלא שם עיר/הערה ואזור'); return; }
+  adTargetCities.push({ id: 'adtc_'+Date.now()+'_'+Math.random().toString(36).slice(2,7), region, text });
+  await saveAdTargetCities();
+  logAudit('הוספת עיר יעד לפרסום', `${text} (${region})`);
+  textEl.value = '';
+  renderAdminTabContent();
+}
+async function deleteAdTargetCity(id){
+  if(!isAdminRole()){ showToast('רק מנהלים יכולים לערוך את רשימת ערי היעד'); return; }
+  const t = adTargetCities.find(x=>x.id===id);
+  if(!t) return;
+  adTargetCities = adTargetCities.filter(x=>x.id!==id);
+  await saveAdTargetCities();
+  logAudit('מחיקת עיר יעד לפרסום', t.text);
+  renderAdminTabContent();
+}
 async function deleteAdPlace(id){
   if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך את רשימת המקומות'); return; }
   const p = adPlaces.find(x=>x.id===id);
@@ -7014,6 +7086,25 @@ function renderAdminTabContent(){
       </div>
 
       <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:14px;">
+        <div style="font-weight:700;margin-bottom:4px;">🎯 ערי יעד להרחבת פרסום</div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">רשימת תכנון - ערים ששוקלים להתחיל לפרסם בהן, לפני שיש בפועל מקום פרסום/מפרסם מסודר (זה מופיע למעלה ב"מקומות פרסום"). אפשר להוסיף הערה חופשית ליד כל עיר (למשל "לבדוק חרדים" או "קול קורא").</div>
+        <div class="row2" style="margin-bottom:8px;">
+          <input id="newAdTargetCityText" placeholder="עיר / הערה (למשל: אשקלון + קרית גת)">
+          <select id="newAdTargetCityRegion">${AD_REGIONS.map(r=>`<option value="${escAttr(r)}">${r}</option>`).join('')}</select>
+        </div>
+        <button class="btn-primary" onclick="addAdTargetCity()">➕ הוסף לרשימה</button>
+        ${AD_REGIONS.map(region=>{
+          const list = adTargetCities.filter(t=>t.region===region);
+          if(list.length===0) return '';
+          return `<div style="margin-top:14px;font-weight:700;font-size:13px;">${region} (${list.length})</div>` + list.map(t=>`
+            <div class="row2" style="align-items:center;margin-bottom:4px;">
+              <div style="flex:1;font-size:12.5px;">${escHtml(t.text)}</div>
+              <button class="icon-btn" onclick="deleteAdTargetCity('${t.id}')">🗑️</button>
+            </div>`).join('');
+        }).join('') || '<div style="color:var(--muted);font-size:13px;margin-top:10px;">אין ערי יעד ברשימה עדיין.</div>'}
+      </div>
+
+      <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:14px;">
         <div style="font-weight:700;margin-bottom:8px;">🖼️ ספריית מודעות (PDF) - לפי קטגוריה</div>
         <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">העלו כאן מודעות PDF מוכנות ובחרו קטגוריה (עונה/אירוע) כדי לגשת אליהן מהר ולצרף אותן ידנית בוואטסאפ.</div>
 
@@ -8321,6 +8412,7 @@ async function initApp(){
   await loadStrongAdCampaign();
   await loadStrongAdRoster();
   await loadAdPlaces();
+  await loadAdTargetCities();
   await loadAdLibrary();
   await loadAdLibraryCategories();
   await loadAdMessageTemplates();
