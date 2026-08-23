@@ -4400,15 +4400,50 @@ function renderDeliveryTrackContent(){
     container.innerHTML = '<div style="color:var(--muted);">אין הזמנות פעילות לעיר זו.</div>';
     return;
   }
-  container.innerHTML = list.map(o=>`
-    <label class="pack-item">
-      <input type="checkbox" class="delivery-check" data-order-id="${o.id}" ${o.deliveryConfirmed?'checked':''} style="width:19px;height:19px;margin-top:2px;flex-shrink:0;">
-      <div style="flex:1;text-align:right;">
-        <div style="font-weight:700;font-size:14px;">${escHtml(o.customer)}</div>
-        <div style="font-size:12.5px;color:var(--muted);margin-top:2px;">${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.address?' · '+escHtml(o.address):''}${o.phone1?' · '+o.phone1:''}</div>
+  container.innerHTML = list.map(o=>{
+    const baseAmount = (o.baseTotalPrice!=null ? o.baseTotalPrice : (o.totalPrice||0));
+    const extraAmount = Number(o.deliveryExtraAmount||0);
+    const finalAmount = baseAmount + extraAmount;
+    return `
+    <div class="pack-item" style="display:block;cursor:default;">
+      <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
+        <input type="checkbox" class="delivery-check" data-order-id="${o.id}" ${o.deliveryConfirmed?'checked':''} style="width:19px;height:19px;margin-top:2px;flex-shrink:0;">
+        <div style="flex:1;text-align:right;">
+          <div style="font-weight:700;font-size:14px;">${escHtml(o.customer)}</div>
+          <div style="font-size:12.5px;color:var(--muted);margin-top:2px;">${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}${o.address?' · '+escHtml(o.address):''}${o.phone1?' · '+o.phone1:''}</div>
+          <div style="font-size:12.5px;color:var(--accent-dark);font-weight:700;margin-top:4px;">💰 סכום צפוי להזמנה: ${baseAmount} ₪</div>
+        </div>
+      </label>
+      <div style="display:flex;gap:8px;margin-top:8px;margin-inline-start:29px;align-items:center;">
+        <input type="number" min="0" inputmode="numeric" class="delivery-extra-input" data-order-id="${o.id}" value="${extraAmount||''}" placeholder="תוספת ₪" style="width:90px;padding:8px 10px;font-size:13.5px;">
+        <input type="text" class="delivery-extra-note-input" data-order-id="${o.id}" value="${escAttr(o.deliveryExtraNote||'')}" placeholder="מה נוסף? (למשל: כלוב נוסף)" style="flex:1;padding:8px 10px;font-size:13.5px;">
       </div>
-    </label>
-  `).join('');
+      ${extraAmount>0 ? `<div style="font-size:12px;color:var(--muted);margin-top:4px;margin-inline-start:29px;">סה"כ סופי כולל תוספת: ${finalAmount} ₪</div>` : ''}
+    </div>
+  `;
+  }).join('');
+}
+function saveDeliveryExtra(id){
+  const o = orders.find(x=>x.id===id);
+  if(!o) return;
+  const numInput = document.querySelector(`.delivery-extra-input[data-order-id="${id}"]`);
+  const noteInput = document.querySelector(`.delivery-extra-note-input[data-order-id="${id}"]`);
+  if(!numInput || !noteInput) return;
+  const extraAmount = Math.max(0, Number(numInput.value) || 0);
+  const note = noteInput.value.trim();
+  // Anchor the base price the first time an addition is recorded, so re-editing the amount
+  // (or clearing it back to 0) always recomputes from the original order price instead of
+  // compounding on top of a previously-saved total.
+  if(o.baseTotalPrice == null) o.baseTotalPrice = o.totalPrice || 0;
+  o.deliveryExtraAmount = extraAmount;
+  o.deliveryExtraNote = note;
+  o.totalPrice = o.baseTotalPrice + extraAmount;
+  saveOrders();
+  renderDeliveryTrackContent();
+  renderSummary();
+  if(extraAmount>0 || note){
+    logAudit('עדכון תוספת במסירה בשטח', `${o.customer||'לקוח'} · תוספת ${extraAmount}₪${note?' · '+note:''} · סה"כ סופי ${o.totalPrice}₪`);
+  }
 }
 document.getElementById('deliveryTrackContent').addEventListener('change', (e)=>{
   if(e.target.classList.contains('delivery-check')){
@@ -4419,6 +4454,8 @@ document.getElementById('deliveryTrackContent').addEventListener('change', (e)=>
       saveOrders();
       renderSummary();
     }
+  } else if(e.target.classList.contains('delivery-extra-input') || e.target.classList.contains('delivery-extra-note-input')){
+    saveDeliveryExtra(e.target.dataset.orderId);
   }
 });
 
@@ -4772,7 +4809,7 @@ function renderHistory(){
       <div class="order-row">
         <div style="flex:1;">
           <div class="order-main">${o.fromYad2?'🏷️ יד2 · ':''}${escHtml(o.customer)} — ${formatAnimals(o.animals,o.pairFlags,o.cageSharing)}</div>
-          <div class="order-sub">הוזמן ב-${formatDate(o.date)}${o.address?' · '+escHtml(o.address):''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${o.note?' · 📝 '+escHtml(o.note):''}${o.discount>0?' · 🏷️ ניתנה הנחה של '+o.discount+'₪':''}${isAdminRole()&&o.createdByUsername?' · 👤 '+escHtml(o.createdByUsername):''}</div>
+          <div class="order-sub">הוזמן ב-${formatDate(o.date)}${o.address?' · '+escHtml(o.address):''}${o.phone1?' · '+o.phone1:''}${o.phone2?', '+o.phone2:''}${isAdminRole()?' · 💰 '+(o.totalPrice||0)+' ₪':''}${isAdminRole()&&o.deliveryExtraAmount>0?' · ➕ תוספת בשטח '+o.deliveryExtraAmount+'₪'+(o.deliveryExtraNote?' ('+escHtml(o.deliveryExtraNote)+')':''):''}${o.note?' · 📝 '+escHtml(o.note):''}${o.discount>0?' · 🏷️ ניתנה הנחה של '+o.discount+'₪':''}${isAdminRole()&&o.createdByUsername?' · 👤 '+escHtml(o.createdByUsername):''}</div>
           ${managerInquiryHtml(o)}
           <button class="icon-btn" onclick="openEditNoteModal('${o.id}')" title="הוסף/ערוך הערה">📝</button>
           ${isAdminRole() ? `<button class="icon-btn" onclick="openMarkBlockedModal('${o.id}')" title="סמן לקוח כבעייתי">⛔</button>` : ''}
