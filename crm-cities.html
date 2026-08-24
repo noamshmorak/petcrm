@@ -952,7 +952,7 @@ const HOUR_REPORTS_KEY = 'pet-crm-hour-reports';
 const AUDIT_LOG_KEY = 'pet-crm-audit-log';
 const CUSTOM_REMINDERS_KEY = 'pet-crm-custom-reminders'; // array of {id, enabled, time, targetRole, title, message} - admin-editable, read by an external GitHub Actions cron job that sends the actual push
 const AUTOMATION_SETTINGS_KEY = 'pet-crm-automation-settings'; // {popupAlertsEnabled, quickContactEnabled} - on/off switches for the in-app popup alerts and the WhatsApp/email quick-send buttons
-const AD_CHANNELS_KEY = 'pet-crm-ad-channels'; // array of {id, city, name, defaultWeeklyCost, weekOverrides:{weekStart:amount}}
+const AD_CHANNELS_KEY = 'pet-crm-ad-channels'; // array of {id, cities:[...], name, defaultWeeklyCost, weekOverrides:{weekStart:amount}} - a channel can cover several cities at once (e.g. one regional paper edition), sharing one cost that's split across their combined orders each week
 const STRONG_AD_ROUNDS_KEY = 'pet-crm-strong-ad-rounds'; // {'city|round': true} - rounds opened during a nationwide "strong ad" week
 const STRONG_AD_CAMPAIGN_KEY = 'pet-crm-strong-ad-campaign'; // {defaultWeeklyCost, weekOverrides:{weekStart:amount}} - shared cost of the nationwide campaign
 const STRONG_AD_ROSTER_KEY = 'pet-crm-strong-ad-roster'; // array of city names that participate in the nationwide campaign whenever it's "activated"
@@ -5919,19 +5919,24 @@ function renderStrongAdActivateBar(){
   if(!isAdminRole() || strongAdCityRoster.length===0){ el.innerHTML=''; return; }
   el.innerHTML = `<div class="alert-banner" style="cursor:pointer;margin-bottom:10px;" onclick="activateStrongAdThisWeek()"><div class="alert-title">🔥 הפעלת פרסום חזק לשבוע הנוכחי</div><div>לחצ/י כדי לסמן את ${strongAdCityRoster.length} ערי הקמפיין (${strongAdCityRoster.join(', ')}) בבת אחת</div></div>`;
 }
-function adChannelsForCity(city){ return adChannels.filter(c=>c.city===city); }
+function channelCities(ch){ return ch.cities || (ch.city ? [ch.city] : []); }
+function adChannelsForCity(city){ return adChannels.filter(c=>channelCities(c).includes(city)); }
 async function addAdChannel(){
   if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך ערוצי פרסום'); return; }
-  const city = document.getElementById('newAdChannelCity').value.trim();
+  const rawCities = document.getElementById('newAdChannelCity').value.trim();
   const name = document.getElementById('newAdChannelName').value.trim();
   const cost = parseFloat(document.getElementById('newAdChannelCost').value) || 0;
-  if(!city || !name){ showToast('צריך למלא עיר ושם ערוץ'); return; }
-  // first channel in a city is automatically its default (also becomes moot once it's the only
-  // channel anyway - resolveEffectiveChannel auto-picks the sole channel regardless of this flag).
-  const isFirstForCity = adChannelsForCity(city).length===0;
-  adChannels.push({ id: Date.now().toString(36)+Math.random().toString(36).slice(2,7), city, name, defaultWeeklyCost:cost, weekOverrides:{}, isDefault:isFirstForCity });
+  // Supports one city or several comma-separated (e.g. a single regional paper edition that
+  // covers multiple cities at once, like "הד העיר מרכז" covering חולון/ראשון/בת ים) - they'll
+  // share one weekly cost that gets split automatically across their combined orders each week.
+  const cities = rawCities.split(',').map(s=>s.trim()).filter(Boolean);
+  if(cities.length===0 || !name){ showToast('צריך למלא לפחות עיר אחת ושם ערוץ'); return; }
+  // first channel for ALL the chosen cities is automatically its default (also becomes moot once
+  // it's the sole channel anyway - resolveEffectiveChannel auto-picks the sole channel regardless).
+  const isFirstForCity = cities.every(city=>adChannelsForCity(city).length===0);
+  adChannels.push({ id: Date.now().toString(36)+Math.random().toString(36).slice(2,7), cities, name, defaultWeeklyCost:cost, weekOverrides:{}, isDefault:isFirstForCity });
   await saveAdChannels();
-  logAudit('הוספת ערוץ פרסום', `${name} · ${city}`);
+  logAudit('הוספת ערוץ פרסום', `${name} · ${cities.join(', ')}`);
   showToast('הערוץ נוסף');
   renderAdminTabContent();
 }
@@ -5940,7 +5945,8 @@ async function setAdChannelDefault(id, checked){
   const ch = adChannels.find(c=>c.id===id);
   if(!ch) return;
   if(checked){
-    adChannels.forEach(c=>{ if(c.city===ch.city) c.isDefault=false; });
+    const chCities = channelCities(ch);
+    adChannels.forEach(c=>{ if(c.id!==ch.id && channelCities(c).some(ct=>chCities.includes(ct))) c.isDefault=false; });
     ch.isDefault = true;
   }else{
     ch.isDefault = false;
@@ -6006,7 +6012,7 @@ async function deleteAdChannel(id){
   if(!ch) return;
   adChannels = adChannels.filter(c=>c.id!==id);
   await saveAdChannels();
-  logAudit('מחיקת ערוץ פרסום', `${ch.name} · ${ch.city}`);
+  logAudit('מחיקת ערוץ פרסום', `${ch.name} · ${channelCities(ch).join(', ')}`);
   showToast('הערוץ נמחק');
   renderAdminTabContent();
 }
@@ -7018,38 +7024,56 @@ function renderAdminTabContent(){
       <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:14px;">
         <div style="font-weight:700;margin-bottom:8px;">➕ ערוץ חדש</div>
         <div class="row2" style="margin-bottom:8px;">
-          <input id="newAdChannelCity" placeholder="עיר (למשל: בני ברק)" list="adCityDatalist">
-          <input id="newAdChannelName" placeholder="שם הערוץ (למשל: מקומון השבת)">
+          <input id="newAdChannelCity" placeholder="עיר אחת, או כמה ערים מופרדות בפסיק (למשל: חולון, ראשון לציון, בת ים)" list="adCityDatalist">
+          <input id="newAdChannelName" placeholder="שם הערוץ (למשל: הד העיר מרכז)">
         </div>
         <datalist id="adCityDatalist">${getKnownCities().map(c=>`<option value="${escAttr(c)}">`).join('')}</datalist>
         <div class="row2" style="margin-bottom:8px;">
           <input id="newAdChannelCost" type="number" step="1" placeholder="עלות שבועית רגילה (₪)">
         </div>
         <button class="btn-primary" onclick="addAdChannel()">➕ הוסף ערוץ</button>
+        <div style="font-size:12px;color:var(--muted);margin-top:6px;">כשמזינים כמה ערים לאותו ערוץ (למשל מהדורה אזורית שמכסה כמה ערים באותה עלות) - העלות השבועית מתחלקת אוטומטית בין הערים לפי מספר ההזמנות שהגיעו מכל אחת מהן, וזה משתקף בדוח הרווחיות של כל עיר בנפרד.</div>
       </div>
 
-      ${cityReport.length===0 ? '<div style="color:var(--muted);font-size:13px;margin-bottom:14px;">אין ערוצי פרסום מוגדרים עדיין.</div>' : cityReport.map(ch=>`
+      ${cityReport.length===0 ? '<div style="color:var(--muted);font-size:13px;margin-bottom:14px;">אין ערוצי פרסום מוגדרים עדיין.</div>' : cityReport.map(ch=>{
+        const chCities = channelCities(ch);
+        const isShared = chCities.length>1;
+        const soleCity = !isShared ? chCities[0] : null;
+        // Per-city order breakdown for a shared/regional channel - lets the mainadmin see which
+        // of the pooled cities is actually pulling its weight before deciding if the joint
+        // subscription is worthwhile (the "כדאיות" question), even though the cost itself is
+        // already split automatically per-city in the profitability reports.
+        const perCityBreakdown = isShared ? chCities.map(city=>{
+          const n = orders.filter(o=>!o.cancelled && o.date>=adminAdFrom && o.date<=adminAdTo && o.city===city && resolveEffectiveChannel(o)?.id===ch.id).length;
+          return {city, n};
+        }) : [];
+        return `
         <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:10px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-            <div style="font-weight:800;">${escHtml(ch.name)} <span style="font-weight:400;color:var(--muted);font-size:12.5px;">(${escHtml(ch.city)})</span></div>
+            <div style="font-weight:800;">${escHtml(ch.name)} <span style="font-weight:400;color:var(--muted);font-size:12.5px;">(${escHtml(chCities.join(', '))})</span></div>
             <button class="icon-btn" onclick="deleteAdChannel('${ch.id}')">🗑️</button>
           </div>
           <div class="row2" style="align-items:center;margin-bottom:8px;">
             <label style="font-size:12px;margin-bottom:0;flex:1;">עלות שבועית רגילה:</label>
             <input type="number" step="1" style="flex:1;" value="${ch.defaultWeeklyCost}" onchange="updateAdChannelDefaultCost('${ch.id}', this.value)">
           </div>
-          ${adChannelsForCity(ch.city).length>1 ? `
+          ${isShared ? `
+          <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">📣 ערוץ משותף ל-${chCities.length} ערים - העלות מתחלקת אוטומטית ביניהן לפי מספר ההזמנות של כל עיר באותו שבוע, וזה כבר משוקלל בדוח הרווחיות של כל עיר.</div>
+          <div style="margin-bottom:8px;">
+            ${perCityBreakdown.map(x=>`<div style="font-size:12.5px;display:flex;justify-content:space-between;padding:2px 0;"><span>${escHtml(x.city)}</span><span style="font-weight:700;">${x.n} הזמנות</span></div>`).join('')}
+          </div>
+          ` : (adChannelsForCity(soleCity).length>1 ? `
           <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:12.5px;">
             <input type="checkbox" style="width:auto;margin-bottom:0;" ${ch.isDefault?'checked':''} onchange="setAdChannelDefault('${ch.id}', this.checked)">
             ערוץ ברירת מחדל לעיר זו (הזמנה בלי בחירה מפורשת תיוחס אליו)
           </label>
-          ${cityReport.filter(x=>x.city===ch.city)[0].id===ch.id ? `
+          ${cityReport.find(x=>channelCities(x).length===1 && channelCities(x)[0]===soleCity).id===ch.id ? `
           <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:12.5px;background:var(--card-alt,transparent);border:1px dashed var(--border);border-radius:8px;padding:6px 8px;">
-            <input type="checkbox" style="width:auto;margin-bottom:0;" ${adChannelRotationCities.includes(ch.city)?'checked':''} onchange="toggleAdChannelRotation('${escAttr(ch.city)}', this.checked)">
+            <input type="checkbox" style="width:auto;margin-bottom:0;" ${adChannelRotationCities.includes(soleCity)?'checked':''} onchange="toggleAdChannelRotation('${escAttr(soleCity)}', this.checked)">
             🔁 סבב שבועי אוטומטי בין הערוצים בעיר זו (פעם זה, פעם זה) - כשמופעל, זה גובר על "ברירת מחדל" למעלה, ומוצע אוטומטית בטופס ההזמנה. עדיין אפשר לבחור ערוץ אחר ידנית לכל הזמנה.
           </label>
-          ${adChannelRotationCities.includes(ch.city) ? (()=>{ const s = suggestedAdChannelForCity(ch.city, weekStartOf(todayStr())); return s ? `<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">📅 מומלץ השבוע: <b>${escHtml(s.name)}</b></div>` : ''; })() : ''}
-          ` : ''}` : `<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">הערוץ היחיד בעיר זו - כל הזמנה בעיר תיוחס אליו אוטומטית, גם בלי לבחור.</div>`}
+          ${adChannelRotationCities.includes(soleCity) ? (()=>{ const s = suggestedAdChannelForCity(soleCity, weekStartOf(todayStr())); return s ? `<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">📅 מומלץ השבוע: <b>${escHtml(s.name)}</b></div>` : ''; })() : ''}
+          ` : ''}` : `<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">הערוץ היחיד בעיר זו - כל הזמנה בעיר תיוחס אליו אוטומטית, גם בלי לבחור.</div>`)}
           <details style="margin-bottom:8px;">
             <summary style="cursor:pointer;font-size:12.5px;color:var(--muted);">שבועות עם עלות שונה מהרגיל (${Object.keys(ch.weekOverrides||{}).length})</summary>
             <div style="margin-top:8px;">
@@ -7066,7 +7090,8 @@ function renderAdminTabContent(){
             <div style="font-weight:800;">${ch.costPerOrder!=null ? '💰 עלות להזמנה: '+ch.costPerOrder.toFixed(1)+' ₪' : 'אין עדיין הזמנות בטווח זה'}</div>
           </div>
         </div>
-      `).join('')}
+      `;
+      }).join('')}
 
       <div style="font-weight:800;margin:22px 0 8px;border-top:1px solid var(--border);padding-top:14px;">📰 פרסום שבועי בעיתונים - רוטציית אזורים</div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">בכל שבוע המערכת עוברת אוטומטית לאזור הבא (${AD_REGIONS.join(' ← ')} ← חוזר לדרום...), ובתוך האזור בוחרת 2 מקומות במחזור פנימי - כך שכל המקומות באזור עוברים לפני שחוזרים על אחד מהם.</div>
