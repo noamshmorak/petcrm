@@ -175,6 +175,10 @@
     <div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap;align-items:center;">
       <span style="font-size:13px;font-weight:700;color:var(--route);cursor:pointer;" onclick="openQuickSaleModal()">💵 מכירה מהירה (יריד / הזמנה מיוחדת)</span>
       <span id="adminAreaLink" style="font-size:13px;font-weight:700;color:var(--muted);cursor:pointer;" onclick="openAdminGate()">🔐 אזור מנהל</span>
+      <span id="otherSitesLinks" style="display:none;gap:10px;">
+        <a href="crm-store.html" target="_blank" rel="noopener" style="font-size:13px;font-weight:700;color:var(--muted);text-decoration:none;">🧾 מכירות רגילות</a>
+        <a href="https://noamshmorak.github.io/petcrm-ads/" target="_blank" rel="noopener" style="font-size:13px;font-weight:700;color:var(--muted);text-decoration:none;">📊 כדאיות פרסום</a>
+      </span>
       <span style="font-size:12.5px;color:var(--muted);cursor:pointer;margin-inline-start:auto;" onclick="logout()" id="logoutLink"></span>
     </div>
     <div id="inventoryAlertBanner"></div>
@@ -1403,6 +1407,7 @@ async function attemptLogin(){
   document.getElementById('appRoot').style.display = '';
   document.getElementById('logoutLink').textContent = `👤 ${u.username} (${roleLabel(u.role)}) · התנתקות`;
   document.getElementById('adminAreaLink').style.display = (u.role==='mainadmin' || u.role==='admin') ? '' : 'none';
+  document.getElementById('otherSitesLinks').style.display = (u.role==='mainadmin') ? 'flex' : 'none';
   document.getElementById('hoursTabBtn').style.display = (u.role==='rep' || u.role==='admin') ? '' : 'none';
   renderInventoryAlertBanner();
   renderHoursReminderBanner();
@@ -1449,6 +1454,7 @@ function tryAutoLogin(){
   document.getElementById('appRoot').style.display = '';
   document.getElementById('logoutLink').textContent = `👤 ${u.username} (${roleLabel(u.role)}) · התנתקות`;
   document.getElementById('adminAreaLink').style.display = (u.role==='mainadmin' || u.role==='admin') ? '' : 'none';
+  document.getElementById('otherSitesLinks').style.display = (u.role==='mainadmin') ? 'flex' : 'none';
   document.getElementById('hoursTabBtn').style.display = (u.role==='rep' || u.role==='admin') ? '' : 'none';
   renderHoursReminderBanner();
   renderPushOptInBanner();
