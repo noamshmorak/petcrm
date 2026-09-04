@@ -183,12 +183,18 @@
 
   <div id="tab-sale">
     <div class="card">
-      <div class="field">
-        <label>שם לקוח (לא חובה)</label>
-        <input id="saleCustomer" placeholder="שם הלקוח">
+      <div class="row2">
+        <div class="field">
+          <label>שם לקוח (לא חובה)</label>
+          <input id="saleCustomer" placeholder="שם הלקוח">
+        </div>
+        <div class="field">
+          <label>טלפון לקוח (לא חובה)</label>
+          <input id="saleCustomerPhone" placeholder="050-1234567" type="tel">
+        </div>
       </div>
       <div class="field">
-        <label>בעל חיים (לא חובה)</label>
+        <label>בעל חיים (לא חובה - אפשר לדלג ולהשתמש רק בתיאור חופשי למטה)</label>
         <select id="saleAnimalType" onchange="updateSaleTotal()"></select>
       </div>
       <div class="field" id="saleAnimalQtyWrap">
@@ -196,9 +202,14 @@
         <input type="number" id="saleAnimalQty" min="1" value="1" oninput="updateSaleTotal()">
       </div>
       <div class="field">
-        <label>מזון / אביזרים (לא חובה)</label>
+        <label>מזון / אביזרים מהמחירון (לא חובה)</label>
         <div id="saleFoodRows"></div>
-        <div class="add-animal" onclick="addSaleFoodRow()">+ הוסף מזון / אביזר</div>
+        <div class="add-animal" onclick="addSaleFoodRow()">+ הוסף מזון / אביזר מהמחירון</div>
+      </div>
+      <div class="field">
+        <label>פריט/שירות לא מהמחירון - תיאור חופשי + סכום (לא חובה)</label>
+        <div id="saleFreeRows"></div>
+        <div class="add-animal" onclick="addSaleFreeRow()">+ הוסף פריט במלל חופשי</div>
       </div>
       <div class="total-price-box" id="saleTotalBox">סה"כ למכירה: 0 ₪</div>
       <button class="btn-primary" style="margin-top:12px;width:100%;" onclick="submitSale()">✅ בצע מכירה</button>
@@ -1093,6 +1104,35 @@ function collectSaleFoodRows(){
   });
   return rows;
 }
+let saleFreeRowCounter = 0;
+function addSaleFreeRow(){
+  saleFreeRowCounter++;
+  const id = 'sfreerow'+saleFreeRowCounter;
+  document.getElementById('saleFreeRows').insertAdjacentHTML('beforeend', `
+    <div class="animal-item" data-free-row-id="${id}">
+      <div class="animal-row">
+        <input type="text" class="saleFreeDescInput" placeholder="תיאור (לדוגמה: תיקון כלוב)" style="flex:2;">
+        <input type="number" class="saleFreeAmountInput" min="0" placeholder="סכום ₪" oninput="updateSaleTotal()" style="flex:1;">
+        <button type="button" class="remove-animal-btn" onclick="removeSaleFreeRow('${id}')">✕</button>
+      </div>
+    </div>
+  `);
+  updateSaleTotal();
+}
+function removeSaleFreeRow(id){
+  const el = document.querySelector(`[data-free-row-id="${id}"]`);
+  if(el) el.remove();
+  updateSaleTotal();
+}
+function collectSaleFreeRows(){
+  const rows = [];
+  document.querySelectorAll('#saleFreeRows .animal-item').forEach(r=>{
+    const description = r.querySelector('.saleFreeDescInput').value.trim();
+    const amount = Number(r.querySelector('.saleFreeAmountInput').value) || 0;
+    if(description || amount) rows.push({ description, amount });
+  });
+  return rows;
+}
 function updateSaleTotal(){
   const animalType = document.getElementById('saleAnimalType').value;
   const animalQty = parseInt(document.getElementById('saleAnimalQty').value) || 1;
@@ -1100,6 +1140,7 @@ function updateSaleTotal(){
   let total = 0;
   if(animalType) total += (storePrices.animalPrices[animalType]||0) * animalQty;
   collectSaleFoodRows().forEach(f=>{ total += (storePrices.foodPrices[f.type]||0) * f.quantity; });
+  collectSaleFreeRows().forEach(f=>{ total += (f.amount||0); });
   document.getElementById('saleTotalBox').textContent = `סה"כ למכירה: ${total} ₪`;
 }
 
@@ -1120,17 +1161,20 @@ async function submitSale(){
   const btn = document.querySelector('#tab-sale .btn-primary');
   if(btn.disabled) return;
   const customer = document.getElementById('saleCustomer').value.trim();
+  const customerPhone = document.getElementById('saleCustomerPhone').value.trim();
   const animalType = document.getElementById('saleAnimalType').value;
   const animalQty = parseInt(document.getElementById('saleAnimalQty').value) || 1;
   const foodItems = collectSaleFoodRows();
-  if(!animalType && foodItems.length===0){ showToast('יש לבחור לפחות בעל חיים אחד או מזון/אביזר אחד'); return; }
+  const freeItems = collectSaleFreeRows();
+  if(!animalType && foodItems.length===0 && freeItems.length===0){ showToast('יש לבחור בעל חיים, מזון/אביזר, או להוסיף פריט במלל חופשי'); return; }
   let totalPrice = 0;
   if(animalType) totalPrice += (storePrices.animalPrices[animalType]||0) * animalQty;
   foodItems.forEach(f=>{ totalPrice += (storePrices.foodPrices[f.type]||0) * f.quantity; });
+  freeItems.forEach(f=>{ totalPrice += (f.amount||0); });
 
   btn.disabled = true;
   const sale = {
-    id: genId(), customer, animalType, animalQty: animalType ? animalQty : 0, foodItems,
+    id: genId(), customer, customerPhone, animalType, animalQty: animalType ? animalQty : 0, foodItems, freeItems,
     totalPrice, date: todayStr(), createdAt: Date.now(),
     createdByUsername: currentUser ? currentUser.username : '', cancelled: false
   };
@@ -1147,9 +1191,11 @@ async function submitSale(){
 
   showToast(`המכירה נשמרה - סה"כ ${totalPrice} ₪`);
   document.getElementById('saleCustomer').value = '';
+  document.getElementById('saleCustomerPhone').value = '';
   document.getElementById('saleAnimalType').value = '';
   document.getElementById('saleAnimalQty').value = '1';
   document.getElementById('saleFoodRows').innerHTML = '';
+  document.getElementById('saleFreeRows').innerHTML = '';
   updateSaleTotal();
   renderHistory();
   btn.disabled = false;
@@ -1176,6 +1222,10 @@ function formatFoodItemsList(items){
   if(!items || !items.length) return '';
   return items.map(f=>`${f.type} ×${f.quantity}`).join(', ');
 }
+function formatFreeItemsList(items){
+  if(!items || !items.length) return '';
+  return items.map(f=>`${f.description||'פריט'}${f.amount?' ('+f.amount+'₪)':''}`).join(', ');
+}
 function renderHistory(){
   const el = document.getElementById('historyList');
   if(!el) return;
@@ -1188,7 +1238,8 @@ function renderHistory(){
         <div class="city-name-wrap"><div class="city-name">${s.customer ? escHtml(s.customer) : 'ללא שם לקוח'}</div></div>
         <div class="city-last">${formatDate(s.date)}</div>
       </div>
-      <div class="city-totals">${s.animalType ? escHtml(s.animalType)+' ×'+s.animalQty : ''}${s.foodItems&&s.foodItems.length ? (s.animalType?' · ':'')+formatFoodItemsList(s.foodItems) : ''}</div>
+      ${s.customerPhone ? `<div class="order-sub"><a href="tel:${s.customerPhone.replace(/-/g,'')}" style="color:var(--accent-dark);font-weight:700;">${escHtml(s.customerPhone)}</a></div>` : ''}
+      <div class="city-totals">${s.animalType ? escHtml(s.animalType)+' ×'+s.animalQty : ''}${s.foodItems&&s.foodItems.length ? (s.animalType?' · ':'')+formatFoodItemsList(s.foodItems) : ''}${s.freeItems&&s.freeItems.length ? ((s.animalType||(s.foodItems&&s.foodItems.length))?' · ':'')+formatFreeItemsList(s.freeItems) : ''}</div>
       <div class="city-totals" style="color:var(--accent-dark);font-weight:700;">💰 ${s.totalPrice} ₪${s.cancelled?' · בוטלה':''}</div>
       <div class="order-sub">נציג: ${escHtml(s.createdByUsername)}</div>
       ${(isAdminRole() && !s.cancelled) ? `<button class="icon-btn" onclick="cancelSale('${s.id}')" title="בטל מכירה">🗑️ בטל</button>` : ''}
