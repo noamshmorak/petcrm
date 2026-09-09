@@ -3114,9 +3114,12 @@ function approveHourReport(id){
   renderAdminTabContent();
 }
 function toggleHourReportPaid(id, checked){
-  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לסמן תשלום'); return; }
   const r = hourReports.find(x=>x.id===id);
   if(!r) return;
+  // Main admin can mark payment for anyone. A regular admin can only mark payment for reps
+  // the main admin has explicitly assigned to them (managedReps) - never for other reps.
+  const canManage = currentUser && (currentUser.role==='mainadmin' || (currentUser.role==='admin' && (currentUser.managedReps||[]).includes(r.username)));
+  if(!canManage){ showToast('רק המנהל הראשי (או מנהל שהוקצה לנציג זה) יכול לסמן תשלום'); return; }
   if(checked){
     r.paid = true;
     r.paidAt = Date.now();
@@ -6397,7 +6400,13 @@ function renderAdminRevenueByCity(){
 let adminActiveTab = 'home';
 function adminTabsForRole(){
   if(currentUser && currentUser.role==='mainadmin') return ['home','report','trend','revenue','expenses','payroll','reminders','automation','advertising','repactivity','stock','depot','blockedcustomers','trash','users','auditlog','backup','combinedreport','bugreports'];
-  if(currentUser && currentUser.role==='admin') return ['home','stock','depot','blockedcustomers','backup','bugreports'];
+  if(currentUser && currentUser.role==='admin'){
+    const tabs = ['home','stock','depot','blockedcustomers','backup','bugreports'];
+    // A regular admin only gets the payroll tab once the main admin has assigned them at least
+    // one rep to manage (managedReps) - otherwise there's nothing scoped for them to see there.
+    if((currentUser.managedReps||[]).length>0) tabs.push('payroll');
+    return tabs;
+  }
   return [];
 }
 const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', trend:'📈 מגמה לאורך זמן', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', reminders:'🔔 תזכורות', automation:'⚙️ אוטומציות', advertising:'📣 פרסום', repactivity:'📅 פעילות נציגים', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', blockedcustomers:'🚫 לקוחות בעייתיים', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא', combinedreport:'🔗 דוח משולב', bugreports:'🐛 באגים' };
@@ -6756,6 +6765,52 @@ function renderAdminTabContent(){
         <input id="newDebtNote" placeholder="הערה (אופציונלי)">
       </div>
       <button class="btn-primary" onclick="addBusinessDebt()">הוסף חוב</button>
+    `;
+  }else if(adminActiveTab==='payroll' && currentUser.role==='admin'){
+    // Scoped payroll view for a regular admin: only the reps the main admin explicitly assigned
+    // to them (managedReps) - no wage-rate editing, no other reps' data, just hours/paid status
+    // for their own assigned reps, so they can mark payment without seeing the whole payroll.
+    const managedUsernames = currentUser.managedReps || [];
+    const reps = users.filter(u=>managedUsernames.includes(u.username));
+    const grandTotalOwed = hourReports.filter(r=>managedUsernames.includes(r.username) && !r.paid && !r.pendingApproval).reduce((s,r)=>s+computeHourReportAmount(r), 0);
+    content.innerHTML = `
+      <div style="font-weight:800;margin-bottom:4px;">🕐 שעות ותשלום - הנציגים שלך</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">כאן אפשר לראות את דיווחי השעות של הנציגים שהוקצו לך, ולסמן אם שולם להם.</div>
+      <div style="font-weight:800;color:var(--danger);margin-bottom:14px;">💰 סה"כ חוב פתוח: ${grandTotalOwed.toFixed(1)} ₪</div>
+      ${reps.length===0 ? '<div style="color:var(--muted);">אין נציגים משוייכים אליך כרגע - המנהל הראשי צריך להקצות אותם בטאב "משתמשים".</div>' : reps.map(u=>{
+        const myReports = hourReports.filter(r=>r.username===u.username).sort((a,b)=>b.date.localeCompare(a.date));
+        const unpaid = myReports.filter(r=>!r.paid && !r.pendingApproval);
+        const paid = myReports.filter(r=>r.paid);
+        const repOwed = unpaid.reduce((s,r)=>s+computeHourReportAmount(r), 0);
+        return `
+        <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:16px;">
+          <div style="font-weight:800;margin-bottom:8px;">👤 ${u.username}</div>
+          <div style="font-weight:700;margin:6px 0;">ימי עבודה שטרם שולמו</div>
+          ${unpaid.length===0 ? '<div style="color:var(--muted);font-size:13px;">אין ימים ממתינים לתשלום.</div>' : unpaid.map(r=>{
+            const amount = computeHourReportAmount(r);
+            return `
+            <div class="row2" style="align-items:center;margin-bottom:6px;">
+              <div style="flex:2;font-size:13px;">${formatDate(r.date)} · ${r.hours} שעות</div>
+              <div style="flex:1;font-weight:700;">${amount.toFixed(1)} ₪</div>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12.5px;">
+                <input type="checkbox" onchange="toggleHourReportPaid('${r.id}', this.checked)" style="width:auto;margin-bottom:0;"> שולם
+              </label>
+            </div>`;
+          }).join('')}
+          <div style="font-weight:800;margin:8px 0;">חוב פתוח ל${u.username}: ${repOwed.toFixed(1)} ₪</div>
+          ${paid.length>0 ? `
+          <div style="font-weight:700;margin:12px 0 6px;border-top:1px solid var(--border);padding-top:10px;">📜 היסטוריית תשלומים</div>
+          ${paid.map(r=>`
+            <div class="row2" style="align-items:center;margin-bottom:6px;">
+              <div style="flex:2;font-size:13px;">${formatDate(r.date)} · ${r.hours} שעות · שולם ב-${formatDate(new Date(r.paidAt).toISOString().slice(0,10))}</div>
+              <div style="flex:1;font-weight:700;">${r.paidAmount.toFixed(1)} ₪</div>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12.5px;">
+                <input type="checkbox" checked onchange="toggleHourReportPaid('${r.id}', this.checked)" style="width:auto;margin-bottom:0;"> שולם
+              </label>
+            </div>
+          `).join('')}` : ''}
+        </div>`;
+      }).join('')}
     `;
   }else if(adminActiveTab==='payroll'){
     const reps = users.filter(u=>u.role==='rep' || u.role==='admin');
@@ -7409,6 +7464,18 @@ function renderAdminTabContent(){
                   <input type="email" class="user-email" data-username="${escAttr(u.username)}" placeholder="name@example.com" value="${escAttr(u.email||'')}">
                 </div>
               </div>
+              ${u.role==='admin' ? `
+              <div style="margin-top:8px;">
+                <label style="font-size:12px;margin-bottom:3px;">נציגים שמנהל זה יכול לראות/לסמן תשלום עבורם (טאב "שכר ושעות" מוגבל אליהם בלבד)</label>
+                <div style="display:flex;flex-wrap:wrap;gap:10px;">
+                  ${users.filter(x=>x.role==='rep').map(rep=>`
+                    <label style="display:flex;align-items:center;gap:4px;font-size:12.5px;">
+                      <input type="checkbox" class="user-managed-rep" data-username="${escAttr(u.username)}" value="${escAttr(rep.username)}" style="width:auto;margin-bottom:0;" ${(u.managedReps||[]).includes(rep.username)?'checked':''}> ${rep.username}
+                    </label>
+                  `).join('') || '<span style="font-size:12px;color:var(--muted);">אין נציגים במערכת עדיין.</span>'}
+                </div>
+              </div>
+              ` : ''}
               <div class="modal-actions" style="margin-top:8px;">
                 <button class="btn-ghost" onclick="updateUser('${escAttr(u.username)}')">עדכן</button>
                 ${(u.phone||u.email) ? `
@@ -7586,6 +7653,10 @@ async function updateUser(username){
   if(roleSelect && (roleSelect.value==='rep' || roleSelect.value==='admin')) u.role = roleSelect.value;
   if(phoneInput) u.phone = phoneInput.value.trim();
   if(emailInput) u.email = emailInput.value.trim();
+  const managedRepCheckboxes = document.querySelectorAll(`.user-managed-rep[data-username="${CSS.escape(username)}"]`);
+  if(managedRepCheckboxes.length){
+    u.managedReps = Array.from(managedRepCheckboxes).filter(cb=>cb.checked).map(cb=>cb.value);
+  }
   await saveUsers();
   if(newPassword) await ensureCredentials(username, newPassword);
   showToast('המשתמש עודכן');
