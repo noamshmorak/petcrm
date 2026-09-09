@@ -8342,24 +8342,57 @@ function isPlausibleRoadDistance(roadMeters, straightMeters){
   return roadMeters <= straightMeters * 4 + 5000;
 }
 
-// Fetches a real road-network distance+duration matrix between all given points (depot + stops)
-// via OSRM's free Table API (no key needed). This is what genuine route optimization needs -
-// straight-line distance can't tell that two "close" points are actually separated by a highway
-// with no direct crossing, or that a "far" point is actually just around the corner via a back
-// road. index 0 in the returned matrix is always the depot.
-// OSRM's public demo server (free, no key needed) is explicitly NOT meant for heavy production
-// traffic and occasionally has brief hiccups/rate-limiting under real-world load - a single failed
-// attempt here used to mean the whole route fell back to straight-line ("aerial") ordering, even
-// though a retry a moment later would likely have succeeded. One quick retry with a short pause
-// fixes most of those transient cases before giving up and falling back.
-async function fetchRoadMatrix(coordsList, isRetry){
+// Fetches a real road-network distance+duration matrix between all given points (depot + stops).
+// This is what genuine route optimization needs - straight-line distance can't tell that two
+// "close" points are actually separated by a highway with no direct crossing, or that a "far"
+// point is actually just around the corner via a back road. index 0 in the returned matrix is
+// always the depot.
+//
+// Tries TomTom's Matrix Routing v2 API first (same paid-tier-grade account/key already used for
+// the traffic-aware route above) - much more reliable than a free public demo server. Only if
+// that fails (quota exhausted, network issue, an unmapped point, etc.) does it fall back to
+// OSRM's free public Table API, which works but is explicitly NOT meant for heavy production
+// traffic and has occasional hiccups/rate-limiting under real-world load. Both paths return the
+// exact same {distances, durations} shape, so nothing else in the optimizer needs to know or
+// care which provider actually answered.
+async function fetchRoadMatrixTomTom(coordsList){
+  try{
+    const points = coordsList.map(c=>({ point: { latitude:c.lat, longitude:c.lon } }));
+    const url = `https://api.tomtom.com/routing/matrix/2?key=${TOMTOM_API_KEY}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        origins: points,
+        destinations: points,
+        options: { departAt: 'now', traffic: 'live', travelMode: 'car' }
+      })
+    });
+    if(!res.ok) return null; // e.g. 403/429 = quota exhausted for today - fall back to OSRM below
+    const data = await res.json();
+    if(!data || !Array.isArray(data.data)) return null;
+    const n = coordsList.length;
+    const distances = Array.from({length:n}, ()=>new Array(n).fill(null));
+    const durations = Array.from({length:n}, ()=>new Array(n).fill(null));
+    for(const cell of data.data){
+      if(cell && cell.routeSummary && Number.isFinite(cell.originIndex) && Number.isFinite(cell.destinationIndex)){
+        distances[cell.originIndex][cell.destinationIndex] = cell.routeSummary.lengthInMeters;
+        durations[cell.originIndex][cell.destinationIndex] = cell.routeSummary.travelTimeInSeconds;
+      }
+    }
+    for(let i=0;i<n;i++){ distances[i][i] = 0; durations[i][i] = 0; } // a point to itself - always 0, regardless of what the API returned (or didn't) for that cell
+    for(const row of distances){ if(row.some(v=>v==null)) return null; } // a real cell failed (e.g. MAP_MATCHING_FAILURE) - an incomplete matrix can't be trusted, fall back to OSRM
+    return { distances, durations };
+  }catch(e){ return null; }
+}
+async function fetchRoadMatrixOSRM(coordsList, isRetry){
   try{
     const coordsStr = coordsList.map(c=>`${c.lon},${c.lat}`).join(';');
     const url = `https://router.project-osrm.org/table/v1/driving/${coordsStr}?annotations=distance,duration`;
     const res = await fetch(url);
     const data = await res.json();
     if(data.code !== 'Ok' || !Array.isArray(data.distances)){
-      if(!isRetry){ await sleep(1500); return fetchRoadMatrix(coordsList, true); }
+      if(!isRetry){ await sleep(1500); return fetchRoadMatrixOSRM(coordsList, true); }
       return null;
     }
     const n = coordsList.length;
@@ -8367,9 +8400,14 @@ async function fetchRoadMatrix(coordsList, isRetry){
     for(const row of data.distances){ if(row.some(v=>v==null)) return null; } // OSRM couldn't route between some pair
     return { distances: data.distances, durations: data.durations || null };
   }catch(e){
-    if(!isRetry){ await sleep(1500); return fetchRoadMatrix(coordsList, true); }
+    if(!isRetry){ await sleep(1500); return fetchRoadMatrixOSRM(coordsList, true); }
     return null;
   }
+}
+async function fetchRoadMatrix(coordsList){
+  const tomtom = await fetchRoadMatrixTomTom(coordsList);
+  if(tomtom) return tomtom;
+  return await fetchRoadMatrixOSRM(coordsList);
 }
 
 // Exact Held-Karp TSP solve over a real road-distance matrix. Index 0 is always the depot (fixed
