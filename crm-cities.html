@@ -111,6 +111,9 @@
      modal (e.g. admin panel) - it must always render above every other modal, regardless of
      DOM order, or it ends up hidden behind whatever opened it and becomes unusable. */
   #confirmModal{z-index:400;}
+  /* same reasoning as #confirmModal above: this choice is triggered from the payroll tab
+     inside the already-open admin panel modal, so it needs to render above it too. */
+  #wageChangeModal{z-index:400;}
   .modal-box{background:#fff;border-radius:16px;padding:22px;max-width:340px;width:100%;text-align:center;max-height:80vh;overflow-y:auto;position:relative;}
   .modal-box p{font-size:15px;font-weight:600;margin:0 0 14px;color:var(--ink);}
   .modal-box input{margin-bottom:16px;}
@@ -348,6 +351,20 @@
     <div id="popupAlertTitle" style="font-weight:800;font-size:16px;margin-bottom:8px;"></div>
     <p id="popupAlertMessage" style="text-align:right;font-size:13.5px;line-height:1.6;"></p>
     <div class="modal-actions" id="popupAlertActions"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="wageChangeModal">
+  <div class="modal-box">
+    <button class="modal-close-x" onclick="resolveWageChange(null)">✕</button>
+    <p>שינית את השכר/הבונוסים של הנציג. איך להחיל את השינוי?</p>
+    <div class="modal-actions" style="flex-direction:column;gap:8px;">
+      <button class="btn-primary" style="width:100%;" onclick="resolveWageChange('forward')">📅 מהיום והלאה בלבד (דיווחים ישנים שטרם שולמו יישארו לפי השכר הקודם)</button>
+      <button class="btn-ghost" style="width:100%;border-color:var(--danger);color:var(--danger);" onclick="resolveWageChange('retroactive')">⏪ רטרואקטיבית (גם דיווחים ישנים שטרם שולמו יחושבו לפי השכר החדש)</button>
+    </div>
+    <div class="modal-actions" style="margin-top:8px;">
+      <button class="btn-ghost" onclick="resolveWageChange(null)" style="width:100%;">ביטול</button>
+    </div>
   </div>
 </div>
 
@@ -762,6 +779,25 @@ function checkInquiryEscalations(){
   if(changed) saveOrders();
 }
 setInterval(checkInquiryEscalations, 5*60*1000);
+// Unlike checkInquiryEscalations (which only pops up once an inquiry has been open 48+ hours),
+// this shows every open manager-inquiry the moment an admin opens/enters the app, so nothing
+// waits quietly in a tab that has to be clicked into. dedupeId is keyed to the exact set of open
+// inquiry ids, so it pops again within the same tab session if the set changes (a new inquiry
+// opened, or one resolved) but not repeatedly for the same unchanged set.
+function checkOpenInquiriesOnLoad(){
+  if(!isAdminRole()) return;
+  const open = orders.filter(o=>o.managerInquiry && !o.managerInquiry.resolved);
+  if(!open.length) return;
+  const idsKey = open.map(o=>o.id).sort().join(',');
+  const sorted = open.slice().sort((a,b)=>a.managerInquiry.openedAt-b.managerInquiry.openedAt);
+  const lines = sorted.slice(0,5).map(o=>`${o.customer||'לקוח'} (${o.city}): ${o.managerInquiry.note}`);
+  if(open.length>5) lines.push(`ועוד ${open.length-5}...`);
+  showPopupAlert(
+    `🚩 ${open.length} פניות פתוחות למנהל`,
+    lines.join('\n'),
+    { dedupeId:'openinquiries-onload-'+idsKey, actionLabel:'למעבר לפניות', actionFn:()=>{ openAdminPanel(); switchAdminTab('home'); } }
+  );
+}
 
 // Shim that mimics the previous window.storage.get/set API (used throughout this file),
 // but now backed by a real shared 'kv_store' table in Supabase, so data syncs across
@@ -953,6 +989,7 @@ const EXPENSES_KEY = 'pet-crm-expenses';
 const BUG_REPORTS_KEY = 'pet-crm-bug-reports'; // shared with crm-store.html - array of {id, reporter, role, app, text, createdAt, status}
 const GEOCODE_OVERRIDES_KEY = 'pet-crm-geocode-overrides'; // {'street|city': {lat, lon}} - manual corrections for addresses the free geocoder can't find, entered once, reused forever
 const HOUR_REPORTS_KEY = 'pet-crm-hour-reports';
+const PAYROLL_EXTRAS_KEY = 'pet-crm-payroll-extras'; // array of {id, username, description, amount, date, createdAt, createdBy, paid, paidAt, paidAmount} - one-off pay additions like travel reimbursement, entered by an admin and shown/settled alongside hour reports
 const AUDIT_LOG_KEY = 'pet-crm-audit-log';
 const CUSTOM_REMINDERS_KEY = 'pet-crm-custom-reminders'; // array of {id, enabled, time, targetRole, title, message} - admin-editable, read by an external GitHub Actions cron job that sends the actual push
 const AUTOMATION_SETTINGS_KEY = 'pet-crm-automation-settings'; // {popupAlertsEnabled, quickContactEnabled} - on/off switches for the in-app popup alerts and the WhatsApp/email quick-send buttons
@@ -1315,6 +1352,17 @@ let confirmCallback = null;
 let shipCityTarget = null;
 let shipRoundTarget = null;
 let roundChoicePending = null;
+let wageChangePending = null;
+function askWageChange(onResolve){
+  wageChangePending = onResolve;
+  document.getElementById('wageChangeModal').classList.add('open');
+}
+function resolveWageChange(mode){
+  document.getElementById('wageChangeModal').classList.remove('open');
+  const cb = wageChangePending;
+  wageChangePending = null;
+  if(cb) cb(mode);
+}
 
 /* ---------- users / login ---------- */
 let currentUser = null; // {username, role} role: 'mainadmin' | 'admin' | 'rep'
@@ -1422,6 +1470,7 @@ async function attemptLogin(){
   renderInventoryAlertBanner();
   renderHoursReminderBanner();
   renderPushOptInBanner();
+  checkOpenInquiriesOnLoad();
   resetInactivityTimer();
 }
 function logout(){
@@ -2822,6 +2871,100 @@ async function saveHourReports(){
   try{ hourReports = await reconcileArrayStore(HOUR_REPORTS_KEY, hourReports); }
   catch(e){ showToast('שגיאה בשמירת דוחות השעות'); }
 }
+let payrollExtras = [];
+async function loadPayrollExtras(){
+  try{
+    const res = await window.storage.get(PAYROLL_EXTRAS_KEY, true);
+    payrollExtras = res && res.value ? JSON.parse(res.value) : [];
+  }catch(e){ payrollExtras = []; }
+  markSyncedArray(PAYROLL_EXTRAS_KEY, payrollExtras);
+}
+async function savePayrollExtras(){
+  try{ payrollExtras = await reconcileArrayStore(PAYROLL_EXTRAS_KEY, payrollExtras); }
+  catch(e){ showToast('שגיאה בשמירת התוספות'); }
+}
+// A regular admin may only add/settle extras for reps assigned to them (managedReps) - identical
+// scoping rule to toggleHourReportPaid, so an admin never touches pay data for reps outside their
+// assignment.
+function canManagePayrollFor(username){
+  return currentUser && (currentUser.role==='mainadmin' || (currentUser.role==='admin' && (currentUser.managedReps||[]).includes(username)));
+}
+function unpaidExtrasTotal(username){
+  return payrollExtras.filter(e=>e.username===username && !e.paid).reduce((s,e)=>s+(e.amount||0), 0);
+}
+function addPayrollExtra(username){
+  if(!canManagePayrollFor(username)){ showToast('אין לך הרשאה להוסיף תוספת לנציג זה'); return; }
+  const descEl = document.querySelector(`.extra-desc[data-username="${CSS.escape(username)}"]`);
+  const amountEl = document.querySelector(`.extra-amount[data-username="${CSS.escape(username)}"]`);
+  const description = (descEl.value||'').trim();
+  const amount = parseFloat(amountEl.value);
+  if(!description){ showToast('נא לתאר את התוספת (למשל: נסיעות)'); return; }
+  if(isNaN(amount) || amount<=0){ showToast('נא להזין סכום תקין'); return; }
+  payrollExtras.push({ id: genExpenseId(), username, description, amount, date: todayStr(), createdAt: Date.now(), createdBy: currentUser.username, paid:false, paidAt:null, paidAmount:null });
+  savePayrollExtras();
+  logAudit('הוסיף תוספת שכר', `${username} · ${description} · ${amount} ₪`);
+  showToast('התוספת נוספה');
+  renderAdminTabContent();
+}
+function togglePayrollExtraPaid(id, checked){
+  const e = payrollExtras.find(x=>x.id===id);
+  if(!e) return;
+  if(!canManagePayrollFor(e.username)){ showToast('אין לך הרשאה לסמן תשלום עבור נציג זה'); return; }
+  if(checked){
+    e.paid = true;
+    e.paidAt = Date.now();
+    e.paidAmount = e.amount;
+  }else{
+    e.paid = false;
+    e.paidAt = null;
+    e.paidAmount = null;
+  }
+  savePayrollExtras();
+  renderAdminTabContent();
+}
+function deletePayrollExtra(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול למחוק תוספת'); return; }
+  const e = payrollExtras.find(x=>x.id===id);
+  showConfirm('למחוק את התוספת הזו?', ()=>{
+    payrollExtras = payrollExtras.filter(x=>x.id!==id);
+    savePayrollExtras();
+    if(e) logAudit('מחק תוספת שכר', `${e.username} · ${e.description} · ${e.amount} ₪`);
+    renderAdminTabContent();
+    showToast('התוספת נמחקה');
+  });
+}
+function renderPayrollExtrasSection(username, canAdd){
+  const myExtras = payrollExtras.filter(e=>e.username===username).sort((a,b)=>b.createdAt-a.createdAt);
+  const unpaidExtras = myExtras.filter(e=>!e.paid);
+  const paidExtras = myExtras.filter(e=>e.paid);
+  return `
+    <div style="font-weight:700;margin:12px 0 6px;border-top:1px solid var(--border);padding-top:10px;">💼 תוספות מיוחדות (נסיעות וכו')</div>
+    ${unpaidExtras.length===0 ? '<div style="color:var(--muted);font-size:13px;">אין תוספות ממתינות.</div>' : unpaidExtras.map(e=>`
+      <div class="row2" style="align-items:center;margin-bottom:6px;">
+        <div style="flex:2;font-size:13px;">${formatDate(e.date)} · ${escHtml(e.description)}</div>
+        <div style="flex:1;font-weight:700;">${e.amount.toFixed(1)} ₪</div>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12.5px;">
+          <input type="checkbox" onchange="togglePayrollExtraPaid('${e.id}', this.checked)" style="width:auto;margin-bottom:0;"> שולם
+        </label>
+        <button class="icon-btn" onclick="deletePayrollExtra('${e.id}')">🗑️</button>
+      </div>`).join('')}
+    ${paidExtras.length>0 ? paidExtras.map(e=>`
+      <div class="row2" style="align-items:center;margin-bottom:6px;">
+        <div style="flex:2;font-size:13px;">${formatDate(e.date)} · ${escHtml(e.description)} · שולם ב-${formatDate(new Date(e.paidAt).toISOString().slice(0,10))}</div>
+        <div style="flex:1;font-weight:700;">${e.paidAmount.toFixed(1)} ₪</div>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12.5px;">
+          <input type="checkbox" checked onchange="togglePayrollExtraPaid('${e.id}', this.checked)" style="width:auto;margin-bottom:0;"> שולם
+        </label>
+        <button class="icon-btn" onclick="deletePayrollExtra('${e.id}')">🗑️</button>
+      </div>`).join('') : ''}
+    ${canAdd ? `
+    <div class="row2" style="margin-top:8px;align-items:center;">
+      <input class="extra-desc" data-username="${escAttr(username)}" placeholder="תיאור (למשל: נסיעות)" style="flex:2;">
+      <input type="number" step="0.5" class="extra-amount" data-username="${escAttr(username)}" placeholder="סכום ₪" style="flex:1;">
+      <button class="btn-ghost" style="flex:0;padding:6px 10px;" onclick="addPayrollExtra('${escAttr(username)}')">➕ הוסף תוספת</button>
+    </div>` : ''}
+  `;
+}
 
 /* ---------- admin (role='admin') monthly hour quota ----------
    Different model than reps: an admin logs hours incrementally throughout the day (e.g. "worked
@@ -2973,13 +3116,29 @@ function deleteAdminHourLog(id){
     if(currentUser.role==='admin') renderMyHoursTab(); else renderAdminTabContent();
   });
 }
-function repWageSettings(username){
+// dateStr (optional, defaults to today) picks which rate is "in effect" for that date. u.wageHistory
+// is a list of {effectiveFrom, hourlyRate, bonusPer10, bonusPerQuaver} entries built up by
+// "מהיום והלאה" wage changes (see saveRepWageSettings) - the latest entry whose effectiveFrom is on
+// or before dateStr wins; entries are always appended in chronological order so a same-day tie
+// resolves to whichever was saved most recently. A "רטרואקטיבית" change instead just overwrites
+// u.hourlyRate/u.bonusPer10/u.bonusPerQuaver directly and clears wageHistory, so the new rate is
+// the single fallback used for every date, past and future.
+function repWageSettings(username, dateStr){
   const u = findUser(username);
-  return {
-    hourlyRate: (u && u.hourlyRate!=null) ? u.hourlyRate : 0,
-    bonusPer10: (u && u.bonusPer10!=null) ? u.bonusPer10 : 0,
-    bonusPerQuaver: (u && u.bonusPerQuaver!=null) ? u.bonusPerQuaver : 0
-  };
+  const asOf = dateStr || todayStr();
+  let hourlyRate = (u && u.hourlyRate!=null) ? u.hourlyRate : 0;
+  let bonusPer10 = (u && u.bonusPer10!=null) ? u.bonusPer10 : 0;
+  let bonusPerQuaver = (u && u.bonusPerQuaver!=null) ? u.bonusPerQuaver : 0;
+  if(u && Array.isArray(u.wageHistory)){
+    u.wageHistory.forEach(h=>{
+      if(h.effectiveFrom && h.effectiveFrom<=asOf){
+        hourlyRate = h.hourlyRate;
+        bonusPer10 = h.bonusPer10;
+        bonusPerQuaver = h.bonusPerQuaver;
+      }
+    });
+  }
+  return { hourlyRate, bonusPer10, bonusPerQuaver };
 }
 // "Orders closed" on a given day = orders/spot-sales that REP actually entered into the system
 // that day (by created-at timestamp, not the customer's requested delivery date), excluding
@@ -3078,7 +3237,7 @@ function computeRepActivityByWeekday(scope){
 // never retroactively alter what was already paid. Unpaid reports are always computed live.
 function computeHourReportAmount(report){
   if(report.paid && report.paidAmount!=null) return report.paidAmount;
-  const settings = repWageSettings(report.username);
+  const settings = repWageSettings(report.username, report.date);
   const activity = computeRepDailyActivity(report.username, report.date);
   return (report.hours||0)*settings.hourlyRate + Math.floor(activity.ordersCount/10)*settings.bonusPer10 + activity.quaverCount*settings.bonusPerQuaver;
 }
@@ -3169,7 +3328,7 @@ function renderMyHoursTab(){
   const existing = findHourReport(currentUser.username, today);
   const activity = computeRepDailyActivity(currentUser.username, today);
   const myReports = hourReports.filter(r=>r.username===currentUser.username).sort((a,b)=>b.date.localeCompare(a.date));
-  const totalOwed = myReports.filter(r=>!r.paid && !r.pendingApproval).reduce((s,r)=>s+computeHourReportAmount(r), 0);
+  const totalOwed = myReports.filter(r=>!r.paid && !r.pendingApproval).reduce((s,r)=>s+computeHourReportAmount(r), 0) + unpaidExtrasTotal(currentUser.username);
   el.innerHTML = `
     <div style="font-weight:800;margin-bottom:8px;">⏱️ דיווח שעות יומי</div>
     <div class="field">
@@ -3197,6 +3356,18 @@ function renderMyHoursTab(){
         <div style="font-weight:700;margin-top:4px;color:${statusColor};">${amount.toFixed(1)} ₪ ${statusText}</div>
       </div>`;
     }).join('')}
+    ${(()=>{
+      const myExtras = payrollExtras.filter(e=>e.username===currentUser.username).sort((a,b)=>b.createdAt-a.createdAt);
+      if(myExtras.length===0) return '';
+      return `
+      <div style="font-weight:800;margin:20px 0 8px;border-top:1px solid var(--border);padding-top:14px;">💼 תוספות שכר (נסיעות וכו')</div>
+      ${myExtras.map(e=>`
+        <div style="border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin-bottom:8px;">
+          <div style="font-weight:700;">${formatDate(e.date)} — ${escHtml(e.description)}</div>
+          <div style="font-weight:700;margin-top:4px;color:${e.paid?'var(--route)':'var(--danger)'};">${e.amount.toFixed(1)} ₪ ${e.paid?'· שולם ✅':'· ממתין לתשלום'}</div>
+        </div>`).join('')}
+      `;
+    })()}
     <div style="font-weight:800;color:var(--danger);margin-top:10px;">💰 סה"כ חוב פתוח כלפיך: ${totalOwed.toFixed(1)} ₪</div>
   `;
 }
@@ -3275,15 +3446,45 @@ function saveRepWageSettings(username){
   const perm = document.querySelector(`.wage-permanent[data-username="${CSS.escape(username)}"]`).checked;
   const from = document.querySelector(`.wage-from[data-username="${CSS.escape(username)}"]`).value;
   const to = document.querySelector(`.wage-to[data-username="${CSS.escape(username)}"]`).value;
-  u.hourlyRate = isNaN(rate) ? 0 : rate;
-  u.bonusPer10 = isNaN(b10) ? 0 : b10;
-  u.bonusPerQuaver = isNaN(bq) ? 0 : bq;
-  u.isPermanent = perm;
-  u.activeFrom = from || '';
-  u.activeTo = to || '';
-  saveUsers();
-  showToast('הגדרות השכר נשמרו');
-  renderAdminTabContent();
+  const newRate = isNaN(rate) ? 0 : rate;
+  const newB10 = isNaN(b10) ? 0 : b10;
+  const newBQ = isNaN(bq) ? 0 : bq;
+  const applyNonWageFields = ()=>{
+    u.isPermanent = perm;
+    u.activeFrom = from || '';
+    u.activeTo = to || '';
+  };
+  const finish = ()=>{
+    saveUsers();
+    showToast('הגדרות השכר נשמרו');
+    renderAdminTabContent();
+  };
+  const current = repWageSettings(username, todayStr());
+  const wageChanged = newRate!==current.hourlyRate || newB10!==current.bonusPer10 || newBQ!==current.bonusPerQuaver;
+  if(!wageChanged){
+    applyNonWageFields();
+    finish();
+    return;
+  }
+  askWageChange((mode)=>{
+    if(!mode) return; // cancelled - nothing saved at all, including the date/permanent fields, so the admin can re-open and retry cleanly
+    if(mode==='retroactive'){
+      // New rate becomes the single base rate for every date, past and future - so any prior
+      // date-scoped history is no longer meaningful and is cleared.
+      u.hourlyRate = newRate;
+      u.bonusPer10 = newB10;
+      u.bonusPerQuaver = newBQ;
+      u.wageHistory = [];
+    }else{
+      // Forward-only: leave the existing base rate (and any earlier history) exactly as-is so
+      // past unpaid reports keep resolving to whatever was in effect at their own date, and just
+      // append a new "as of today" entry that future/today's reports will pick up.
+      if(!Array.isArray(u.wageHistory)) u.wageHistory = [];
+      u.wageHistory.push({ effectiveFrom: todayStr(), hourlyRate: newRate, bonusPer10: newB10, bonusPerQuaver: newBQ });
+    }
+    applyNonWageFields();
+    finish();
+  });
 }
 
 /* ---------- audit log (who changed/cancelled/deleted what, and when) ---------- */
@@ -6517,7 +6718,7 @@ function renderAdminHomeContent(){
   }
 
   const pendingHourReports = hourReports.filter(r=>r.pendingApproval);
-  const grandTotalOwed = hourReports.filter(r=>!r.paid && !r.pendingApproval).reduce((s,r)=>s+computeHourReportAmount(r), 0);
+  const grandTotalOwed = hourReports.filter(r=>!r.paid && !r.pendingApproval).reduce((s,r)=>s+computeHourReportAmount(r), 0) + payrollExtras.filter(e=>!e.paid).reduce((s,e)=>s+(e.amount||0), 0);
   if(pendingHourReports.length){
     html += `
       <div class="alert-banner" style="cursor:pointer;margin-bottom:10px;" onclick="switchAdminTab('payroll');">
@@ -6799,7 +7000,7 @@ function renderAdminTabContent(){
     // for their own assigned reps, so they can mark payment without seeing the whole payroll.
     const managedUsernames = currentUser.managedReps || [];
     const reps = users.filter(u=>managedUsernames.includes(u.username));
-    const grandTotalOwed = hourReports.filter(r=>managedUsernames.includes(r.username) && !r.paid && !r.pendingApproval).reduce((s,r)=>s+computeHourReportAmount(r), 0);
+    const grandTotalOwed = hourReports.filter(r=>managedUsernames.includes(r.username) && !r.paid && !r.pendingApproval).reduce((s,r)=>s+computeHourReportAmount(r), 0) + payrollExtras.filter(e=>managedUsernames.includes(e.username) && !e.paid).reduce((s,e)=>s+(e.amount||0), 0);
     content.innerHTML = `
       <div style="font-weight:800;margin-bottom:4px;">🕐 שעות ותשלום - הנציגים שלך</div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">כאן אפשר לראות את דיווחי השעות של הנציגים שהוקצו לך, ולסמן אם שולם להם.</div>
@@ -6808,7 +7009,7 @@ function renderAdminTabContent(){
         const myReports = hourReports.filter(r=>r.username===u.username).sort((a,b)=>b.date.localeCompare(a.date));
         const unpaid = myReports.filter(r=>!r.paid && !r.pendingApproval);
         const paid = myReports.filter(r=>r.paid);
-        const repOwed = unpaid.reduce((s,r)=>s+computeHourReportAmount(r), 0);
+        const repOwed = unpaid.reduce((s,r)=>s+computeHourReportAmount(r), 0) + unpaidExtrasTotal(u.username);
         return `
         <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:16px;">
           <div style="font-weight:800;margin-bottom:8px;">👤 ${u.username}</div>
@@ -6836,13 +7037,14 @@ function renderAdminTabContent(){
               </label>
             </div>
           `).join('')}` : ''}
+          ${renderPayrollExtrasSection(u.username, true)}
         </div>`;
       }).join('')}
     `;
   }else if(adminActiveTab==='payroll'){
     const reps = users.filter(u=>u.role==='rep' || u.role==='admin');
     const allPending = hourReports.filter(r=>r.pendingApproval);
-    const grandTotalOwed = hourReports.filter(r=>!r.paid && !r.pendingApproval).reduce((s,r)=>s+computeHourReportAmount(r), 0);
+    const grandTotalOwed = hourReports.filter(r=>!r.paid && !r.pendingApproval).reduce((s,r)=>s+computeHourReportAmount(r), 0) + payrollExtras.filter(e=>!e.paid).reduce((s,e)=>s+(e.amount||0), 0);
     content.innerHTML = `
       <div style="font-weight:800;margin-bottom:4px;">🕐 שכר ושעות נציגים</div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">לכל נציג: שכר שעתי, תוספת לכל 10 הזמנות שנסגרו ביום, ותוספת לכל קוואקר שנמכר. "נציג קבוע" מבטל את הגבלת תקופת הפעילות - נציג שאינו קבוע וללא תאריכים מוגדרים יכול להתחבר בכל עת; אם הוגדרו תאריכים, הוא יכול להתחבר רק בטווח הזה. דיווח על שלשום ואילך אחורה ממתין לאישורך לפני שהוא נספר בחוב.</div>
@@ -6854,24 +7056,24 @@ function renderAdminTabContent(){
         const pending = myReports.filter(r=>r.pendingApproval);
         const unpaid = myReports.filter(r=>!r.paid && !r.pendingApproval);
         const paid = myReports.filter(r=>r.paid);
-        const repOwed = unpaid.reduce((s,r)=>s+computeHourReportAmount(r), 0);
+        const repOwed = unpaid.reduce((s,r)=>s+computeHourReportAmount(r), 0) + unpaidExtrasTotal(u.username);
         return `
         <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:16px;">
           <div style="font-weight:800;margin-bottom:8px;">👤 ${u.username}</div>
           <div class="row2" style="margin-bottom:8px;">
             <div>
               <label style="font-size:12px;margin-bottom:3px;">שכר לשעה (₪)</label>
-              <input type="number" step="0.5" class="wage-hourly" data-username="${escAttr(u.username)}" value="${u.hourlyRate??''}">
+              <input type="number" step="0.5" class="wage-hourly" data-username="${escAttr(u.username)}" value="${repWageSettings(u.username, todayStr()).hourlyRate}">
             </div>
             <div>
               <label style="font-size:12px;margin-bottom:3px;">תוספת לכל 10 הזמנות ביום (₪)</label>
-              <input type="number" step="0.5" class="wage-bonus10" data-username="${escAttr(u.username)}" value="${u.bonusPer10??''}">
+              <input type="number" step="0.5" class="wage-bonus10" data-username="${escAttr(u.username)}" value="${repWageSettings(u.username, todayStr()).bonusPer10}">
             </div>
           </div>
           <div class="row2" style="margin-bottom:8px;">
             <div>
               <label style="font-size:12px;margin-bottom:3px;">תוספת לכל קוואקר שנמכר (₪)</label>
-              <input type="number" step="0.5" class="wage-bonusquaver" data-username="${escAttr(u.username)}" value="${u.bonusPerQuaver??''}">
+              <input type="number" step="0.5" class="wage-bonusquaver" data-username="${escAttr(u.username)}" value="${repWageSettings(u.username, todayStr()).bonusPerQuaver}">
             </div>
             <div>
               <label style="font-size:12px;margin-bottom:3px;display:flex;align-items:center;gap:6px;">
@@ -7003,6 +7205,7 @@ function renderAdminTabContent(){
               <button class="icon-btn" onclick="deleteHourReport('${r.id}')">🗑️</button>
             </div>
           `).join('')}` : ''}
+          ${renderPayrollExtrasSection(u.username, true)}
         </div>`;
       }).join('')}
     `;
@@ -8559,6 +8762,7 @@ async function initApp(){
   await loadUsers();
   await loadStock();
   await loadHourReports();
+  await loadPayrollExtras();
   await loadAdminHourLogs();
   const autoLoggedIn = tryAutoLogin();
   await loadOrders();
@@ -8592,6 +8796,7 @@ async function initApp(){
   renderAdvertisingBanner();
   renderPushOptInBanner();
   checkInquiryEscalations();
+  checkOpenInquiriesOnLoad();
 }
 initApp();
 
