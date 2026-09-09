@@ -1380,6 +1380,16 @@ function isRepCurrentlyActive(u){
   if(u.activeTo && today > u.activeTo) return false;
   return true;
 }
+// Separate, stricter gate for hour reporting: a rep can only submit hour reports once the
+// main admin has actually configured them - either marked permanent, or given a defined
+// active-date range. A rep with neither set has simply never been set up for payroll yet,
+// so letting them log hours would create untracked/unpayable reports. (This is the opposite
+// default from isRepCurrentlyActive, which treats "nothing configured" as unrestricted login.)
+function repCanReportHours(u){
+  if(!u || u.role!=='rep') return true;
+  if(u.isPermanent) return true;
+  return !!(u.activeFrom || u.activeTo);
+}
 async function attemptLogin(){
   const username = document.getElementById('loginUsername').value.trim();
   const password = document.getElementById('loginPassword').value;
@@ -3088,6 +3098,7 @@ function dateRequiresApproval(dateStr){
 }
 function submitHourReport(){
   if(!currentUser){ return; }
+  if(!repCanReportHours(currentUser)){ showToast('לא ניתן לדווח שעות - יש לפנות למנהל כדי שיגדיר לך תאריכי פעילות או יסמן אותך כנציג קבוע'); return; }
   const date = document.getElementById('hrDate').value || todayStr();
   const hours = parseFloat(document.getElementById('hrHours').value);
   if(isNaN(hours) || hours<0){ showToast('נא להזין מספר שעות תקין'); return; }
@@ -3144,6 +3155,16 @@ function renderMyHoursTab(){
   const el = document.getElementById('myHoursCard');
   if(!el || !currentUser) return;
   if(currentUser.role==='admin'){ renderMyAdminHoursTab(el); return; }
+  if(!repCanReportHours(currentUser)){
+    el.innerHTML = `
+      <div style="font-weight:800;margin-bottom:8px;">⏱️ דיווח שעות יומי</div>
+      <div class="alert-banner">
+        <div class="alert-title">⛔ עדיין לא ניתן לדווח שעות</div>
+        <div>המנהל עדיין לא הגדיר עבורך תאריכי פעילות או סימן אותך כנציג קבוע. פנה/י למנהל כדי שיסדיר זאת בטאב "שכר ושעות".</div>
+      </div>
+    `;
+    return;
+  }
   const today = todayStr();
   const existing = findHourReport(currentUser.username, today);
   const activity = computeRepDailyActivity(currentUser.username, today);
@@ -6437,6 +6458,26 @@ function renderAdminHomeContent(){
 
   let html = `
     <div style="font-weight:800;margin-bottom:10px;">🏠 סקירה כללית</div>
+  `;
+
+  // Open manager inquiries are the highest-priority item on this screen - a customer is
+  // actively waiting on a manager's response - so this banner always renders first, above
+  // the stats row and every other alert, regardless of admin role.
+  if(openInquiries.length){
+    html += `
+      <div class="alert-banner" style="margin-bottom:10px;background:${overdueInquiries.length?'#FBEAEA':''};">
+        <div class="alert-title" style="color:${overdueInquiries.length?'var(--danger)':''};">🚩 ${openInquiries.length} פניות פתוחות למנהל${overdueInquiries.length?' (⚠️ '+overdueInquiries.length+' מהן מעל 48 שעות!)':''}</div>
+        ${openInquiries.slice().sort((a,b)=>a.managerInquiry.openedAt-b.managerInquiry.openedAt).slice(0,5).map(o=>{
+          const overdue = inquiryIsOverdue(o.managerInquiry);
+          return `<div style="${overdue?'color:var(--danger);font-weight:700;':''}">${escHtml(o.customer||'לקוח')} (${escHtml(o.city)}) - ${escHtml(o.managerInquiry.note)}</div>`;
+        }).join('')}
+        ${openInquiries.length>5 ? `<div>ועוד ${openInquiries.length-5}...</div>` : ''}
+        <div style="font-size:12px;color:var(--muted);margin-top:4px;">אפשר לסגור פנייה מתוך "היסטוריית משלוחים" ליד ההזמנה הרלוונטית.</div>
+      </div>
+    `;
+  }
+
+  html += `
     <div class="stats-row" style="margin-bottom:14px;">
       <div class="stat"><div class="num">${citySummary.length}</div><div class="lbl">ערים פעילות</div></div>
       <div class="stat"><div class="num">${activeOrders.length}</div><div class="lbl">הזמנות פעילות</div></div>
@@ -6462,20 +6503,6 @@ function renderAdminHomeContent(){
         ${lowCages.map(c=>`<div>📦 ${c.type}: נשארו ${c.qty} יח'</div>`).join('')}
         ${missingAnimals.map(a=>`<div>❗ חסר ${a.qty} ${a.species} להזמנות שטרם נשלחו</div>`).join('')}
         ${missingCages.map(c=>`<div>❗ חסר ${c.qty} ${c.type} להזמנות שטרם נשלחו</div>`).join('')}
-      </div>
-    `;
-  }
-
-  if(openInquiries.length){
-    html += `
-      <div class="alert-banner" style="margin-bottom:10px;background:${overdueInquiries.length?'#FBEAEA':''};">
-        <div class="alert-title" style="color:${overdueInquiries.length?'var(--danger)':''};">🚩 ${openInquiries.length} פניות פתוחות למנהל${overdueInquiries.length?' (⚠️ '+overdueInquiries.length+' מהן מעל 48 שעות!)':''}</div>
-        ${openInquiries.slice().sort((a,b)=>a.managerInquiry.openedAt-b.managerInquiry.openedAt).slice(0,5).map(o=>{
-          const overdue = inquiryIsOverdue(o.managerInquiry);
-          return `<div style="${overdue?'color:var(--danger);font-weight:700;':''}">${escHtml(o.customer||'לקוח')} (${escHtml(o.city)}) - ${escHtml(o.managerInquiry.note)}</div>`;
-        }).join('')}
-        ${openInquiries.length>5 ? `<div>ועוד ${openInquiries.length-5}...</div>` : ''}
-        <div style="font-size:12px;color:var(--muted);margin-top:4px;">אפשר לסגור פנייה מתוך "היסטוריית משלוחים" ליד ההזמנה הרלוונטית.</div>
       </div>
     `;
   }
