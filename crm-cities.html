@@ -5678,26 +5678,28 @@ let adProfitSchedule = {
   // week is still capped at "2 publications". Both strong-ad weeks are kept away from the
   // בני ברק/ירושלים weeks, and one of them lands the week right before the combined
   // בית שמש+ביתר עילית week, as requested.
+  // Week 1 opens with פתח תקווה+אלעד on purpose - their papers are the first to actually go out
+  // after the חג break (פתח תקווה יוצא ביום ראשון, אלעד ביום שני), so the new cycle starts right there.
   weeks: [
-    { groups:['צפת','חיפה'], strongAd:false },
+    { groups:['פתח תקווה','אלעד'], strongAd:false },
+    { groups:['חריש','חיפה'], strongAd:false },
+    { groups:['ירושלים','ביתר עילית'], strongAd:false },
+    { groups:['בני ברק','רחובות'], strongAd:false },
+    { groups:['באר שבע','אשדוד'], strongAd:false },
+    { groups:['אלעד','רעננה'], strongAd:false },
     { groups:['מודיעין עילית'], strongAd:true },
     { groups:['בית שמש','ביתר עילית'], strongAd:false },
-    { groups:['אשקלון','באר שבע'], strongAd:false },
-    { groups:['אלעד','רעננה'], strongAd:false },
     { groups:['עפולה','חריש'], strongAd:false },
-    { groups:['ירושלים','מודיעין עילית'], strongAd:false },
-    { groups:['בני ברק','פתח תקווה'], strongAd:false },
-    { groups:['חולון','רחובות'], strongAd:false },
-    { groups:['באר שבע','אשדוד'], strongAd:false },
-    { groups:['רעננה'], strongAd:true },
-    { groups:['ירושלים','בית שמש'], strongAd:false },
-    { groups:['צפת','עפולה'], strongAd:false },
-    { groups:['בני ברק','אלעד'], strongAd:false },
-    { groups:['חריש','חיפה'], strongAd:false },
     { groups:['אשדוד','אשקלון'], strongAd:false },
-    { groups:['ירושלים','ביתר עילית'], strongAd:false },
-    { groups:['פתח תקווה','רחובות'], strongAd:false },
-    { groups:['בני ברק','חולון'], strongAd:false }
+    { groups:['בני ברק','פתח תקווה'], strongAd:false },
+    { groups:['ירושלים','מודיעין עילית'], strongAd:false },
+    { groups:['חולון','רחובות'], strongAd:false },
+    { groups:['צפת','חיפה'], strongAd:false },
+    { groups:['רעננה'], strongAd:true },
+    { groups:['אשקלון','באר שבע'], strongAd:false },
+    { groups:['ירושלים','בית שמש'], strongAd:false },
+    { groups:['בני ברק','חולון'], strongAd:false },
+    { groups:['צפת','עפולה'], strongAd:false }
   ]
 };
 async function loadAdProfitSchedule(){
