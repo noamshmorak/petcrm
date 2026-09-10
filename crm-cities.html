@@ -1034,7 +1034,7 @@ const AD_STORAGE_BUCKET = 'pet-crm-ads';
 const AD_LIBRARY_CATEGORIES_KEY = 'pet-crm-ad-library-categories'; // mainadmin-managed array of category names for tagging PDFs in the ad library
 const AD_CHANNEL_ROTATION_KEY = 'pet-crm-ad-channel-rotation-cities'; // array of city names where the 2+ local ad channels auto-alternate week to week instead of using a fixed default
 const AD_ROTATION_EPOCH = '2024-01-07'; // any fixed Sunday - used purely as a counting origin for the region rotation
-const AD_PROFIT_SCHEDULE_KEY = 'pet-crm-ad-profit-schedule'; // {cycleStartDate:'YYYY-MM-DD' (a Sunday), weeks:[{groups:[name,name], strongAd:bool}, ...]} - a fixed-length rotation (currently 18 weeks) built from the ad-profitability analysis: exactly 2 local publications every week, cycling every ad-channel/city-group at a cadence tied to its measured profit-per-campaign (top performers repeat every ~6 weeks, everyone else every ~9 weeks, always ≥30 days apart), with the nationwide "strong ad" campaign layered on top roughly every 9 weeks - timed to land the week before the בית שמש/ביתר עילית slot rather than next to בני ברק/ירושלים (their own local papers already give them plenty of exposure).
+const AD_PROFIT_SCHEDULE_KEY = 'pet-crm-ad-profit-schedule'; // {cycleStartDate:'YYYY-MM-DD' (a Sunday), weeks:[{groups:[name] or [name,name], strongAd:bool}, ...]} - a fixed-length rotation (currently 19 weeks) built from the ad-profitability analysis AND geography: every week's group(s) share a real region so one delivery run covers both (never e.g. בני ברק with צפת), cycling every ad-channel/city-group at a cadence tied to its measured profit-per-campaign (top performers repeat every ~6-7 weeks, everyone else every ~9-10 weeks, always ≥30 days apart), with the nationwide "strong ad" campaign layered on top roughly every 9-10 weeks as the WEEK'S ONLY extra local group (never a second one, to keep every week capped at 2 publications) - timed to land away from בני ברק/ירושלים and, once per cycle, the week right before the combined בית שמש+ביתר עילית slot.
 let depot = { city:'', street:'' };
 async function loadDepot(){
   try{
@@ -5670,26 +5670,34 @@ async function saveStrongAdCampaign(){
 // current week is derived purely from the calendar date (like computeAdRotationForWeek above), so
 // it can never drift even if nobody opens the app for a while.
 let adProfitSchedule = {
-  cycleStartDate: '2026-09-13', // a Sunday
+  cycleStartDate: '2026-10-04', // first Sunday after Sukkot/Simchat Torah 2026 (חג מסתיים במוצ״ש 3.10)
+  // 19-week cycle. Every week's group(s) are geographically close to each other (same region), so
+  // the same delivery run can cover both - e.g. never בני ברק (מרכז) with צפת (צפון) in the same
+  // week. בני ברק/ירושלים (the top performers) get 3 appearances per cycle, everyone else gets 2.
+  // The 2 strong-ad (פרסום חזק) weeks carry exactly ONE extra local group - never two - so every
+  // week is still capped at "2 publications". Both strong-ad weeks are kept away from the
+  // בני ברק/ירושלים weeks, and one of them lands the week right before the combined
+  // בית שמש+ביתר עילית week, as requested.
   weeks: [
-    { groups:['בני ברק','צפת'], strongAd:false },
-    { groups:['עפולה','חריש'], strongAd:true },
+    { groups:['צפת','חיפה'], strongAd:false },
+    { groups:['מודיעין עילית'], strongAd:true },
     { groups:['בית שמש','ביתר עילית'], strongAd:false },
-    { groups:['ירושלים','פתח תקווה'], strongAd:false },
-    { groups:['חולון','רחובות'], strongAd:false },
-    { groups:['אלעד','אשדוד'], strongAd:false },
-    { groups:['בני ברק','אשקלון'], strongAd:false },
-    { groups:['חיפה','מודיעין עילית'], strongAd:false },
-    { groups:['באר שבע','רעננה'], strongAd:false },
-    { groups:['ירושלים','צפת'], strongAd:false },
-    { groups:['עפולה','חריש'], strongAd:true },
-    { groups:['בית שמש','ביתר עילית'], strongAd:false },
+    { groups:['אשקלון','באר שבע'], strongAd:false },
+    { groups:['אלעד','רעננה'], strongAd:false },
+    { groups:['עפולה','חריש'], strongAd:false },
+    { groups:['ירושלים','מודיעין עילית'], strongAd:false },
     { groups:['בני ברק','פתח תקווה'], strongAd:false },
     { groups:['חולון','רחובות'], strongAd:false },
-    { groups:['אלעד','אשדוד'], strongAd:false },
-    { groups:['ירושלים','אשקלון'], strongAd:false },
-    { groups:['חיפה','מודיעין עילית'], strongAd:false },
-    { groups:['באר שבע','רעננה'], strongAd:false }
+    { groups:['באר שבע','אשדוד'], strongAd:false },
+    { groups:['רעננה'], strongAd:true },
+    { groups:['ירושלים','בית שמש'], strongAd:false },
+    { groups:['צפת','עפולה'], strongAd:false },
+    { groups:['בני ברק','אלעד'], strongAd:false },
+    { groups:['חריש','חיפה'], strongAd:false },
+    { groups:['אשדוד','אשקלון'], strongAd:false },
+    { groups:['ירושלים','ביתר עילית'], strongAd:false },
+    { groups:['פתח תקווה','רחובות'], strongAd:false },
+    { groups:['בני ברק','חולון'], strongAd:false }
   ]
 };
 async function loadAdProfitSchedule(){
@@ -7653,7 +7661,7 @@ function renderAdminTabContent(){
     const pcCurrent = { weekStart: pcThisWeekStart, plan: computeProfitScheduleForWeek(pcThisWeekStart) };
     content.innerHTML = `
       <div style="font-weight:800;margin-bottom:4px;">🗓️ לוח פרסום שבועי (2 פרסומים בשבוע)</div>
-      <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">מחזור קבוע שחוזר על עצמו, בנוי לפי הרווח הממוצע שנמדד לכל קבוצת פרסום - הקבוצות הרווחיות ביותר (בני ברק, ירושלים) חוזרות כל 6 שבועות, כל השאר כל 9 שבועות. הפרסום החזק (ארצי) משולב בנוסף כל 9 שבועות, ממוקם שבוע לפני בית שמש/ביתר עילית ולא ליד בני ברק/ירושלים.</div>
+      <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">מחזור קבוע של 19 שבועות, בנוי לפי הרווח הממוצע שנמדד לכל קבוצת פרסום ולפי קרבה גיאוגרפית (כל שבוע - הערים המתפרסמות קרובות זו לזו, כדי שאותו סיבוב משלוחים יכסה את שתיהן). בני ברק וירושלים, הרווחיות ביותר, חוזרות כל כ-6-7 שבועות; כל השאר כל כ-9-10 שבועות. הפרסום החזק (ארצי) משולב כל כ-9-10 שבועות (פעם בחודשיים בערך) כתוספת יחידה (לא שתיים) לשבוע, רחוק מבני ברק/ירושלים ובסמוך לשבוע בית שמש+ביתר עילית.</div>
 
       <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:14px;">
         ${pcRowHtml(pcCurrent, true)}
