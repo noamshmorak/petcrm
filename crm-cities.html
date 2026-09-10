@@ -1034,6 +1034,7 @@ const AD_STORAGE_BUCKET = 'pet-crm-ads';
 const AD_LIBRARY_CATEGORIES_KEY = 'pet-crm-ad-library-categories'; // mainadmin-managed array of category names for tagging PDFs in the ad library
 const AD_CHANNEL_ROTATION_KEY = 'pet-crm-ad-channel-rotation-cities'; // array of city names where the 2+ local ad channels auto-alternate week to week instead of using a fixed default
 const AD_ROTATION_EPOCH = '2024-01-07'; // any fixed Sunday - used purely as a counting origin for the region rotation
+const AD_PROFIT_SCHEDULE_KEY = 'pet-crm-ad-profit-schedule'; // {cycleStartDate:'YYYY-MM-DD' (a Sunday), weeks:[{groups:[name,name], strongAd:bool}, ...]} - a fixed-length rotation (currently 18 weeks) built from the ad-profitability analysis: exactly 2 local publications every week, cycling every ad-channel/city-group at a cadence tied to its measured profit-per-campaign (top performers repeat every ~6 weeks, everyone else every ~9 weeks, always ≥30 days apart), with the nationwide "strong ad" campaign layered on top roughly every 9 weeks - timed to land the week before the בית שמש/ביתר עילית slot rather than next to בני ברק/ירושלים (their own local papers already give them plenty of exposure).
 let depot = { city:'', street:'' };
 async function loadDepot(){
   try{
@@ -5653,6 +5654,80 @@ async function saveStrongAdCampaign(){
   try{ strongAdCampaign = await reconcileObjectStore(STRONG_AD_CAMPAIGN_KEY, strongAdCampaign); }
   catch(e){ showToast('שגיאה בשמירה'); }
 }
+
+// Master weekly publication calendar, built from the ad-profitability/campaign analysis (see the
+// "לוח פרסום" admin tab). A fixed-length cycle (default 18 weeks) that repeats forever - the
+// current week is derived purely from the calendar date (like computeAdRotationForWeek above), so
+// it can never drift even if nobody opens the app for a while.
+let adProfitSchedule = {
+  cycleStartDate: '2026-09-13', // a Sunday
+  weeks: [
+    { groups:['בני ברק','צפת'], strongAd:false },
+    { groups:['עפולה','חריש'], strongAd:true },
+    { groups:['בית שמש','ביתר עילית'], strongAd:false },
+    { groups:['ירושלים','פתח תקווה'], strongAd:false },
+    { groups:['חולון','רחובות'], strongAd:false },
+    { groups:['אלעד','אשדוד'], strongAd:false },
+    { groups:['בני ברק','אשקלון'], strongAd:false },
+    { groups:['חיפה','מודיעין עילית'], strongAd:false },
+    { groups:['באר שבע','רעננה'], strongAd:false },
+    { groups:['ירושלים','צפת'], strongAd:false },
+    { groups:['עפולה','חריש'], strongAd:true },
+    { groups:['בית שמש','ביתר עילית'], strongAd:false },
+    { groups:['בני ברק','פתח תקווה'], strongAd:false },
+    { groups:['חולון','רחובות'], strongAd:false },
+    { groups:['אלעד','אשדוד'], strongAd:false },
+    { groups:['ירושלים','אשקלון'], strongAd:false },
+    { groups:['חיפה','מודיעין עילית'], strongAd:false },
+    { groups:['באר שבע','רעננה'], strongAd:false }
+  ]
+};
+async function loadAdProfitSchedule(){
+  try{
+    const res = await window.storage.get(AD_PROFIT_SCHEDULE_KEY, true);
+    if(res && res.value){
+      const parsed = JSON.parse(res.value);
+      if(parsed && Array.isArray(parsed.weeks) && parsed.weeks.length>0 && parsed.cycleStartDate){
+        adProfitSchedule = parsed;
+      }
+    }
+    markSyncedObject(AD_PROFIT_SCHEDULE_KEY, adProfitSchedule);
+  }catch(e){ /* use defaults */ }
+}
+async function saveAdProfitSchedule(){
+  try{ adProfitSchedule = await reconcileObjectStore(AD_PROFIT_SCHEDULE_KEY, adProfitSchedule); }
+  catch(e){ showToast('שגיאה בשמירה'); }
+}
+// Pure function of the calendar week, same style as computeAdRotationForWeek - no stored cursor,
+// so it's always correct no matter how long since the app was last opened.
+function computeProfitScheduleForWeek(weekStart){
+  const weeks = adProfitSchedule.weeks || [];
+  const n = weeks.length;
+  if(n===0) return null;
+  const weekIdx = weeksBetween(adProfitSchedule.cycleStartDate, weekStart);
+  const idx = ((weekIdx % n) + n) % n;
+  return { ...weeks[idx], weekNumber: idx+1 };
+}
+async function updateProfitScheduleGroup(weekIdx, slotIdx, value){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך את הלוח'); return; }
+  if(!adProfitSchedule.weeks[weekIdx]) return;
+  adProfitSchedule.weeks[weekIdx].groups[slotIdx] = value.trim();
+  await saveAdProfitSchedule();
+}
+async function toggleProfitScheduleStrongAd(weekIdx, checked){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך את הלוח'); return; }
+  if(!adProfitSchedule.weeks[weekIdx]) return;
+  adProfitSchedule.weeks[weekIdx].strongAd = checked;
+  await saveAdProfitSchedule();
+  renderAdminTabContent();
+}
+async function updateProfitScheduleStartDate(value){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך את הלוח'); return; }
+  if(!value) return;
+  adProfitSchedule.cycleStartDate = weekStartOf(value);
+  await saveAdProfitSchedule();
+  renderAdminTabContent();
+}
 // Returns the Sunday (YYYY-MM-DD) that starts the week containing dateStr - ads in this business go out Sundays.
 function weekStartOf(dateStr){
   const d = new Date(dateStr+'T00:00:00');
@@ -6621,7 +6696,7 @@ function renderAdminRevenueByCity(){
 /* ---------- admin tabs ---------- */
 let adminActiveTab = 'home';
 function adminTabsForRole(){
-  if(currentUser && currentUser.role==='mainadmin') return ['home','report','trend','revenue','expenses','payroll','reminders','automation','advertising','repactivity','stock','depot','blockedcustomers','trash','users','auditlog','backup','combinedreport','bugreports'];
+  if(currentUser && currentUser.role==='mainadmin') return ['home','report','trend','revenue','expenses','payroll','reminders','automation','advertising','profitcalendar','repactivity','stock','depot','blockedcustomers','trash','users','auditlog','backup','combinedreport','bugreports'];
   if(currentUser && currentUser.role==='admin'){
     const tabs = ['home','stock','depot','blockedcustomers','backup','bugreports'];
     // A regular admin only gets the payroll tab once the main admin has assigned them at least
@@ -6631,7 +6706,7 @@ function adminTabsForRole(){
   }
   return [];
 }
-const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', trend:'📈 מגמה לאורך זמן', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', reminders:'🔔 תזכורות', automation:'⚙️ אוטומציות', advertising:'📣 פרסום', repactivity:'📅 פעילות נציגים', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', blockedcustomers:'🚫 לקוחות בעייתיים', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא', combinedreport:'🔗 דוח משולב', bugreports:'🐛 באגים' };
+const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', trend:'📈 מגמה לאורך זמן', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', reminders:'🔔 תזכורות', automation:'⚙️ אוטומציות', advertising:'📣 פרסום', profitcalendar:'🗓️ לוח פרסום', repactivity:'📅 פעילות נציגים', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', blockedcustomers:'🚫 לקוחות בעייתיים', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא', combinedreport:'🔗 דוח משולב', bugreports:'🐛 באגים' };
 function renderAdminTabsBar(){
   const bar = document.getElementById('adminTabsBar');
   const tabs = adminTabsForRole();
@@ -7549,6 +7624,50 @@ function renderAdminTabContent(){
           const [city, round] = k.split('|');
           return `<div class="row2" style="align-items:center;margin-bottom:4px;"><div style="flex:1;font-size:12.5px;">${cityDisplayName(city, parseInt(round,10))}</div><button class="icon-btn" onclick="unflagStrongAdRoundByKey('${k}')">🗑️</button></div>`;
         }).join('')}
+      ` : ''}
+    `;
+  }else if(adminActiveTab==='profitcalendar'){
+    const pcThisWeekStart = weekStartOf(todayStr());
+    const pcAddWeeks = (dateStr, n)=>{ const d = new Date(dateStr+'T00:00:00'); d.setDate(d.getDate()+n*7); return d.toISOString().slice(0,10); };
+    const pcUpcoming = [];
+    for(let i=0;i<8;i++){
+      const ws = pcAddWeeks(pcThisWeekStart, i);
+      pcUpcoming.push({ weekStart: ws, plan: computeProfitScheduleForWeek(ws) });
+    }
+    const pcRowHtml = (item, isCurrent)=>`
+      <div class="row2" style="align-items:center;margin-bottom:6px;padding:8px 10px;border-radius:10px;${isCurrent?'background:#EAF3FF;border:1px solid #B6D6FF;':'border:1px solid var(--border);'}">
+        <div style="flex:1;font-size:12.5px;color:var(--muted);">${isCurrent?'📍 השבוע · ':''}${formatDate(item.weekStart)}</div>
+        <div style="flex:2;font-weight:700;">${(item.plan.groups||[]).map(g=>escHtml(g)).join(' · ')}</div>
+        <div style="flex:1;text-align:left;">${item.plan.strongAd ? '<span style="color:#B45309;font-weight:800;">🔥 + פרסום חזק</span>' : ''}</div>
+      </div>`;
+    const pcCurrent = { weekStart: pcThisWeekStart, plan: computeProfitScheduleForWeek(pcThisWeekStart) };
+    content.innerHTML = `
+      <div style="font-weight:800;margin-bottom:4px;">🗓️ לוח פרסום שבועי (2 פרסומים בשבוע)</div>
+      <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">מחזור קבוע שחוזר על עצמו, בנוי לפי הרווח הממוצע שנמדד לכל קבוצת פרסום - הקבוצות הרווחיות ביותר (בני ברק, ירושלים) חוזרות כל 6 שבועות, כל השאר כל 9 שבועות. הפרסום החזק (ארצי) משולב בנוסף כל 9 שבועות, ממוקם שבוע לפני בית שמש/ביתר עילית ולא ליד בני ברק/ירושלים.</div>
+
+      <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:14px;">
+        ${pcRowHtml(pcCurrent, true)}
+      </div>
+
+      <div style="font-weight:700;margin-bottom:6px;">8 השבועות הקרובים</div>
+      ${pcUpcoming.slice(1).map(item=>pcRowHtml(item, false)).join('')}
+
+      ${currentUser.role==='mainadmin' ? `
+        <details style="margin-top:16px;">
+          <summary style="cursor:pointer;font-weight:700;">⚙️ עריכת המחזור המלא (${(adProfitSchedule.weeks||[]).length} שבועות)</summary>
+          <div style="margin:10px 0;">
+            <label style="font-size:12.5px;color:var(--muted);">תאריך תחילת המחזור (יום ראשון כלשהו)</label>
+            <input type="date" style="width:100%;" value="${adProfitSchedule.cycleStartDate}" onchange="updateProfitScheduleStartDate(this.value)">
+          </div>
+          ${(adProfitSchedule.weeks||[]).map((w,i)=>`
+            <div class="row2" style="align-items:center;margin-bottom:4px;">
+              <div style="flex:0 0 40px;font-size:12.5px;color:var(--muted);">#${i+1}</div>
+              <input style="flex:1;" value="${escAttr(w.groups[0]||'')}" onchange="updateProfitScheduleGroup(${i},0,this.value)">
+              <input style="flex:1;" value="${escAttr(w.groups[1]||'')}" onchange="updateProfitScheduleGroup(${i},1,this.value)">
+              <label style="flex:0 0 90px;font-size:12px;display:flex;align-items:center;gap:4px;"><input type="checkbox" style="width:auto;margin-bottom:0;" ${w.strongAd?'checked':''} onchange="toggleProfitScheduleStrongAd(${i}, this.checked)">🔥 חזק</label>
+            </div>
+          `).join('')}
+        </details>
       ` : ''}
     `;
   }else if(adminActiveTab==='repactivity'){
@@ -8818,6 +8937,7 @@ async function initApp(){
   await loadGeocodeOverrides();
   await loadStrongAdRounds();
   await loadStrongAdCampaign();
+  await loadAdProfitSchedule();
   await loadStrongAdRoster();
   await loadAdPlaces();
   await loadAdTargetCities();
