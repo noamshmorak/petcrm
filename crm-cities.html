@@ -3699,6 +3699,11 @@ function migrateOrder(o){
   if(typeof o.cancelFeeNoticeGiven !== 'boolean') o.cancelFeeNoticeGiven = false; // unknown for orders created before this field existed
   o.customer = o.customer || '';
   o.address = o.address || '';
+  // Result of the background address check (see checkOrderAddress): null = never checked,
+  // 'ok' = found on the map, 'failed' = not found. geoCheckedAddress records WHICH address text
+  // the status refers to, so editing the address automatically invalidates an old result.
+  o.geoStatus = o.geoStatus || null;
+  o.geoCheckedAddress = o.geoCheckedAddress || '';
   if(typeof o.lat !== 'number') o.lat = null;
   if(typeof o.lng !== 'number') o.lng = null;
   o.phone1 = o.phone1 || '';
@@ -3845,12 +3850,14 @@ function submitOrder(){
   document.getElementById('submitBtn').disabled = true;
   if(editingId){
     const o = orders.find(x=>x.id===editingId);
+    const addressChanged = !!o && (o.address !== address || o.city !== city);
     if(o){
       o.city = city; o.customer = customer; o.address = address;
       o.phone1 = phone1; o.phone2 = phone2; o.animals = animals; o.foodItems = foodItems; o.date = date;
       o.pairFlags = pairFlags; o.cageSharing = cageSharing; o.totalPrice = totalPrice; o.discount = discount; o.discountApproved = discount>0 ? discountApproved : false;
       o.note = note; o.fromYad2 = fromYad2; o.adChannelId = adChannelId; o.hasSms = hasSms; o.cancelFeeNoticeGiven = cancelFeeNoticeGiven;
       logAudit('ערוך הזמנה', `${o.customer||'לקוח'} · ${cityDisplayName(o.city, o.roundNumber||0)}${discount>0?' · הנחה '+discount+'₪':''}`);
+      if(addressChanged) queueAddressCheck(o.id);
     }
     editingId = null;
     document.getElementById('editNote').style.display = 'none';
@@ -3892,6 +3899,7 @@ function pushNewOrder(data, roundNumber){
   });
   logAudit('צור הזמנה', `${data.customer||'לקוח'} · ${cityDisplayName(data.city, roundNumber)}${data.discount>0?' · הנחה '+data.discount+'₪':''}`);
   showToast('ההזמנה נוספה');
+  queueAddressCheck(newId); // background, never blocks the rep or the save
 }
 function finishSubmitOrder(){
   document.getElementById('fCustomer').value='';
@@ -6716,9 +6724,9 @@ function renderAdminRevenueByCity(){
 /* ---------- admin tabs ---------- */
 let adminActiveTab = 'home';
 function adminTabsForRole(){
-  if(currentUser && currentUser.role==='mainadmin') return ['home','report','trend','revenue','expenses','payroll','reminders','automation','advertising','profitcalendar','repactivity','stock','depot','blockedcustomers','trash','users','auditlog','backup','combinedreport','bugreports'];
+  if(currentUser && currentUser.role==='mainadmin') return ['home','report','trend','revenue','expenses','payroll','reminders','automation','advertising','profitcalendar','repactivity','badaddresses','stock','depot','blockedcustomers','trash','users','auditlog','backup','combinedreport','bugreports'];
   if(currentUser && currentUser.role==='admin'){
-    const tabs = ['home','stock','depot','blockedcustomers','backup','bugreports'];
+    const tabs = ['home','badaddresses','stock','depot','blockedcustomers','backup','bugreports'];
     // A regular admin only gets the payroll tab once the main admin has assigned them at least
     // one rep to manage (managedReps) - otherwise there's nothing scoped for them to see there.
     if((currentUser.managedReps||[]).length>0) tabs.push('payroll');
@@ -6726,7 +6734,7 @@ function adminTabsForRole(){
   }
   return [];
 }
-const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', trend:'📈 מגמה לאורך זמן', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', reminders:'🔔 תזכורות', automation:'⚙️ אוטומציות', advertising:'📣 פרסום', profitcalendar:'🗓️ לוח פרסום', repactivity:'📅 פעילות נציגים', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', blockedcustomers:'🚫 לקוחות בעייתיים', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא', combinedreport:'🔗 דוח משולב', bugreports:'🐛 באגים' };
+const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', trend:'📈 מגמה לאורך זמן', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', reminders:'🔔 תזכורות', automation:'⚙️ אוטומציות', advertising:'📣 פרסום', profitcalendar:'🗓️ לוח פרסום', repactivity:'📅 פעילות נציגים', badaddresses:'🗺️ כתובות בעייתיות', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', blockedcustomers:'🚫 לקוחות בעייתיים', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא', combinedreport:'🔗 דוח משולב', bugreports:'🐛 באגים' };
 function renderAdminTabsBar(){
   const bar = document.getElementById('adminTabsBar');
   const tabs = adminTabsForRole();
@@ -7644,6 +7652,69 @@ function renderAdminTabContent(){
           const [city, round] = k.split('|');
           return `<div class="row2" style="align-items:center;margin-bottom:4px;"><div style="flex:1;font-size:12.5px;">${cityDisplayName(city, parseInt(round,10))}</div><button class="icon-btn" onclick="unflagStrongAdRoundByKey('${k}')">🗑️</button></div>`;
         }).join('')}
+      ` : ''}
+    `;
+  }else if(adminActiveTab==='badaddresses'){
+    const baActive = activeOrdersForGeo();
+    const baFailed = baActive.filter(o=>orderGeoState(o)==='failed');
+    const baUnchecked = baActive.filter(o=>orderGeoState(o)==='unchecked');
+    const baOk = baActive.filter(o=>orderGeoState(o)==='ok');
+    const baNoAddress = orders.filter(o=>!o.delivered && !o.cancelled && !o.address);
+    // Grouped by city: a courier works one city at a time, and repeated failures in the same city
+    // usually share one cause (a street OpenStreetMap simply doesn't have).
+    const baByCity = {};
+    baFailed.forEach(o=>{ (baByCity[o.city] = baByCity[o.city] || []).push(o); });
+    const baRowHtml = (o)=>{
+      const inputId = 'baFix_' + o.id;
+      const mapsQuery = encodeURIComponent(`${o.address}, ${o.city}`);
+      return `
+        <div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;">
+          <div style="font-weight:700;">${escHtml(o.customer||'לקוח')} · ${escHtml(o.address)}</div>
+          <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px;">${escHtml(cityDisplayName(o.city, o.roundNumber||0))}${o.phone1?' · '+escHtml(o.phone1):''}</div>
+          <div class="row2" style="gap:6px;align-items:center;">
+            <a href="https://www.google.com/maps/search/?api=1&query=${mapsQuery}" target="_blank" class="btn-secondary" style="text-decoration:none;text-align:center;white-space:nowrap;padding:6px 10px;font-size:12.5px;">🔎 חפש בגוגל מפות</a>
+            <button class="btn-secondary" style="white-space:nowrap;padding:6px 10px;font-size:12.5px;" onclick="recheckBadAddress('${escAttr(o.id)}')">🔄 בדוק שוב</button>
+          </div>
+          <div style="display:flex;gap:6px;margin-top:6px;align-items:center;">
+            <input id="${inputId}" type="text" placeholder="הדביקו כאן קישור מגוגל מפות או lat, lon" style="flex:1;margin-bottom:0;font-size:12.5px;">
+            <button class="btn-primary" style="white-space:nowrap;padding:6px 10px;font-size:12.5px;" onclick="fixBadAddressFromAdmin('${escAttr(o.id)}','${inputId}')">שמור תיקון</button>
+          </div>
+        </div>`;
+    };
+    const baFailedHtml = baFailed.length===0
+      ? '<div class="empty"><div class="big">✅</div>אין כרגע כתובות פעילות שלא אותרו במפה.</div>'
+      : Object.keys(baByCity).sort((a,b)=>a.localeCompare(b,'he')).map(city=>`
+          <div style="font-weight:800;margin:12px 0 6px;">${escHtml(city)} <span style="font-weight:400;color:var(--muted);font-size:12.5px;">(${baByCity[city].length})</span></div>
+          ${baByCity[city].map(baRowHtml).join('')}
+        `).join('');
+    const baScanHtml = addressScanRunning
+      ? `<div class="row2" style="align-items:center;gap:8px;">
+           <div id="addrScanProgress" style="flex:1;font-size:13px;">בודק...</div>
+           <button class="btn-secondary" style="white-space:nowrap;" onclick="stopAddressScan()">עצור</button>
+         </div>`
+      : (baUnchecked.length===0
+          ? '<div style="font-size:12.5px;color:var(--muted);">✓ כל הכתובות הפעילות נבדקו</div>'
+          : `<button class="btn-secondary" onclick="scanUncheckedAddresses()">🔍 בדוק עכשיו ${baUnchecked.length} כתובות שלא נבדקו</button>`);
+    content.innerHTML = `
+      <div style="font-weight:800;margin-bottom:4px;">🗺️ כתובות בעייתיות</div>
+      <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">כל הזמנה נבדקת אוטומטית מול המפה ברגע שהיא נשמרת. כאן מרוכזות הכתובות הפעילות שלא אותרו - עדיף לתקן אותן עכשיו ולא לגלות את זה כשהשליח כבר בדרך. תיקון נשמר פעם אחת ותקף לכל ההזמנות באותה כתובת ולכל חישוב מסלול עתידי.</div>
+
+      <div class="total-price-box" style="text-align:right;margin-bottom:12px;">
+        <div style="font-size:13px;">❌ לא אותרו: <b>${baFailed.length}</b> · ✅ תקינות: <b>${baOk.length}</b> · ⏳ לא נבדקו: <b>${baUnchecked.length}</b>${baNoAddress.length?` · 📭 בלי כתובת בכלל: <b>${baNoAddress.length}</b>`:''}</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px;">הבדיקה מכוונת לכ-שנייה לכתובת (מגבלת שירות המפות החינמי), אפשר להשאיר פתוח ברקע ולעצור באמצע.</div>
+        <div style="margin-top:8px;">${baScanHtml}</div>
+      </div>
+
+      ${baFailedHtml}
+
+      ${baNoAddress.length ? `
+        <div style="font-weight:800;margin:16px 0 6px;">📭 הזמנות פעילות בלי כתובת רשומה (${baNoAddress.length})</div>
+        <div style="font-size:12.5px;color:var(--muted);margin-bottom:6px;">אלו לא ייכללו בחישוב מסלול בכלל - שווה להשלים להן כתובת.</div>
+        ${baNoAddress.map(o=>`
+          <div style="border:1px dashed var(--border);border-radius:10px;padding:8px 12px;margin-bottom:6px;">
+            <div style="font-weight:700;">${escHtml(o.customer||'לקוח')}</div>
+            <div style="font-size:12.5px;color:var(--muted);">${escHtml(cityDisplayName(o.city, o.roundNumber||0))}${o.phone1?' · '+escHtml(o.phone1):''}</div>
+          </div>`).join('')}
       ` : ''}
     `;
   }else if(adminActiveTab==='profitcalendar'){
@@ -8727,6 +8798,104 @@ function matrixTourTotal(order, distances){
 // both remote services fail - is refined with a local 2-opt pass, so the courier always gets a
 // genuinely improved order, never just raw entry order, but it's only ever labeled "optimized
 // with live traffic/routing" if a provider actually confirmed it.
+/* ---------- background address check + "כתובות בעייתיות" ----------
+   A wrong or unknown address used to surface only when the courier was already on the road (the
+   route screen was the first thing that ever geocoded it). Now every order gets checked quietly
+   in the background right after it's saved - never blocking the rep, never blocking the save -
+   and anything that couldn't be found lands in the admin screen, where it's fixed ONCE by pasting
+   a Google Maps link (the same manual-override mechanism the route screen already uses, so the
+   fix applies to every future route and to every other order at that same address). */
+function addressGeoKey(o){ return `${o.address}|${o.city}`; }
+function orderGeoState(o){
+  if(!o.address || !o.city) return 'none';                        // nothing to check
+  if(geocodeOverrides[addressGeoKey(o)]) return 'ok';             // manually fixed once = fine forever
+  if(o.geoCheckedAddress !== o.address) return 'unchecked';       // never checked, or edited since the check
+  if(o.geoStatus === 'failed') return 'failed';
+  if(o.geoStatus === 'ok') return 'ok';
+  return 'unchecked';
+}
+// Re-finds the order by id after the await: the orders array can be replaced by a sync/reload
+// while the (deliberately slow, rate-limited) geocoder call is in flight.
+async function checkOrderAddress(orderId){
+  const target = orders.find(x=>x.id===orderId);
+  if(!target || !target.address || !target.city) return null;
+  const address = target.address, city = target.city;
+  const coords = await geocodeAddress(address, city);
+  const fresh = orders.find(x=>x.id===orderId);
+  if(!fresh || fresh.address !== address) return null; // edited mid-check - that edit queues its own check
+  fresh.geoStatus = coords ? 'ok' : 'failed';
+  fresh.geoCheckedAddress = address;
+  return fresh.geoStatus;
+}
+// Fire-and-forget. Called from the save paths, never awaited by them.
+function queueAddressCheck(orderId){
+  setTimeout(async ()=>{
+    try{
+      const status = await checkOrderAddress(orderId);
+      if(!status) return;
+      await saveOrders();
+      if(status === 'failed'){
+        // Worth telling the rep: if the customer is still on the line the address can be
+        // re-confirmed on the spot, which is far cheaper than a failed delivery attempt.
+        showToast('שים לב: הכתובת נשמרה אבל לא אותרה במפה - כדאי לוודא אותה מול הלקוח');
+      }
+      if(isAdminRole() && adminActiveTab === 'badaddresses') renderAdminTabContent();
+    }catch(e){ /* best-effort only - a failed check must never disturb anything else */ }
+  }, 0);
+}
+let addressScanStop = false;
+let addressScanRunning = false;
+// Bulk pass over everything still unchecked (mainly: orders created before this feature existed).
+// Deliberately sequential - the geocoder is rate-limited to about one call per second - so it
+// shows live progress and can be stopped at any point without losing what it already checked.
+async function scanUncheckedAddresses(){
+  if(addressScanRunning) return;
+  const pending = activeOrdersForGeo().filter(o=>orderGeoState(o) === 'unchecked');
+  if(pending.length === 0){ showToast('כל הכתובות הפעילות כבר נבדקו'); return; }
+  addressScanRunning = true; addressScanStop = false;
+  renderAdminTabContent();
+  let done = 0, failed = 0;
+  for(const o of pending){
+    if(addressScanStop) break;
+    const status = await checkOrderAddress(o.id);
+    done++;
+    if(status === 'failed') failed++;
+    const prog = document.getElementById('addrScanProgress');
+    if(prog) prog.textContent = `בודק... ${done}/${pending.length} · לא אותרו עד כה: ${failed}`;
+    // A full scan can run for several minutes - persist as we go, so closing the tab (or a phone
+    // putting the browser to sleep) never throws away what was already checked.
+    if(done % 10 === 0) await saveOrders();
+  }
+  await saveOrders();
+  addressScanRunning = false; addressScanStop = false;
+  showToast(`נבדקו ${done} כתובות · ${failed} לא אותרו`);
+  renderAdminTabContent();
+}
+function stopAddressScan(){ addressScanStop = true; }
+function activeOrdersForGeo(){
+  return orders.filter(o=>!o.delivered && !o.cancelled && o.address && o.city);
+}
+async function recheckBadAddress(orderId){
+  showToast('בודק מחדש...');
+  const status = await checkOrderAddress(orderId);
+  if(!status) return;
+  await saveOrders();
+  showToast(status === 'ok' ? 'הכתובת אותרה ✓' : 'עדיין לא אותרה במפה');
+  renderAdminTabContent();
+}
+// Paste a Google Maps link / "lat, lon" once -> saved as a permanent override for that exact
+// address, so this order, every other order on it, and every future route stop resolve instantly.
+async function fixBadAddressFromAdmin(orderId, inputId){
+  const o = orders.find(x=>x.id===orderId);
+  if(!o) return;
+  const input = document.getElementById(inputId);
+  const ok = await setGeocodeOverride(o.address, o.city, input ? input.value : '');
+  if(!ok) return;
+  o.geoStatus = 'ok'; o.geoCheckedAddress = o.address;
+  await saveOrders();
+  logAudit('תיקון כתובת', `${o.customer||'לקוח'} · ${o.city} · ${o.address}`);
+  renderAdminTabContent();
+}
 async function optimizeRouteOrder(depotObj, city, stops){
   const depotCoords = await geocodeAddress(depotObj.street, depotObj.city);
   if(!depotCoords) return { error: 'depot' };
