@@ -7671,7 +7671,10 @@ function renderAdminTabContent(){
       return `
         <div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;">
           <div style="font-weight:700;">${escHtml(o.customer||'לקוח')} · ${escHtml(o.address)}</div>
-          <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px;">${escHtml(cityDisplayName(o.city, o.roundNumber||0))}${o.phone1?' · '+escHtml(o.phone1):''}</div>
+          <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px;">${escHtml(cityDisplayName(o.city, o.roundNumber||0))}${o.phone1?' · '+escHtml(o.phone1):''}${(()=>{
+            const c = geocodeCache[`${o.address}|${o.city}`];
+            return (c && c.approx && c.spreadKm) ? ` · רחוב באורך ~${c.spreadKm} ק"מ${c.spreadKm>=0.6?' (ארוך - שווה להצמיד מיקום מדויק)':''}` : '';
+          })()}</div>
           <div class="row2" style="gap:6px;align-items:center;">
             <a href="https://www.google.com/maps/search/?api=1&query=${mapsQuery}" target="_blank" class="btn-secondary" style="text-decoration:none;text-align:center;white-space:nowrap;padding:6px 10px;font-size:12.5px;">🔎 חפש בגוגל מפות</a>
             <button class="btn-secondary" style="white-space:nowrap;padding:6px 10px;font-size:12.5px;" onclick="recheckBadAddress('${escAttr(o.id)}')">🔄 בדוק שוב</button>
@@ -8517,6 +8520,25 @@ async function setGeocodeOverride(street, city, rawInput){
   showToast('הכתובת תוקנה - תשמש מעכשיו בכל חישוב מסלול');
   return true;
 }
+// Street-level lookup used ONLY as the no-house-number fallback. featureType=street keeps it from
+// matching parks/POIs that share the name, and averaging every returned segment puts the point in
+// the middle of the street instead of on one arbitrary segment of it. spreadKm = how far apart the
+// street's own segments are, i.e. how uncertain this position is (a long street = high spread).
+async function streetLevelLookup(name, city){
+  const data = await nominatimFetch(`https://nominatim.openstreetmap.org/search?format=json&countrycodes=il&limit=20&featureType=street&street=${encodeURIComponent(name)}&city=${encodeURIComponent(city)}&country=Israel`);
+  if(!data || !data.length) return null;
+  const pts = data.map(x=>({ lat: parseFloat(x.lat), lon: parseFloat(x.lon) })).filter(p=>Number.isFinite(p.lat) && Number.isFinite(p.lon));
+  if(!pts.length) return null;
+  const lat = pts.reduce((a,p)=>a+p.lat,0)/pts.length;
+  const lon = pts.reduce((a,p)=>a+p.lon,0)/pts.length;
+  const kmBetween = (aLat,aLon,bLat,bLon)=>{
+    const dLat=(bLat-aLat)*111, dLon=(bLon-aLon)*111*Math.cos((aLat+bLat)/2*Math.PI/180);
+    return Math.sqrt(dLat*dLat+dLon*dLon);
+  };
+  let spreadKm = 0;
+  for(const p of pts) spreadKm = Math.max(spreadKm, kmBetween(lat, lon, p.lat, p.lon));
+  return { lat, lon, approx:true, spreadKm: Math.round(spreadKm*100)/100 };
+}
 async function geocodeAddress(street, city){
   const cacheKey = `${street}|${city}`;
   if(geocodeCache[cacheKey]) return geocodeCache[cacheKey];
@@ -8531,51 +8553,48 @@ async function geocodeAddress(street, city){
     const bare = stripHouseNumber(v);
     if(bare && !withNumber.includes(bare) && !noNumber.includes(bare)) noNumber.push(bare);
   }
-  let variants = withNumber.concat(noNumber);
-  // Anything resolved through a no-house-number variant is street-level only: good enough to
-  // order stops, but not the exact door - so it gets tagged and shown as such rather than
-  // being passed off as an exact hit.
-  const approxSet = new Set(noNumber);
   // Streets named after a person/title are very often written colloquially with a leading "ה"
   // ("the") - e.g. "הרשב"ם" - but OSM's own street name is frequently just the bare name
-  // ("רשב"ם") without it. Only added as a LAST-RESORT extra variant (tried after everything
-  // above fails), so a street that genuinely keeps its "ה" in OSM (like "הרצל") is never affected -
-  // real match attempts above will already have succeeded and returned before this ever runs.
-  const heStripped = variants.map(v=>{
-    const m = v.match(/^ה([\u05d0-\u05ea].*)$/);
-    if(m && approxSet.has(v)) approxSet.add(m[1]); // still street-level if its source was
-    return m ? m[1] : null;
-  }).filter(Boolean);
+  // ("רשב"ם") without it. Only used as a LAST RESORT, after everything above fails, so a street
+  // that genuinely keeps its "ה" in OSM is never affected.
+  const dropHe = v => { const m = (v||'').match(/^ה([\u05d0-\u05ea].*)$/); return m ? m[1] : null; };
+  const heWithNumber = withNumber.map(dropHe).filter(Boolean);
+  const heNoNumber = noNumber.map(dropHe).filter(Boolean);
   try{
-    for(const variant of variants){
+    // --- exact attempts: the address as given, house number included ---
+    for(const variant of withNumber){
       const data = await nominatimFetch(`https://nominatim.openstreetmap.org/search?format=json&countrycodes=il&limit=1&street=${encodeURIComponent(variant)}&city=${encodeURIComponent(city)}&country=Israel`);
       if(data && data.length){
-        const coords = { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon), approx: approxSet.has(variant) };
+        const coords = { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon), approx:false };
         geocodeCache[cacheKey] = coords;
         return coords;
       }
     }
-    for(const variant of variants){
+    for(const variant of withNumber){
       const data = await nominatimFetch(`https://nominatim.openstreetmap.org/search?format=json&countrycodes=il&limit=1&q=${encodeURIComponent(variant+', '+city+', ישראל')}`);
       if(data && data.length){
-        const coords = { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon), approx: approxSet.has(variant) };
+        const coords = { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon), approx:false };
         geocodeCache[cacheKey] = coords;
         return coords;
       }
     }
-    for(const variant of heStripped){
+    // --- fallback: the street without the house number, street-level only ---
+    for(const variant of noNumber){
+      const coords = await streetLevelLookup(variant, city);
+      if(coords){ geocodeCache[cacheKey] = coords; return coords; }
+    }
+    // --- last resort: same two tiers again, with a leading "ה" dropped ---
+    for(const variant of heWithNumber){
       const data = await nominatimFetch(`https://nominatim.openstreetmap.org/search?format=json&countrycodes=il&limit=1&street=${encodeURIComponent(variant)}&city=${encodeURIComponent(city)}&country=Israel`);
       if(data && data.length){
-        const coords = { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon), approx: approxSet.has(variant) };
+        const coords = { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon), approx:false };
         geocodeCache[cacheKey] = coords;
         return coords;
       }
-      const data2 = await nominatimFetch(`https://nominatim.openstreetmap.org/search?format=json&countrycodes=il&limit=1&q=${encodeURIComponent(variant+', '+city+', ישראל')}`);
-      if(data2 && data2.length){
-        const coords = { lat: parseFloat(data2[0].lat), lon: parseFloat(data2[0].lon), approx: approxSet.has(variant) };
-        geocodeCache[cacheKey] = coords;
-        return coords;
-      }
+    }
+    for(const variant of heNoNumber){
+      const coords = await streetLevelLookup(variant, city);
+      if(coords){ geocodeCache[cacheKey] = coords; return coords; }
     }
     return null; // not cached - a failure might be transient, so the next attempt gets a fresh try
   }catch(e){ return null; }
@@ -9125,7 +9144,13 @@ async function openRouteModal(city, round){
   // depot geocode, no stops geocoded, network/service failure) falls back to entry order AND
   // must show a visible warning, never silently claim an "optimized" route it didn't compute.
   const optimizationOk = !!(result && result.ordered && result.ordered.length && !result.error);
-  const stopsForLink = optimizationOk ? result.ordered : orders;
+  // Stops that couldn't be geocoded are not in result.ordered (it's built from geocoded stops
+  // only), so they must be appended explicitly - otherwise they'd silently disappear from the
+  // route link and never get delivered. They go last: without coordinates they can't be placed
+  // in the optimized sequence, but being last in the link beats being absent from it.
+  const orderedStops = optimizationOk ? result.ordered : orders;
+  const missingFromOrder = optimizationOk ? orders.filter(o=>!orderedStops.includes(o)) : [];
+  const stopsForLink = orderedStops.concat(missingFromOrder);
   const geocodeFailed = (result && result.failed) ? result.failed : [];
   const optimizationFailed = !optimizationOk;
 
@@ -9156,8 +9181,12 @@ async function openRouteModal(city, round){
     const c = geocodeCache[`${o.address}|${city}`];
     return c && c.approx;
   });
-  const approxHtml = approxStops.length ? `<div style="color:#B45309;font-size:12.5px;margin-top:6px;">📍 מיקום ברמת רחוב בלבד (אין מספרי בתים במפה) עבור: ${escHtml(approxStops.map(o=>`${o.customer} (${o.address})`).join(', '))} - הניווט עצמו מדויק וכולל את מספר הבית, רק המיקום בסדר העצירות עשוי לזוז מעט.</div>` : '';
-  const geocodeFailedHtml = geocodeFailed.length ? `<div style="color:var(--danger);font-size:12.5px;margin-top:6px;">⚠️ לא הצלחנו לאתר מיקום מדויק עבור: ${escHtml(geocodeFailed.map(o=>`${o.customer} (${o.address})`).join(', '))} - הן נכללות בקישור אבל לא בסדר המחושב, כדאי לבדוק ידנית.${geocodeFixHtml}</div>` : '';
+  const approxHtml = approxStops.length ? `<div style="color:#B45309;font-size:12.5px;margin-top:6px;">📍 מיקום ברמת רחוב בלבד (אין מספרי בתים במפה) עבור: ${escHtml(approxStops.map(o=>{
+    const c = geocodeCache[`${o.address}|${city}`];
+    const s = c && c.spreadKm ? ` · רחוב באורך ~${c.spreadKm} ק"מ` : '';
+    return `${o.customer} (${o.address})${s}`;
+  }).join(', '))} - הניווט עצמו מדויק וכולל את מספר הבית, רק המקום שלהן בסדר העצירות עשוי לזוז (ככל שהרחוב ארוך יותר, כך פחות מדויק).</div>` : '';
+  const geocodeFailedHtml = geocodeFailed.length ? `<div style="color:var(--danger);font-size:12.5px;margin-top:6px;">⚠️ לא הצלחנו לאתר במפה את: ${escHtml(geocodeFailed.map(o=>`${o.customer} (${o.address})`).join(', '))} - הן מופיעות בסוף הקישור ולא במקומן בסדר המחושב, כדאי לבדוק אותן ידנית.${geocodeFixHtml}</div>` : '';
   const errorMessages = {
     depot: 'לא הצלחנו לאתר את נקודת המוצא במפה - בדוק/י שהעיר והרחוב שהוגדרו באזור מנהל נכונים.',
     none: 'לא הצלחנו לאתר במפה אף אחת מהכתובות בסבב הזה.',
