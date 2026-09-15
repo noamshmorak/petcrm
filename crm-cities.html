@@ -8167,19 +8167,65 @@ function debounce(fn, ms){
 const STREET_TYPE_PREFIXES = [
   ['שדרות','שד'], ['רחוב','רח'], ['דרך','דר'], ['שכונת','שכ'],
   ['סמטת','סמ'], ['כיכר','כי'], ['מבוא','מב'], ['חצר','חצ'],
-  ['פרופסור',"פרופ'"], ['דוקטור','ד"ר'], ['גברת',"גב'"]
+  ['פרופסור',"פרופ'"], ['דוקטור','ד"ר'], ['גברת',"גב'"],
+  ['הרב','רב'], ['רבי',"ר'"], ['אדמו״ר','אדמור']
 ];
 function coreStreetName(name){
-  const n = (name||'').trim();
-  for(const [full, abbr] of STREET_TYPE_PREFIXES){
-    if(n.startsWith(full+' ')) return n.slice(full.length+1).trim();
-    if(n.startsWith(abbr+' ')) return n.slice(abbr.length+1).trim();
+  let n = (name||'').trim();
+  // strip every leading title/type word we recognize, not just the first one (e.g. "רחוב הרב קוק"
+  // has two), so both sides of a comparison end up reduced to the same bare name.
+  let stripped = true;
+  while(stripped){
+    stripped = false;
+    for(const [full, abbr] of STREET_TYPE_PREFIXES){
+      if(n.startsWith(full+' ')){ n = n.slice(full.length+1).trim(); stripped = true; break; }
+      if(n.startsWith(abbr+' ')){ n = n.slice(abbr.length+1).trim(); stripped = true; break; }
+    }
   }
   return n;
 }
+// "חיפוש כלול" - inclusive search: matches regardless of which side has the extra title/type word,
+// so if a customer says "האי גאון" it still finds the registry's "רב האי גאון" (and the reverse -
+// if the rep types the fuller "הרב האי גאון" but the registry only has "רב האי גאון" - also matches).
 function streetMatches(datasetName, query){
-  if(datasetName.includes(query)) return true;
-  return coreStreetName(datasetName).includes(coreStreetName(query));
+  if(!datasetName || !query) return false;
+  if(datasetName.includes(query) || query.includes(datasetName)) return true;
+  const coreData = coreStreetName(datasetName), coreQuery = coreStreetName(query);
+  return coreData.includes(coreQuery) || coreQuery.includes(coreData);
+}
+// Classic edit-distance, used for "חיפוש חופשי" below (typo tolerance).
+function levenshtein(a, b){
+  a = a||''; b = b||'';
+  const m = a.length, n = b.length;
+  if(m===0) return n;
+  if(n===0) return m;
+  let prev = new Array(n+1), curr = new Array(n+1);
+  for(let j=0;j<=n;j++) prev[j]=j;
+  for(let i=1;i<=m;i++){
+    curr[0]=i;
+    for(let j=1;j<=n;j++){
+      const cost = a[i-1]===b[j-1] ? 0 : 1;
+      curr[j] = Math.min(curr[j-1]+1, prev[j]+1, prev[j-1]+cost);
+    }
+    for(let j=0;j<=n;j++) prev[j]=curr[j];
+  }
+  return prev[n];
+}
+// "חיפוש חופשי" - free/fuzzy search: when nothing matched by inclusion (typo, e.g. "רביניביץ"
+// instead of "רבינוביץ"), fall back to the streets whose name (or a single word of it, so a typo
+// in one word of a multi-word street doesn't get diluted by the other words) is closest by
+// edit-distance to what was typed, within a tolerance that scales with the word's length.
+function bestFuzzyStreetMatches(streets, query, limit){
+  const qCore = coreStreetName(query).trim();
+  if(!qCore) return [];
+  const scored = streets.map(s=>{
+    const sCore = coreStreetName(s).trim();
+    let best = levenshtein(qCore, sCore);
+    for(const w of sCore.split(' ')){ best = Math.min(best, levenshtein(qCore, w)); }
+    return { name:s, dist:best };
+  });
+  const threshold = Math.max(1, Math.round(Math.max(3, qCore.length) * 0.34)); // ~1 typo per 3 letters
+  return scored.filter(x=>x.dist<=threshold).sort((a,b)=>a.dist-b.dist).slice(0, limit).map(x=>x.name);
 }
 function wireStreetAutocomplete(inputId, boxId, getCityFn, setPickedFn){
   const input = document.getElementById(inputId);
@@ -8200,12 +8246,20 @@ function wireStreetAutocomplete(inputId, boxId, getCityFn, setPickedFn){
       return;
     }
     const q = val.trim();
-    const results = streets.filter(s=>streetMatches(s,q)).slice(0, 10);
+    let results = streets.filter(s=>streetMatches(s,q)).slice(0, 10);
+    let fuzzy = false;
+    if(results.length===0){
+      // nothing found by inclusive search - try a typo-tolerant ("חיפוש חופשי") fallback before
+      // giving up, so a small spelling mistake doesn't block the rep from finding the street.
+      results = bestFuzzyStreetMatches(streets, q, 5);
+      fuzzy = results.length>0;
+    }
     if(results.length===0){
       box.innerHTML = `<div class="addr-suggestion-hint">לא נמצא רחוב תואם ב${city} במרשם הרשמי</div>`;
       return;
     }
-    box.innerHTML = results.map(name=>`<div class="addr-suggestion-item" data-name="${escAttr(name)}">${name}</div>`).join('');
+    box.innerHTML = (fuzzy ? '<div class="addr-suggestion-hint">לא נמצאה התאמה מדויקת - ההצעות הקרובות ביותר (יתכן וטעות הקלדה):</div>' : '')
+      + results.map(name=>`<div class="addr-suggestion-item" data-name="${escAttr(name)}">${name}</div>`).join('');
   }, 200);
   input.addEventListener('input', ()=>{
     // only invalidate the picked street if the text no longer starts with it (e.g. user deleted/edited
