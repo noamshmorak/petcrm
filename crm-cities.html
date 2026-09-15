@@ -8453,6 +8453,16 @@ async function nominatimFetch(url, isRetry){
 // street "type" word (e.g. "שד קוגל"), but OpenStreetMap/Nominatim's data usually has the
 // full spelled-out form ("שדרות קוגל"). Geocoding only the abbreviated form can fail to find
 // a street that genuinely exists - so build the spelled-out variant too and try it first.
+// Drops a trailing house number ("הרצל 10", "הרצל 10א", "הרצל 10/3") leaving just the street.
+// Only ever used as a FALLBACK after the full address failed: OpenStreetMap's house-number
+// coverage in Israel is partial, and on a street it doesn't cover, including the number returns
+// nothing at all - while the street on its own resolves fine. Street-level precision is all this
+// is used for anyway (ranking route stops, and confirming the street actually exists).
+function stripHouseNumber(name){
+  const n = (name||'').trim();
+  const stripped = n.replace(/[\s,]+\d+\s*[\u05d0-\u05ea]?\s*(?:['\u05f3]|\/\s*\d+)?\s*$/, '').trim();
+  return (stripped && stripped !== n) ? stripped : null;
+}
 function expandStreetPrefix(name){
   const n = (name||'').trim();
   for(const [full, abbr] of STREET_TYPE_PREFIXES){
@@ -8506,7 +8516,15 @@ async function geocodeAddress(street, city){
   const manualOverride = geocodeOverrides[cacheKey];
   if(manualOverride){ geocodeCache[cacheKey] = manualOverride; return manualOverride; }
   const expanded = expandStreetPrefix(street);
-  let variants = expanded ? [expanded, street] : [street]; // try the spelled-out form first, it's more likely to match OSM data
+  const withNumber = expanded ? [expanded, street] : [street]; // try the spelled-out form first, it's more likely to match OSM data
+  // ...then the same forms without the house number, as a fallback for streets OSM has no
+  // house numbers for (see stripHouseNumber above).
+  const noNumber = [];
+  for(const v of withNumber){
+    const bare = stripHouseNumber(v);
+    if(bare && !withNumber.includes(bare) && !noNumber.includes(bare)) noNumber.push(bare);
+  }
+  let variants = withNumber.concat(noNumber);
   // Streets named after a person/title are very often written colloquially with a leading "ה"
   // ("the") - e.g. "הרשב"ם" - but OSM's own street name is frequently just the bare name
   // ("רשב"ם") without it. Only added as a LAST-RESORT extra variant (tried after everything
