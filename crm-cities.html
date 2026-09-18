@@ -763,18 +763,39 @@ function renderPushOptInBanner(){
     el.innerHTML = '';
   }
 }
+// How long an inquiry may sit unresolved before it escalates again. It RE-escalates on this
+// interval for as long as it stays open: firing once and going silent meant an inquiry could sit
+// open for a month with nobody being reminded (exactly what happened - two were found open 15 and
+// 30 days, both already marked as escalated, so neither had alerted for weeks).
+const INQUIRY_RE_ESCALATE_MS = 48*60*60*1000;
+function inquiryOpenDaysLabel(inq){
+  const days = Math.floor((Date.now() - inq.openedAt) / (24*60*60*1000));
+  if(days >= 1) return `פתוחה ${days} ימים`;
+  const hours = Math.floor((Date.now() - inq.openedAt) / (60*60*1000));
+  return `פתוחה ${hours} שעות`;
+}
 // Escalates manager-inquiries that crossed the 48-hour unresolved mark into a real push
-// notification. This app has no backend/cron, so the check only fires while some admin has the
-// app open in a tab; escalationSent prevents the same inquiry from re-notifying repeatedly.
+// notification, and keeps re-escalating every INQUIRY_RE_ESCALATE_MS until someone resolves them.
+// This app has no backend/cron, so the check only fires while some admin has the app open.
 function checkInquiryEscalations(){
   let changed = false;
+  const now = Date.now();
   orders.forEach(o=>{
-    if(o.managerInquiry && !o.managerInquiry.resolved && !o.managerInquiry.escalationSent && inquiryIsOverdue(o.managerInquiry)){
-      sendPushToUsernames('⚠️ פנייה פתוחה מעל 48 שעות', `${o.customer||'לקוח'} (${o.city}): ${o.managerInquiry.note}`, o.managerInquiry.assignedTo||[]);
-      if(isAdminRole()) showPopupAlert('⚠️ פנייה פתוחה מעל 48 שעות', `${o.customer||'לקוח'} (${o.city}): ${o.managerInquiry.note}`, { dedupeId:'inquiry-'+o.id });
-      o.managerInquiry.escalationSent = true;
-      changed = true;
-    }
+    const inq = o.managerInquiry;
+    if(!inq || inq.resolved || !inquiryIsOverdue(inq)) return;
+    // Orders from before this change only carry the old boolean; treat them as long overdue for
+    // another escalation, which is exactly right - they're the ones that went quiet.
+    const lastAt = inq.lastEscalatedAt || 0;
+    if(now - lastAt < INQUIRY_RE_ESCALATE_MS) return;
+    const title = `⚠️ פנייה פתוחה מעל 48 שעות (${inquiryOpenDaysLabel(inq)})`;
+    const body = `${o.customer||'לקוח'} (${o.city}): ${inq.note}`;
+    sendPushToUsernames(title, body, inq.assignedTo||[]);
+    // dedupeId carries the escalation round, so each new 48-hour round pops again instead of
+    // being swallowed as "already seen".
+    if(isAdminRole()) showPopupAlert(title, body, { dedupeId:'inquiry-'+o.id+'-'+Math.floor(now/INQUIRY_RE_ESCALATE_MS) });
+    inq.lastEscalatedAt = now;
+    inq.escalationSent = true; // kept for backwards compatibility with older clients
+    changed = true;
   });
   if(changed) saveOrders();
 }
@@ -788,9 +809,11 @@ function checkOpenInquiriesOnLoad(){
   if(!isAdminRole()) return;
   const open = orders.filter(o=>o.managerInquiry && !o.managerInquiry.resolved);
   if(!open.length) return;
-  const idsKey = open.map(o=>o.id).sort().join(',');
+  // Keyed by the inquiry set AND today's date: an unchanged set still pops once each new day,
+  // so a long-open inquiry can't quietly disappear from view for weeks on end.
+  const idsKey = open.map(o=>o.id).sort().join(',') + '|' + todayStr();
   const sorted = open.slice().sort((a,b)=>a.managerInquiry.openedAt-b.managerInquiry.openedAt);
-  const lines = sorted.slice(0,5).map(o=>`${o.customer||'לקוח'} (${o.city}): ${o.managerInquiry.note}`);
+  const lines = sorted.slice(0,5).map(o=>`${o.customer||'לקוח'} (${o.city}, ${inquiryOpenDaysLabel(o.managerInquiry)}): ${o.managerInquiry.note}`);
   if(open.length>5) lines.push(`ועוד ${open.length-5}...`);
   showPopupAlert(
     `🚩 ${open.length} פניות פתוחות למנהל`,
@@ -7371,7 +7394,7 @@ function renderAdminTabContent(){
             <input type="checkbox" style="width:auto;margin-bottom:0;" ${automationSettings.popupAlertsEnabled?'checked':''} onchange="toggleAutomationSetting('popupAlertsEnabled', this.checked)">
           </label>
         </div>
-        <div style="font-size:12.5px;color:var(--muted);margin-top:4px;">כשמופעל: אירועים דחופים (פנייה שלא טופלה מעל 48 שעות, חוסר צפוי במלאי) יקפצו כחלון בולט על המסך אצל כל מנהל שהאפליקציה פתוחה אצלו, בנוסף להתראת Push הרגילה - לא רק כבאנר שקט שצריך לגלול אליו. כל התראה קופצת פעם אחת בלבד לכל אירוע (לא חוזרת שוב ושוב).</div>
+        <div style="font-size:12.5px;color:var(--muted);margin-top:4px;">כשמופעל: אירועים דחופים (פנייה שלא טופלה מעל 48 שעות, חוסר צפוי במלאי) יקפצו כחלון בולט על המסך אצל כל מנהל שהאפליקציה פתוחה אצלו, בנוסף להתראת Push הרגילה - לא רק כבאנר שקט שצריך לגלול אליו. פנייה שלא טופלה תמשיך להזכיר את עצמה כל 48 שעות עד שתטופל, ורשימת הפניות הפתוחות תקפוץ פעם ביום בכניסה לאפליקציה.</div>
       </div>
 
       <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:12px;">
