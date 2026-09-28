@@ -210,6 +210,7 @@
       <span id="cuFeatureToggle" onclick="toggleCustomerUpdateFeature()" style="font-size:12.5px;color:var(--muted);cursor:pointer;user-select:none;"></span>
     </div>
     <div id="strongAdActivateBar"></div>
+    <div id="dayRouteBar"></div>
     <div class="route-list" id="cityList"></div>
   </div>
 
@@ -4212,6 +4213,7 @@ function renderSummary(){
       </div>
     `;
   }).join('');
+  renderDayRouteBar();
 }
 function toggleCity(city){
   if(openCities.has(city)) openCities.delete(city); else openCities.add(city);
@@ -8976,7 +8978,7 @@ async function optimizeRouteOrder(depotObj, city, stops){
   const geocoded = [];
   const failed = [];
   for(const o of stops){
-    const coords = await geocodeAddress(o.address, city);
+    const coords = await geocodeAddress(o.address, o.city || city); // o.city: lets ONE route span several cities
     if(coords) geocoded.push({ order:o, coords });
     else failed.push(o);
   }
@@ -9128,6 +9130,154 @@ async function optimizeRouteOrder(depotObj, city, stops){
   };
 }
 
+/* ---------- מסלול היום: one continuous route across every round going out today ----------
+   The per-city route screen optimizes one city at a time and assumes a return to the depot after
+   it. But a real day is often several cities in a row (3-5 stops each), so the driving time that
+   actually matters is BETWEEN the cities - exactly what a per-city route can't see. This builds a
+   single optimized route over whichever rounds are selected: one city or five, same screen.
+   Stops at the identical address are merged into ONE visit (two orders on the same street number
+   is one knock on the door, not two stops). */
+const DAY_ROUTE_SELECTION_KEY = 'pet-crm-day-route-selection'; // per-device convenience only
+function dayRouteRoundKey(city, round){ return city + '||' + round; }
+function loadDayRouteSelection(){
+  try{ return new Set(JSON.parse(localStorage.getItem(DAY_ROUTE_SELECTION_KEY) || '[]')); }
+  catch(e){ return new Set(); }
+}
+function saveDayRouteSelection(set){
+  try{ localStorage.setItem(DAY_ROUTE_SELECTION_KEY, JSON.stringify([...set])); }catch(e){}
+}
+function renderDayRouteBar(){
+  const bar = document.getElementById('dayRouteBar');
+  if(!bar) return;
+  const rounds = computeCitySummary();
+  // Only worth offering once there's more than one round open - with a single round the existing
+  // per-city button already does exactly the same thing.
+  if(rounds.length < 2){ bar.innerHTML = ''; return; }
+  bar.innerHTML = `<button class="btn-pack" style="width:100%;margin-bottom:10px;" onclick="openDayRouteModal()">🚚 מסלול היום (כמה ערים במסלול אחד)</button>`;
+}
+let dayRouteStops = null; // the last built route, kept for the per-stop navigate buttons
+function openDayRouteModal(){
+  const rounds = computeCitySummary();
+  const sel = loadDayRouteSelection();
+  document.getElementById('routeTitle').textContent = '🚚 מסלול היום';
+  document.getElementById('routeModal').classList.add('open');
+  const content = document.getElementById('routeContent');
+  if(!depot || !depot.city || !depot.street){
+    content.innerHTML = '<div style="color:var(--danger);">לא הוגדרה נקודת מוצא. מנהל צריך להגדיר אותה באזור מנהל (טאב "נקודת מוצא") לפני בניית מסלול.</div>';
+    return;
+  }
+  content.innerHTML = `
+    <div style="font-size:13px;color:var(--muted);margin-bottom:10px;">סמן/י אילו סבבים יוצאים היום. המסלול ייבנה כמסלול אחד רציף - יוצא מנקודת המוצא, עובר על כל הערים בסדר הכי חסכוני, וחוזר.</div>
+    ${rounds.map(c=>{
+      const key = dayRouteRoundKey(c.city, c.roundNumber);
+      const withAddr = c.orders.filter(o=>o.address).length;
+      return `<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;margin-bottom:6px;">
+        <input type="checkbox" class="day-route-round" data-key="${escAttr(key)}" ${sel.has(key)?'checked':''} style="width:auto;margin-bottom:0;">
+        <span style="flex:1;">${escHtml(cityDisplayName(c.city, c.roundNumber))}</span>
+        <span style="font-size:12.5px;color:var(--muted);">${withAddr} נקודות${withAddr!==c.count?` (מתוך ${c.count})`:''}</span>
+      </label>`;
+    }).join('')}
+    <button class="btn-primary" style="margin-top:10px;" onclick="buildDayRoute()">🧭 בנה מסלול</button>
+  `;
+}
+async function buildDayRoute(){
+  const checked = [...document.querySelectorAll('.day-route-round:checked')].map(el=>el.dataset.key);
+  if(checked.length===0){ showToast('צריך לסמן לפחות סבב אחד'); return; }
+  const sel = new Set(checked);
+  saveDayRouteSelection(sel);
+
+  const rounds = computeCitySummary().filter(c=>sel.has(dayRouteRoundKey(c.city, c.roundNumber)));
+  const allOrders = [];
+  rounds.forEach(c=>c.orders.forEach(o=>{ if(o.address) allOrders.push(o); }));
+  const noAddress = [];
+  rounds.forEach(c=>c.orders.forEach(o=>{ if(!o.address) noAddress.push(o); }));
+  if(allOrders.length===0){
+    document.getElementById('routeContent').innerHTML = '<div style="color:var(--danger);">לאף הזמנה בסבבים שנבחרו אין כתובת רשומה.</div>';
+    return;
+  }
+
+  // Merge identical addresses into a single stop - same door, one visit.
+  const byAddress = new Map();
+  allOrders.forEach(o=>{
+    const k = `${o.address}|${o.city}`;
+    if(!byAddress.has(k)){
+      byAddress.set(k, {
+        id: 'daystop_' + byAddress.size,
+        address: o.address,
+        city: o.city,
+        customer: o.customer || 'לקוח',
+        phone1: o.phone1 || '',
+        _orders: [o]
+      });
+    }else{
+      const stop = byAddress.get(k);
+      stop._orders.push(o);
+      if(o.customer && !stop.customer.includes(o.customer)) stop.customer += ' + ' + o.customer;
+    }
+  });
+  const stops = [...byAddress.values()];
+  stops.forEach(s=>{ s._fullAddress = s.address.includes(s.city) ? s.address : `${s.address}, ${s.city}`; });
+  const mergedCount = allOrders.length - stops.length;
+
+  const content = document.getElementById('routeContent');
+  content.innerHTML = `<div style="text-align:center;color:var(--muted);padding:16px 0;">🧭 בונה מסלול ל-${stops.length} נקודות ב-${rounds.length} סבבים...<br><span style="font-size:12.5px;">בדיקת כל כתובת מול המפה לוקחת כשנייה, אז זה יכול לקחת עד כדקה. אפשר להשאיר פתוח.</span></div>`;
+
+  const depotAddress = depotFullAddress();
+  const result = await optimizeRouteOrder(depot, depot.city, stops);
+  const ok = !!(result && result.ordered && result.ordered.length && !result.error);
+  const orderedStops = ok ? result.ordered : stops;
+  const failed = (result && result.failed) ? result.failed : [];
+  // Stops that couldn't be geocoded aren't in `ordered` - append them so they're never silently
+  // dropped from the day (same fix as the per-city screen).
+  const finalStops = orderedStops.concat(stops.filter(s=>!orderedStops.includes(s)));
+  dayRouteStops = finalStops;
+
+  const statsHtml = (ok && result.distanceKm!=null)
+    ? `<div style="font-size:12.5px;color:var(--muted);margin-top:4px;">מרחק כולל משוער: כ-${result.distanceKm} ק"מ · זמן נסיעה משוער: כ-${result.durationMin} דק'${result.hasTraffic?' (כולל פקקים בזמן אמת)':''} (לא כולל זמן בעצירות)</div>`
+    : '<div style="color:var(--danger);font-size:12.5px;margin-top:4px;">⚠️ לא הצלחנו לחשב מסלול מיטבי כרגע - הסדר למטה הוא סדר ההזנה, לא מסלול מחושב. כדאי לנסות שוב בעוד רגע.</div>';
+
+  const rowsHtml = finalStops.map((s,i)=>{
+    const c = geocodeCache[`${s.address}|${s.city}`];
+    const approxNote = (c && c.approx) ? ' · 📍 מיקום ברמת רחוב' : '';
+    const notFound = failed.includes(s) ? ' · ⚠️ לא אותרה במפה' : '';
+    const navUrl = 'https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(s._fullAddress) + '&travelmode=driving';
+    const items = s._orders.map(o=>formatAnimals(o.animals, o.pairFlags, o.cageSharing)).join(' | ');
+    return `
+      <div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;">
+        <div style="display:flex;gap:8px;align-items:baseline;">
+          <div style="font-weight:800;font-size:16px;flex-shrink:0;">${i+1}.</div>
+          <div style="flex:1;">
+            <div style="font-weight:700;">${escHtml(s.customer)}${s._orders.length>1?` <span style="font-size:12px;color:var(--accent-dark);">(${s._orders.length} הזמנות באותה כתובת)</span>`:''}</div>
+            <div style="font-size:12.5px;color:var(--muted);">${escHtml(s._fullAddress)}${approxNote}${notFound}</div>
+            <div style="font-size:12.5px;color:var(--muted);">${escHtml(items)}</div>
+          </div>
+        </div>
+        <div class="row2" style="gap:6px;margin-top:8px;">
+          <a href="${navUrl}" target="_blank" class="btn-primary" style="text-decoration:none;text-align:center;padding:6px 10px;font-size:12.5px;">🧭 נווט לכאן</a>
+          ${s.phone1 ? `<a href="tel:${escAttr(s.phone1)}" class="btn-secondary" style="text-decoration:none;text-align:center;padding:6px 10px;font-size:12.5px;">📞 ${escHtml(s.phone1)}</a>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+
+  const mapsLinks = buildMapsLinks(depotAddress, finalStops);
+  const linksHtml = mapsLinks.length===1
+    ? `<a href="${mapsLinks[0].url}" target="_blank" class="btn-primary" style="display:block;text-align:center;margin-top:12px;text-decoration:none;">🗺️ פתח את כל המסלול בגוגל מפות</a>`
+    : `<div style="font-size:12.5px;color:var(--muted);margin-top:10px;">גוגל מפות מגבילה כמות נקודות בקישור אחד, אז המסלול המלא מפוצל ל-${mapsLinks.length} קישורים לפי הסדר. לרוב נוח יותר להשתמש בכפתור "נווט לכאן" של כל עצירה בנפרד.</div>`
+      + mapsLinks.map((l,i)=>`<a href="${l.url}" target="_blank" class="btn-secondary" style="display:block;text-align:center;margin-top:6px;text-decoration:none;">🗺️ חלק ${i+1}/${mapsLinks.length}</a>`).join('');
+
+  content.innerHTML = `
+    <div class="total-price-box" style="text-align:right;margin-bottom:10px;">
+      <div>📍 נקודת מוצא: ${escHtml(depotAddress)}</div>
+      <div style="font-size:12.5px;color:var(--muted);margin-top:2px;">${finalStops.length} עצירות · ${rounds.length} סבבים · ${escHtml(rounds.map(c=>c.city).join(', '))}</div>
+      ${mergedCount>0 ? `<div style="font-size:12.5px;color:var(--accent-dark);margin-top:2px;">✓ ${mergedCount} הזמנות אוחדו לעצירות משותפות (אותה כתובת)</div>` : ''}
+      ${statsHtml}
+    </div>
+    ${noAddress.length ? `<div style="color:var(--danger);font-size:12.5px;margin-bottom:8px;">⚠️ ${noAddress.length} הזמנות בסבבים האלה בלי כתובת רשומה ולא נכללות: ${escHtml(noAddress.map(o=>o.customer||'לקוח').join(', '))}</div>` : ''}
+    ${rowsHtml}
+    ${linksHtml}
+    <button class="btn-secondary" style="margin-top:10px;" onclick="openDayRouteModal()">↩ שינוי הסבבים שנבחרו</button>
+  `;
+}
 async function openRouteModal(city, round){
   const list = computeCitySummary();
   const cityData = list.find(c=>c.city===city && c.roundNumber===round);
