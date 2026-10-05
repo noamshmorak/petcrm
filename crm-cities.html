@@ -5704,6 +5704,11 @@ async function saveStrongAdCampaign(){
 // it can never drift even if nobody opens the app for a while.
 let adProfitSchedule = {
   cycleStartDate: '2026-10-04', // first Sunday after Sukkot/Simchat Torah 2026 (חג מסתיים במוצ״ש 3.10)
+  // One-off changes for a specific week, keyed by that week's Sunday: { 'YYYY-MM-DD': {groups:[..],
+  // strongAd:bool, note:''} }. Reality deviates from the plan regularly (a חג week, a paper that
+  // decides not to publish), and an override records what ACTUALLY ran that week without touching
+  // the recurring cycle underneath - next time that week comes around, the plan is back.
+  overrides: {},
   // 19-week cycle. Every week's group(s) are geographically close to each other (same region), so
   // the same delivery run can cover both - e.g. never בני ברק (מרכז) with צפת (צפון) in the same
   // week. בני ברק/ירושלים (the top performers) get 3 appearances per cycle, everyone else gets 2.
@@ -5742,6 +5747,7 @@ async function loadAdProfitSchedule(){
       const parsed = JSON.parse(res.value);
       if(parsed && Array.isArray(parsed.weeks) && parsed.weeks.length>0 && parsed.cycleStartDate){
         adProfitSchedule = parsed;
+        if(!adProfitSchedule.overrides) adProfitSchedule.overrides = {}; // saved before overrides existed
       }
     }
     markSyncedObject(AD_PROFIT_SCHEDULE_KEY, adProfitSchedule);
@@ -5759,7 +5765,26 @@ function computeProfitScheduleForWeek(weekStart){
   if(n===0) return null;
   const weekIdx = weeksBetween(adProfitSchedule.cycleStartDate, weekStart);
   const idx = ((weekIdx % n) + n) % n;
+  const ov = (adProfitSchedule.overrides || {})[weekStart];
+  if(ov) return { groups: ov.groups || [], strongAd: !!ov.strongAd, note: ov.note || '', weekNumber: idx+1, isOverride: true };
   return { ...weeks[idx], weekNumber: idx+1 };
+}
+async function setProfitWeekOverride(weekStart, g1, g2, note){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לשנות את הלוח'); return; }
+  if(!adProfitSchedule.overrides) adProfitSchedule.overrides = {};
+  const groups = [g1, g2].map(x=>(x||'').trim()).filter(Boolean);
+  if(groups.length===0){ showToast('צריך למלא לפחות פרסום אחד'); return; }
+  adProfitSchedule.overrides[weekStart] = { groups, strongAd:false, note:(note||'').trim() };
+  await saveAdProfitSchedule();
+  logAudit('שינוי חד-פעמי בלוח פרסום', `${formatDate(weekStart)}: ${groups.join(' · ')}${note?' ('+note+')':''}`);
+  renderAdminTabContent();
+}
+async function clearProfitWeekOverride(weekStart){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לשנות את הלוח'); return; }
+  if(adProfitSchedule.overrides) delete adProfitSchedule.overrides[weekStart];
+  await saveAdProfitSchedule();
+  logAudit('ביטול שינוי חד-פעמי בלוח פרסום', formatDate(weekStart));
+  renderAdminTabContent();
 }
 async function updateProfitScheduleGroup(weekIdx, slotIdx, value){
   if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לערוך את הלוח'); return; }
@@ -5782,10 +5807,19 @@ async function updateProfitScheduleStartDate(value){
   renderAdminTabContent();
 }
 // Returns the Sunday (YYYY-MM-DD) that starts the week containing dateStr - ads in this business go out Sundays.
+// Formats a Date using its LOCAL parts. toISOString() would convert to UTC first, which in Israel
+// (UTC+2/+3) pushes local midnight back into the previous day - that silently shifted every
+// week-start by one day, so "this week" showed Saturday instead of Sunday.
+function localDateStr(d){
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,'0');
+  const day = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
 function weekStartOf(dateStr){
   const d = new Date(dateStr+'T00:00:00');
-  d.setDate(d.getDate()-d.getDay());
-  return d.toISOString().slice(0,10);
+  d.setDate(d.getDate()-d.getDay()); // getDay(): 0=Sunday, so this snaps back to Sunday
+  return localDateStr(d);
 }
 function weeklyCostFor(def, weekStart){
   if(def && def.weekOverrides && def.weekOverrides[weekStart]!=null) return def.weekOverrides[weekStart];
@@ -7760,16 +7794,37 @@ function renderAdminTabContent(){
       const ws = pcAddWeeks(pcThisWeekStart, i);
       pcUpcoming.push({ weekStart: ws, plan: computeProfitScheduleForWeek(ws) });
     }
-    const pcRowHtml = (item, isCurrent)=>`
-      <div class="row2" style="align-items:center;margin-bottom:6px;padding:8px 10px;border-radius:10px;${isCurrent?'background:#EAF3FF;border:1px solid #B6D6FF;':'border:1px solid var(--border);'}">
-        <div style="flex:1;font-size:12.5px;color:var(--muted);">${isCurrent?'📍 השבוע · ':''}${formatDate(item.weekStart)}</div>
-        <div style="flex:2;font-weight:700;">${(item.plan.groups||[]).map(g=>escHtml(g)).join(' · ')}</div>
-        <div style="flex:1;text-align:left;">${item.plan.strongAd ? '<span style="color:#B45309;font-weight:800;">🔥 + פרסום חזק</span>' : ''}</div>
+    const pcIsMain = currentUser && currentUser.role==='mainadmin';
+    const pcRowHtml = (item, isCurrent)=>{
+      const ov = item.plan.isOverride;
+      const editId = 'pcOv_' + item.weekStart.replace(/-/g,'');
+      return `
+      <div style="margin-bottom:6px;padding:8px 10px;border-radius:10px;${isCurrent?'background:#EAF3FF;border:1px solid #B6D6FF;':'border:1px solid var(--border);'}">
+        <div class="row2" style="align-items:center;">
+          <div style="flex:1;font-size:12.5px;color:var(--muted);">${isCurrent?'📍 השבוע · ':''}${formatDate(item.weekStart)}</div>
+          <div style="flex:2;font-weight:700;">${(item.plan.groups||[]).map(g=>escHtml(g)).join(' · ')}${ov?' <span style="font-size:11.5px;color:#B45309;font-weight:800;">✏️ שינוי חד-פעמי</span>':''}</div>
+          <div style="flex:1;text-align:left;">${item.plan.strongAd ? '<span style="color:#B45309;font-weight:800;">🔥 + פרסום חזק</span>' : ''}</div>
+        </div>
+        ${ov && item.plan.note ? `<div style="font-size:12px;color:var(--muted);margin-top:2px;">${escHtml(item.plan.note)}</div>` : ''}
+        ${pcIsMain ? `
+          <div style="margin-top:6px;">
+            <span onclick="document.getElementById('${editId}').style.display = document.getElementById('${editId}').style.display==='none'?'block':'none'" style="font-size:12px;color:var(--muted);cursor:pointer;user-select:none;">✏️ שינוי לשבוע הזה בלבד</span>
+            ${ov ? `<span onclick="clearProfitWeekOverride('${escAttr(item.weekStart)}')" style="font-size:12px;color:var(--danger);cursor:pointer;user-select:none;margin-right:10px;">↩ חזרה לתכנון המקורי</span>` : ''}
+          </div>
+          <div id="${editId}" style="display:none;margin-top:6px;">
+            <div class="row2" style="gap:6px;">
+              <input id="${editId}_a" placeholder="פרסום 1" style="flex:1;margin-bottom:0;font-size:12.5px;" value="${escAttr((item.plan.groups||[])[0]||'')}">
+              <input id="${editId}_b" placeholder="פרסום 2 (אפשר להשאיר ריק)" style="flex:1;margin-bottom:0;font-size:12.5px;" value="${escAttr((item.plan.groups||[])[1]||'')}">
+            </div>
+            <input id="${editId}_n" placeholder="סיבה (לא חובה) - למשל: השבועון לא יצא אחרי החג" style="width:100%;margin-top:6px;margin-bottom:0;font-size:12.5px;" value="${escAttr(item.plan.note||'')}">
+            <button class="btn-primary" style="margin-top:6px;padding:6px 10px;font-size:12.5px;" onclick="setProfitWeekOverride('${escAttr(item.weekStart)}', document.getElementById('${editId}_a').value, document.getElementById('${editId}_b').value, document.getElementById('${editId}_n').value)">שמור לשבוע הזה</button>
+          </div>` : ''}
       </div>`;
+    };
     const pcCurrent = { weekStart: pcThisWeekStart, plan: computeProfitScheduleForWeek(pcThisWeekStart) };
     content.innerHTML = `
       <div style="font-weight:800;margin-bottom:4px;">🗓️ לוח פרסום שבועי (2 פרסומים בשבוע)</div>
-      <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">מחזור קבוע של 19 שבועות, בנוי לפי הרווח הממוצע שנמדד לכל קבוצת פרסום ולפי קרבה גיאוגרפית (כל שבוע - הערים המתפרסמות קרובות זו לזו, כדי שאותו סיבוב משלוחים יכסה את שתיהן). בני ברק וירושלים, הרווחיות ביותר, חוזרות כל כ-6-7 שבועות; כל השאר כל כ-9-10 שבועות. הפרסום החזק (ארצי) משולב כל כ-9-10 שבועות (פעם בחודשיים בערך) כתוספת יחידה (לא שתיים) לשבוע, רחוק מבני ברק/ירושלים ובסמוך לשבוע בית שמש+ביתר עילית.</div>
+      <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">מחזור קבוע של 19 שבועות, בנוי לפי הרווח הממוצע שנמדד לכל קבוצת פרסום ולפי קרבה גיאוגרפית (כל שבוע - הערים המתפרסמות קרובות זו לזו, כדי שאותו סיבוב משלוחים יכסה את שתיהן). בני ברק וירושלים, הרווחיות ביותר, חוזרות כל כ-6-7 שבועות; כל השאר כל כ-9-10 שבועות. הפרסום החזק (ארצי) משולב כל כ-9-10 שבועות (פעם בחודשיים בערך) כתוספת יחידה (לא שתיים) לשבוע, רחוק מבני ברק/ירושלים ובסמוך לשבוע בית שמש+ביתר עילית. כשהמציאות משתנה (חג, עיתון שלא יצא) אפשר לשנות שבוע בודד דרך "שינוי לשבוע הזה בלבד" - המחזור הקבוע נשאר כמו שהוא.</div>
 
       <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:14px;">
         ${pcRowHtml(pcCurrent, true)}
