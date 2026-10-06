@@ -178,6 +178,7 @@
     <div class="tab" data-tab="prices" id="pricesTabBtn" style="display:none;">🏷️ מחירון</div>
     <div class="tab" data-tab="users" id="usersTabBtn" style="display:none;">👥 משתמשים</div>
     <div class="tab" data-tab="report" id="reportTabBtn" style="display:none;">📊 דוח משולב</div>
+    <div class="tab" data-tab="monthly" id="monthlyTabBtn" style="display:none;">📅 דוח חודשי</div>
     <div class="tab" data-tab="bugreports" id="bugReportsTabBtn" style="display:none;">🐛 באגים</div>
   </div>
 
@@ -287,6 +288,10 @@
     <div id="combinedReportContent">
       <button class="btn-primary" onclick="loadCombinedReport()">🔄 טען דוח משולב</button>
     </div>
+  </div>
+
+  <div id="tab-monthly" style="display:none;">
+    <div id="monthlySalesContent"></div>
   </div>
 
   <div id="tab-bugreports" style="display:none;">
@@ -789,6 +794,7 @@ function applyRoleVisibility(){
   document.getElementById('pricesTabBtn').style.display = isAdmin ? '' : 'none'; // any admin (not just mainadmin) can maintain the price list
   document.getElementById('usersTabBtn').style.display = isMain ? '' : 'none';
   document.getElementById('reportTabBtn').style.display = isMain ? '' : 'none';
+  document.getElementById('monthlyTabBtn').style.display = isAdmin ? '' : 'none';
   document.getElementById('bugReportsTabBtn').style.display = isAdmin ? '' : 'none';
 }
 function isAdminRole(){ return currentUser && (currentUser.role==='admin' || currentUser.role==='mainadmin'); }
@@ -1300,6 +1306,7 @@ document.querySelectorAll('.tab').forEach(tab=>{
     if(tab.dataset.tab==='prices') renderPricesEditor();
     if(tab.dataset.tab==='users') renderUsersList();
     if(tab.dataset.tab==='bugreports') renderBugReportsList();
+      if(tab.dataset.tab === 'monthly') renderMonthlySalesReport();
   });
 });
 
@@ -1330,6 +1337,58 @@ if('serviceWorker' in navigator){
     // being installable as its own distinct app.
     navigator.serviceWorker.register('sw-store.js', {scope: './crm-store.html'}).catch(()=>{ /* offline shell is a bonus, not critical */ });
   });
+}
+
+/* ---------- דוח מכירות רגילות לפי חודש (מחזור בלבד, למנהלים) ----------
+   בכוונה בלי עמודת רווח: לרוב המוצרים כאן לא מוגדרת עלות במחירון, ולכן כל "רווח" שהיה מוצג
+   כאן היה מנופח ומטעה. מכירות מבוטלות לא נכללות בשום סכום. */
+function monthlyStoreSalesRows(){
+  const live = (storeSales||[]).filter(s=>!s.cancelled);
+  const byMonth = {};
+  live.forEach(s=>{
+    const m = (s.date||'').slice(0,7) || 'ללא תאריך';
+    if(!byMonth[m]) byMonth[m] = { month:m, count:0, revenue:0, sellers:{} };
+    const b = byMonth[m];
+    b.count++;
+    b.revenue += (s.totalPrice||0);
+    const who = s.createdByUsername || 'לא צוין';
+    b.sellers[who] = (b.sellers[who]||0) + (s.totalPrice||0);
+  });
+  return Object.values(byMonth).sort((a,b)=>b.month.localeCompare(a.month));
+}
+const HEB_MONTH_NAMES = ['ינואר','פברואר','מרץ','אפריל','מאי','יוני','יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'];
+function monthLabelHe(m){
+  if(!m || m.length!==7) return m || '';
+  const parts = m.split('-');
+  const idx = parseInt(parts[1],10)-1;
+  return (HEB_MONTH_NAMES[idx]||parts[1]) + ' ' + parts[0];
+}
+function renderMonthlySalesReport(){
+  const el = document.getElementById('monthlySalesContent');
+  if(!el) return;
+  if(!isAdminRole()){ el.innerHTML = '<div class="card">הדוח הזה זמין למנהלים בלבד.</div>'; return; }
+  const rows = monthlyStoreSalesRows();
+  const cancelledCount = (storeSales||[]).filter(s=>s.cancelled).length;
+  if(rows.length===0){ el.innerHTML = '<div class="card">אין עדיין מכירות רשומות.</div>'; return; }
+  const totalRev = rows.reduce((a,r)=>a+r.revenue,0);
+  const totalCount = rows.reduce((a,r)=>a+r.count,0);
+  const nis = n => Math.round(n).toLocaleString('he-IL');
+  el.innerHTML = '<div class="card">'
+    + '<div style="font-weight:800;margin-bottom:4px;">📅 מכירות רגילות לפי חודש</div>'
+    + '<div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">מחזור בלבד. מכירות מבוטלות לא נכללות.</div>'
+    + rows.map(r=>'<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;">'
+        + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;">'
+          + '<div style="font-weight:700;">' + escHtml(monthLabelHe(r.month)) + '</div>'
+          + '<div style="font-weight:800;">' + nis(r.revenue) + ' ₪</div>'
+        + '</div>'
+        + '<div style="font-size:12.5px;color:var(--muted);margin-top:2px;">' + r.count + ' מכירות · ממוצע ' + nis(r.revenue/r.count) + ' ₪ למכירה</div>'
+        + '<div style="font-size:12.5px;color:var(--muted);margin-top:2px;">' + Object.keys(r.sellers).map(k=>escHtml(k) + ': ' + nis(r.sellers[k]) + ' ₪').join(' · ') + '</div>'
+      + '</div>').join('')
+    + '<div class="total-price-box" style="text-align:right;margin-top:10px;">'
+      + '<div style="font-weight:800;">סה"כ ' + totalCount + ' מכירות · ' + nis(totalRev) + ' ₪</div>'
+      + (cancelledCount ? '<div style="font-size:12px;color:var(--muted);margin-top:2px;">' + cancelledCount + ' מכירות מבוטלות לא נכללו</div>' : '')
+    + '</div>'
+  + '</div>';
 }
 </script>
 </body></html>
