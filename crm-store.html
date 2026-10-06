@@ -1297,7 +1297,7 @@ document.querySelectorAll('.tab').forEach(tab=>{
   tab.addEventListener('click', ()=>{
     document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
     tab.classList.add('active');
-    ['sale','history','expenses','prices','users','report','bugreports'].forEach(name=>{
+    ['sale','history','expenses','prices','users','report','monthly','bugreports'].forEach(name=>{
       const el = document.getElementById('tab-'+name);
       if(el) el.style.display = (tab.dataset.tab===name) ? '' : 'none';
     });
