@@ -5011,6 +5011,79 @@ function resolveManagerInquiry(orderId){
     showToast('הפנייה סומנה כטופלה');
   });
 }
+/* ---------- תלונות לקוחות: סגירה עם סיכום, והעברה לטיפול נוסף ----------
+   נבנה על גבי managerInquiry הקיים (אותה פנייה שנפתחת מהדגל 🚩 ליד ההזמנה), כדי שכל התלונות
+   הפתוחות היום ייכנסו מיד למסך החדש ושהסלמת 48 השעות הקיימת תמשיך לעבוד כמו שהיא. */
+const FOLLOWUP_ESCALATE_MS = 48*60*60*1000;
+// סגירה עם תיעוד מה סוכם מול הלקוח - בלי זה אי אפשר לדעת אחר כך מה הובטח לו
+async function resolveComplaintWithNote(orderId, inputId){
+  if(!isAdminRole()){ showToast('רק מנהל יכול לסגור תלונה'); return; }
+  const o = orders.find(x=>x.id===orderId);
+  if(!o || !o.managerInquiry) return;
+  const input = document.getElementById(inputId);
+  const note = input ? input.value.trim() : '';
+  if(!note){ showToast('צריך לרשום מה סוכם עם הלקוח לפני סגירה'); if(input) input.focus(); return; }
+  const mi = o.managerInquiry;
+  mi.resolved = true;
+  mi.resolvedAt = Date.now();
+  mi.resolvedBy = currentUser.username;
+  mi.resolutionNote = note;
+  await saveOrders();
+  logAudit('סגר תלונת לקוח', `${o.customer||'לקוח'} · ${note}`);
+  showToast('התלונה נסגרה ותועדה');
+  renderAll();
+  renderAdminTabContent();
+}
+// העברה לטיפול נוסף של נציג מסוים: הוא מקבל התראה מיד, ואם לא טיפל תוך 48 שעות זה מוסלם למנהל הראשי
+async function setComplaintFollowup(orderId, username){
+  if(!isAdminRole()){ showToast('רק מנהל יכול להעביר לטיפול'); return; }
+  const o = orders.find(x=>x.id===orderId);
+  if(!o || !o.managerInquiry || !username) return;
+  const mi = o.managerInquiry;
+  mi.followupFor = username;
+  mi.followupSince = Date.now();
+  mi.followupDone = false;
+  mi.followupEscalatedAt = null;
+  await saveOrders();
+  sendPushToUsernames('🔔 תלונה שהועברה אליך לטיפול', `${o.customer||'לקוח'} (${o.city}): ${mi.note}`, [username]);
+  logAudit('העביר תלונה לטיפול נוסף', `${o.customer||'לקוח'} → ${username}`);
+  showToast('הועבר ל' + username + ' והתראה נשלחה');
+  renderAdminTabContent();
+}
+async function markComplaintFollowupDone(orderId){
+  if(!isAdminRole()){ showToast('רק מנהל יכול לעדכן'); return; }
+  const o = orders.find(x=>x.id===orderId);
+  if(!o || !o.managerInquiry) return;
+  o.managerInquiry.followupDone = true;
+  await saveOrders();
+  logAudit('סיים טיפול נוסף בתלונה', `${o.customer||'לקוח'}`);
+  showToast('סומן שהטיפול הנוסף בוצע');
+  renderAdminTabContent();
+}
+// רץ יחד עם הסלמת הפניות הרגילה: תלונה שהועברה לנציג ולא טופלה תוך 48 שעות עולה למנהל הראשי,
+// וחוזרת כל 48 שעות עד שמסמנים שטופלה - בדיוק כמו ההסלמה של פנייה שלא נסגרה.
+function checkComplaintFollowupEscalations(){
+  let changed = false;
+  const now = Date.now();
+  orders.forEach(o=>{
+    const mi = o.managerInquiry;
+    if(!mi || mi.resolved) return;
+    if(!mi.followupFor || mi.followupDone) return;
+    if(now - (mi.followupSince||now) < FOLLOWUP_ESCALATE_MS) return;
+    if(mi.followupEscalatedAt && (now - mi.followupEscalatedAt) < FOLLOWUP_ESCALATE_MS) return;
+    const hours = Math.floor((now - mi.followupSince)/(60*60*1000));
+    const title = `⚠️ ${mi.followupFor} לא טיפל בתלונה כבר ${hours} שעות`;
+    const body = `${o.customer||'לקוח'} (${o.city}): ${mi.note}`;
+    sendPushToUsernames(title, body, [MAIN_ADMIN_USERNAME]);
+    if(currentUser && currentUser.username === MAIN_ADMIN_USERNAME){
+      showPopupAlert(title, body, { dedupeId:'followup-'+o.id+'-'+Math.floor(now/FOLLOWUP_ESCALATE_MS) });
+    }
+    mi.followupEscalatedAt = now;
+    changed = true;
+  });
+  if(changed) saveOrders();
+}
+setInterval(checkComplaintFollowupEscalations, 5*60*1000);
 
 /* ---------- editing the note on an order that already moved to history (delivered) ---------- */
 // Previously a note could only be set/edited while an order was still active - once it moved to
@@ -6783,9 +6856,9 @@ function renderAdminRevenueByCity(){
 /* ---------- admin tabs ---------- */
 let adminActiveTab = 'home';
 function adminTabsForRole(){
-  if(currentUser && currentUser.role==='mainadmin') return ['home','report','trend','revenue','expenses','payroll','reminders','automation','advertising','profitcalendar','repactivity','badaddresses','stock','depot','blockedcustomers','trash','users','auditlog','backup','combinedreport','bugreports'];
+  if(currentUser && currentUser.role==='mainadmin') return ['home','complaints','report','trend','revenue','expenses','payroll','reminders','automation','advertising','profitcalendar','repactivity','badaddresses','stock','depot','blockedcustomers','trash','users','auditlog','backup','combinedreport','bugreports'];
   if(currentUser && currentUser.role==='admin'){
-    const tabs = ['home','badaddresses','stock','depot','blockedcustomers','backup','bugreports'];
+    const tabs = ['home','complaints','badaddresses','stock','depot','blockedcustomers','backup','bugreports'];
     // A regular admin only gets the payroll tab once the main admin has assigned them at least
     // one rep to manage (managedReps) - otherwise there's nothing scoped for them to see there.
     if((currentUser.managedReps||[]).length>0) tabs.push('payroll');
@@ -6793,7 +6866,7 @@ function adminTabsForRole(){
   }
   return [];
 }
-const ADMIN_TAB_LABELS = { home:'🏠 בית', report:'📊 דוח כספי', trend:'📈 מגמה לאורך זמן', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', reminders:'🔔 תזכורות', automation:'⚙️ אוטומציות', advertising:'📣 פרסום', profitcalendar:'🗓️ לוח פרסום', repactivity:'📅 פעילות נציגים', badaddresses:'🗺️ כתובות בעייתיות', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', blockedcustomers:'🚫 לקוחות בעייתיים', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא', combinedreport:'🔗 דוח משולב', bugreports:'🐛 באגים' };
+const ADMIN_TAB_LABELS = { home:'🏠 בית', complaints:'📣 תלונות לקוחות', report:'📊 דוח כספי', trend:'📈 מגמה לאורך זמן', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', reminders:'🔔 תזכורות', automation:'⚙️ אוטומציות', advertising:'📣 פרסום', profitcalendar:'🗓️ לוח פרסום', repactivity:'📅 פעילות נציגים', badaddresses:'🗺️ כתובות בעייתיות', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', blockedcustomers:'🚫 לקוחות בעייתיים', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא', combinedreport:'🔗 דוח משולב', bugreports:'🐛 באגים' };
 function renderAdminTabsBar(){
   const bar = document.getElementById('adminTabsBar');
   const tabs = adminTabsForRole();
@@ -7712,6 +7785,72 @@ function renderAdminTabContent(){
           return `<div class="row2" style="align-items:center;margin-bottom:4px;"><div style="flex:1;font-size:12.5px;">${cityDisplayName(city, parseInt(round,10))}</div><button class="icon-btn" onclick="unflagStrongAdRoundByKey('${k}')">🗑️</button></div>`;
         }).join('')}
       ` : ''}
+    `;
+  }else if(adminActiveTab==='complaints'){
+    const cmpAll = orders.filter(o=>o.managerInquiry);
+    const cmpOpen = cmpAll.filter(o=>!o.managerInquiry.resolved);
+    const cmpDone = cmpAll.filter(o=>o.managerInquiry.resolved);
+    // הישנות ביותר למעלה - תלונה שיושבת שבוע היא הדחופה, לא האחרונה שנכנסה
+    cmpOpen.sort((a,b)=>a.managerInquiry.openedAt - b.managerInquiry.openedAt);
+    cmpDone.sort((a,b)=>(b.managerInquiry.resolvedAt||0) - (a.managerInquiry.resolvedAt||0));
+    const staff = users.filter(u=>u.role==='admin'||u.role==='mainadmin');
+    const ageLabel = ts => {
+      const days = Math.floor((Date.now()-ts)/(24*60*60*1000));
+      if(days>=1) return days + ' ימים';
+      return Math.max(1, Math.floor((Date.now()-ts)/(60*60*1000))) + ' שעות';
+    };
+    const openRow = (o)=>{
+      const mi = o.managerInquiry;
+      const overdue = inquiryIsOverdue(mi);
+      const noteId = 'cmpNote_' + o.id;
+      const selId = 'cmpWho_' + o.id;
+      const fu = mi.followupFor && !mi.followupDone;
+      const fuOverdue = fu && (Date.now() - (mi.followupSince||Date.now())) > FOLLOWUP_ESCALATE_MS;
+      return `
+        <div style="border:1px solid ${overdue?'var(--danger)':'var(--border)'};border-radius:12px;padding:12px 14px;margin-bottom:10px;background:${overdue?'#FFF7F7':'var(--surface)'};">
+          <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:baseline;">
+            <div style="font-weight:800;">${mi.isMedical?'🚨 ':''}${escHtml(o.customer||'לקוח')} · ${escHtml(o.city||'')}</div>
+            <div style="font-size:12.5px;color:${overdue?'var(--danger)':'var(--muted)'};font-weight:${overdue?'700':'400'};">פתוחה ${ageLabel(mi.openedAt)}${overdue?' ⚠️':''}</div>
+          </div>
+          <div style="font-size:13.5px;margin-top:6px;">${escHtml(mi.note||'')}</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:4px;">דווח ע"י ${escHtml(mi.openedBy||'')}${o.phone1?' · '+escHtml(o.phone1):''}</div>
+          ${fu ? `<div style="margin-top:8px;padding:6px 10px;border-radius:8px;background:${fuOverdue?'#FBEAEA':'#FFF4E5'};color:${fuOverdue?'var(--danger)':'#B45309'};font-size:12.5px;font-weight:700;">
+                    ${fuOverdue?'⚠️ ':'🔔 '}הועבר לטיפול ${escHtml(mi.followupFor)} לפני ${ageLabel(mi.followupSince)}${fuOverdue?' - חרג מ-48 שעות':''}
+                    <span style="cursor:pointer;text-decoration:underline;margin-inline-start:8px;font-weight:400;" onclick="markComplaintFollowupDone('${escAttr(o.id)}')">סמן שטופל</span>
+                  </div>` : ''}
+          <div style="margin-top:8px;">
+            <textarea id="${noteId}" rows="2" placeholder="מה סוכם עם הלקוח?" style="width:100%;font-size:13px;margin-bottom:6px;"></textarea>
+            <div class="row2" style="gap:6px;flex-wrap:wrap;">
+              <button class="btn-primary" style="padding:6px 12px;font-size:12.5px;" onclick="resolveComplaintWithNote('${escAttr(o.id)}','${noteId}')">✅ סגור עם סיכום</button>
+              ${staff.length ? `<select id="${selId}" style="margin-bottom:0;font-size:12.5px;max-width:150px;">${staff.map(u=>`<option value="${escAttr(u.username)}">${escHtml(u.username)}</option>`).join('')}</select>
+              <button class="btn-secondary" style="padding:6px 12px;font-size:12.5px;" onclick="setComplaintFollowup('${escAttr(o.id)}', document.getElementById('${selId}').value)">🔔 העבר לטיפול נוסף</button>` : ''}
+            </div>
+          </div>
+        </div>`;
+    };
+    const doneRow = (o)=>{
+      const mi = o.managerInquiry;
+      return `
+        <div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;opacity:0.95;">
+          <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:baseline;">
+            <div style="font-weight:700;">✅ ${escHtml(o.customer||'לקוח')} · ${escHtml(o.city||'')}</div>
+            <div style="font-size:12px;color:var(--muted);">נסגר ${mi.resolvedAt?formatDate(new Date(mi.resolvedAt).toISOString().slice(0,10)):''}${mi.resolvedBy?' ע"י '+escHtml(mi.resolvedBy):''}</div>
+          </div>
+          <div style="font-size:13px;color:var(--muted);margin-top:4px;">התלונה: ${escHtml(mi.note||'')}</div>
+          ${mi.resolutionNote
+            ? `<div style="font-size:13.5px;margin-top:6px;padding:6px 10px;background:var(--new-badge-light);border-radius:8px;"><b>סוכם:</b> ${escHtml(mi.resolutionNote)}</div>`
+            : '<div style="font-size:12.5px;color:var(--muted);margin-top:6px;font-style:italic;">נסגר לפני שהיה שדה סיכום - לא תועד מה סוכם</div>'}
+        </div>`;
+    };
+    content.innerHTML = `
+      <div style="font-weight:800;margin-bottom:4px;">📣 תלונות לקוחות</div>
+      <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">כל התלונות שנפתחו מהדגל 🚩 שליד הזמנה. הלא-מטופלות למעלה לפי ותק, המטופלות למטה עם מה שסוכם. תלונה שמועברת לטיפול נוסף שולחת התראה לנציג, ואם הוא לא טיפל תוך 48 שעות ההתראה עוברת ל${escHtml(MAIN_ADMIN_USERNAME)}.</div>
+
+      <div style="font-weight:800;margin-bottom:6px;">🔴 לא טופלו (${cmpOpen.length})</div>
+      ${cmpOpen.length ? cmpOpen.map(openRow).join('') : '<div class="empty" style="padding:14px;"><div class="big">✅</div>אין תלונות פתוחות.</div>'}
+
+      <div style="font-weight:800;margin:18px 0 6px;">✅ טופלו (${cmpDone.length})</div>
+      ${cmpDone.length ? cmpDone.map(doneRow).join('') : '<div style="font-size:12.5px;color:var(--muted);">עדיין לא נסגרו תלונות.</div>'}
     `;
   }else if(adminActiveTab==='badaddresses'){
     const baActive = activeOrdersForGeo();
@@ -9510,6 +9649,7 @@ async function initApp(){
   renderAdvertisingBanner();
   renderPushOptInBanner();
   checkInquiryEscalations();
+  checkComplaintFollowupEscalations();
   checkOpenInquiriesOnLoad();
 }
 initApp();
