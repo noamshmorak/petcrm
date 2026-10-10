@@ -179,6 +179,7 @@
     <div class="tab" data-tab="users" id="usersTabBtn" style="display:none;">👥 משתמשים</div>
     <div class="tab" data-tab="report" id="reportTabBtn" style="display:none;">📊 דוח משולב</div>
     <div class="tab" data-tab="monthly" id="monthlyTabBtn" style="display:none;">📅 דוח חודשי</div>
+    <div class="tab" data-tab="vaccine" id="vaccineTabBtn" style="display:none;">💉 תזכורות חיסון</div>
     <div class="tab" data-tab="bugreports" id="bugReportsTabBtn" style="display:none;">🐛 באגים</div>
   </div>
 
@@ -292,6 +293,10 @@
 
   <div id="tab-monthly" style="display:none;">
     <div id="monthlySalesContent"></div>
+  </div>
+
+  <div id="tab-vaccine" style="display:none;">
+    <div id="vaccineContent"></div>
   </div>
 
   <div id="tab-bugreports" style="display:none;">
@@ -795,6 +800,7 @@ function applyRoleVisibility(){
   document.getElementById('usersTabBtn').style.display = isMain ? '' : 'none';
   document.getElementById('reportTabBtn').style.display = isMain ? '' : 'none';
   document.getElementById('monthlyTabBtn').style.display = isAdmin ? '' : 'none';
+  document.getElementById('vaccineTabBtn').style.display = isAdmin ? '' : 'none';
   document.getElementById('bugReportsTabBtn').style.display = isAdmin ? '' : 'none';
 }
 function isAdminRole(){ return currentUser && (currentUser.role==='admin' || currentUser.role==='mainadmin'); }
@@ -1292,12 +1298,111 @@ async function loadCombinedReport(){
   `;
 }
 
+/* ---------- תזכורת חיסון לקוני ארנבים (מכירות רגילות בלבד) ----------
+   חודשיים וחצי אחרי הקנייה הלקוח אמור לחסן את הארנב. המסך מרכז את מי שהגיע זמנו, עם כפתור
+   שפותח וואטסאפ עם ההודעה מוכנה - השליחה עצמה ידנית, לא אוטומטית. */
+const VACCINE_REMINDER_DAYS = 75; // חודשיים וחצי
+// מזהה קנייה של ארנב גם כשהיא נרשמה כמכירה בסכום חופשי ולא מהקטלוג
+function saleIsRabbit(s){
+  if(/ארנב/.test(s.animalType||'')) return true;
+  return (s.freeItems||[]).some(f=>/ארנב/.test(f.description||''));
+}
+// הטלפונים נשמרים בכמה פורמטים (+972 52-440-1505 / +972502338558 / 0524422220) - הכל לאותו תקן
+function normalizeIlPhone(raw){
+  let d = (raw||'').replace(/\D/g,'');
+  if(!d) return '';
+  if(d.startsWith('972')) return d;
+  if(d.startsWith('0')) return '972' + d.slice(1);
+  if(d.length === 9) return '972' + d;
+  return d;
+}
+function saleHasUsablePhone(s){ return normalizeIlPhone(s.customerPhone).length >= 11; }
+function daysSinceDate(dateStr){
+  if(!dateStr) return 0;
+  return Math.floor((Date.now() - new Date(dateStr+'T00:00:00').getTime())/86400000);
+}
+// ברכה לפי שעת השליחה, עם התאמה לחורף/קיץ: בקיץ מחשיך מאוחר יותר, אז "ערב טוב" מתחיל שעה מאוחר יותר.
+// זיהוי שעון קיץ נעשה מול היסט אזור הזמן בינואר מול יולי, כך שזה נכון מעצמו בכל שנה.
+function greetingForNow(now){
+  const d = now || new Date();
+  const h = d.getHours();
+  const jan = new Date(d.getFullYear(), 0, 1).getTimezoneOffset();
+  const jul = new Date(d.getFullYear(), 6, 1).getTimezoneOffset();
+  const isSummerTime = d.getTimezoneOffset() < Math.max(jan, jul);
+  const eveningFrom = isSummerTime ? 18 : 17;
+  if(h >= 5 && h < 12) return 'בוקר טוב';
+  if(h >= 12 && h < eveningFrom) return 'צהריים טובים';
+  return 'ערב טוב';
+}
+function vaccineReminderText(){
+  return greetingForNow() + ', כבר עברו חודשיים וחצי מקווה שאתם נהנים מהארנב והוא נהנה מכם, הגיע הזמן לעבור חיסון מוזמנים לתאם וגם לבוא לקנות אוכל במחירים נוחים וטובים מוזמנים לתאם:)';
+}
+function openVaccineWhatsApp(saleId){
+  const s = storeSales.find(x=>x.id===saleId);
+  if(!s) return;
+  const phone = normalizeIlPhone(s.customerPhone);
+  if(!phone){ showToast('אין מספר טלפון תקין למכירה הזו'); return; }
+  window.open('https://wa.me/' + phone + '?text=' + encodeURIComponent(vaccineReminderText()), '_blank');
+}
+async function markVaccineReminderSent(saleId, sent){
+  const s = storeSales.find(x=>x.id===saleId);
+  if(!s) return;
+  s.vaccineReminderSentAt = sent ? Date.now() : null;
+  s.vaccineReminderSentBy = sent ? (currentUser ? currentUser.username : '') : null;
+  await saveStoreSales();
+  renderVaccineReminders();
+}
+function renderVaccineReminders(){
+  const el = document.getElementById('vaccineContent');
+  if(!el) return;
+  const rabbits = (storeSales||[]).filter(s=>!s.cancelled && saleIsRabbit(s));
+  const sent = rabbits.filter(s=>s.vaccineReminderSentAt);
+  const pending = rabbits.filter(s=>!s.vaccineReminderSentAt);
+  const due = pending.filter(s=>daysSinceDate(s.date) >= VACCINE_REMINDER_DAYS && saleHasUsablePhone(s))
+                     .sort((a,b)=>daysSinceDate(b.date)-daysSinceDate(a.date));
+  const upcoming = pending.filter(s=>daysSinceDate(s.date) < VACCINE_REMINDER_DAYS && saleHasUsablePhone(s))
+                          .sort((a,b)=>daysSinceDate(b.date)-daysSinceDate(a.date));
+  const noPhone = pending.filter(s=>!saleHasUsablePhone(s));
+  const who = s => (s.customer||'').trim() || 'לקוח ללא שם';
+  const row = (s, mode)=>{
+    const d = daysSinceDate(s.date);
+    const left = VACCINE_REMINDER_DAYS - d;
+    return `
+      <div style="border:1px solid ${mode==='due'?'var(--accent-dark)':'var(--border)'};border-radius:10px;padding:10px 12px;margin-bottom:8px;${mode==='due'?'background:var(--new-badge-light);':''}">
+        <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:baseline;">
+          <div style="font-weight:700;">${escHtml(who(s))}</div>
+          <div style="font-size:12.5px;color:var(--muted);">${mode==='due' ? 'עברו ' + d + ' ימים' : 'עוד ' + left + ' ימים'}</div>
+        </div>
+        <div style="font-size:12.5px;color:var(--muted);margin-top:2px;">נקנה ${escHtml(s.date)}${s.customerPhone?' · '+escHtml(s.customerPhone):''}</div>
+        ${mode==='due' ? `<div class="row2" style="gap:6px;margin-top:8px;">
+            <button class="btn-primary" style="padding:6px 12px;font-size:12.5px;" onclick="openVaccineWhatsApp('${escAttr(s.id)}')">💬 פתח וואטסאפ עם ההודעה</button>
+            <button class="btn-secondary" style="padding:6px 12px;font-size:12.5px;" onclick="markVaccineReminderSent('${escAttr(s.id)}', true)">✅ סמן כנשלח</button>
+          </div>` : ''}
+      </div>`;
+  };
+  el.innerHTML = '<div class="card">'
+    + '<div style="font-weight:800;margin-bottom:4px;">💉 תזכורות חיסון לארנבים</div>'
+    + '<div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">כל מי שקנה ארנב מופיע כאן ' + VACCINE_REMINDER_DAYS + ' יום (חודשיים וחצי) אחרי הקנייה. הכפתור פותח וואטסאפ עם ההודעה מוכנה - הברכה בתחילתה משתנה לפי השעה ומתחשבת בשעון קיץ/חורף. השליחה עצמה ידנית.</div>'
+    + '<div style="font-weight:800;margin-bottom:6px;">🔔 הגיע הזמן (' + due.length + ')</div>'
+    + (due.length ? due.map(s=>row(s,'due')).join('')
+                  : '<div style="font-size:12.5px;color:var(--muted);margin-bottom:10px;">אין כרגע אף ארנב שעברו ממנו חודשיים וחצי.</div>')
+    + '<div style="font-weight:800;margin:16px 0 6px;">⏳ בדרך (' + upcoming.length + ')</div>'
+    + (upcoming.length ? upcoming.map(s=>row(s,'upcoming')).join('')
+                       : '<div style="font-size:12.5px;color:var(--muted);">אין מכירות ארנבים ממתינות.</div>')
+    + (noPhone.length ? '<div style="font-weight:800;margin:16px 0 6px;">⚠️ בלי טלפון (' + noPhone.length + ')</div>'
+        + '<div style="font-size:12.5px;color:var(--muted);margin-bottom:6px;">קניות ארנב שאי אפשר לשלוח אליהן תזכורת כי לא נרשם מספר טלפון.</div>'
+        + noPhone.map(s=>'<div style="border:1px dashed var(--border);border-radius:10px;padding:8px 12px;margin-bottom:6px;font-size:12.5px;">' + escHtml(who(s)) + ' · נקנה ' + escHtml(s.date) + '</div>').join('') : '')
+    + (sent.length ? '<div style="font-weight:800;margin:16px 0 6px;">✅ נשלחו (' + sent.length + ')</div>'
+        + sent.sort((a,b)=>b.vaccineReminderSentAt-a.vaccineReminderSentAt).map(s=>'<div style="border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin-bottom:6px;font-size:12.5px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;"><span>' + escHtml(who(s)) + ' · נקנה ' + escHtml(s.date) + '</span><span style="color:var(--muted);cursor:pointer;text-decoration:underline;" onclick="markVaccineReminderSent(\'' + escAttr(s.id) + '\', false)">בטל סימון</span></div>').join('') : '')
+  + '</div>';
+}
+
 /* ---------- tabs + init ---------- */
 document.querySelectorAll('.tab').forEach(tab=>{
   tab.addEventListener('click', ()=>{
     document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
     tab.classList.add('active');
-    ['sale','history','expenses','prices','users','report','monthly','bugreports'].forEach(name=>{
+    ['sale','history','expenses','prices','users','report','monthly','vaccine','bugreports'].forEach(name=>{
       const el = document.getElementById('tab-'+name);
       if(el) el.style.display = (tab.dataset.tab===name) ? '' : 'none';
     });
@@ -1307,6 +1412,7 @@ document.querySelectorAll('.tab').forEach(tab=>{
     if(tab.dataset.tab==='users') renderUsersList();
     if(tab.dataset.tab==='bugreports') renderBugReportsList();
       if(tab.dataset.tab === 'monthly') renderMonthlySalesReport();
+      if(tab.dataset.tab === 'vaccine') renderVaccineReminders();
   });
 });
 
