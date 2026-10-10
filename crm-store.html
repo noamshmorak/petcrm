@@ -1469,6 +1469,40 @@ function monthLabelHe(m){
   const idx = parseInt(parts[1],10)-1;
   return (HEB_MONTH_NAMES[idx]||parts[1]) + ' ' + parts[0];
 }
+// אילו חודשים פתוחים כרגע בדוח - נשמר רק בזיכרון, כדי שרינדור מחדש לא יסגור מה שפתחת
+const expandedSalesMonths = new Set();
+function toggleSalesMonth(month){
+  if(expandedSalesMonths.has(month)) expandedSalesMonths.delete(month);
+  else expandedSalesMonths.add(month);
+  renderMonthlySalesReport();
+}
+// תיאור מה נמכר: גם פריט מהקטלוג, גם מזון, וגם מכירה בסכום חופשי (שם המוצר יושב ב-freeItems)
+function saleItemsLabel(s){
+  const parts = [];
+  if(s.animalType) parts.push(s.animalType + (s.animalQty>1 ? ' x'+s.animalQty : ''));
+  (s.foodItems||[]).forEach(f=>parts.push(f.type + (f.quantity>1 ? ' x'+f.quantity : '')));
+  (s.freeItems||[]).forEach(f=>parts.push(f.description || 'פריט ללא תיאור'));
+  return parts.length ? parts.join(' · ') : 'ללא פירוט';
+}
+function salesOfMonthHtml(month){
+  const nis = n => Math.round(n).toLocaleString('he-IL');
+  const list = (storeSales||[]).filter(s=>!s.cancelled && (s.date||'').slice(0,7)===month)
+                               .sort((a,b)=>(b.date||'').localeCompare(a.date||'') || (b.createdAt||0)-(a.createdAt||0));
+  if(!list.length) return '';
+  return '<div style="margin-top:8px;border-top:1px dashed var(--border);padding-top:8px;">'
+    + list.map(s=>'<div style="padding:7px 0;border-bottom:1px solid var(--border);">'
+        + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;">'
+          + '<div style="font-weight:600;font-size:13px;">' + escHtml((s.customer||'').trim() || 'ללא שם') + '</div>'
+          + '<div style="font-weight:700;font-size:13px;">' + nis(s.totalPrice||0) + ' ₪</div>'
+        + '</div>'
+        + '<div style="font-size:12.5px;color:var(--muted);margin-top:2px;">' + escHtml(saleItemsLabel(s)) + '</div>'
+        + '<div style="font-size:12px;color:var(--muted);margin-top:2px;">' + escHtml(s.date||'')
+          + (s.customerPhone ? ' · <a href="tel:' + escAttr(String(s.customerPhone).replace(/-/g,'')) + '" style="color:var(--accent-dark);font-weight:700;">' + escHtml(s.customerPhone) + '</a>' : '')
+          + (s.createdByUsername ? ' · ' + escHtml(s.createdByUsername) : '')
+        + '</div>'
+      + '</div>').join('')
+  + '</div>';
+}
 function renderMonthlySalesReport(){
   const el = document.getElementById('monthlySalesContent');
   if(!el) return;
@@ -1481,15 +1515,19 @@ function renderMonthlySalesReport(){
   const nis = n => Math.round(n).toLocaleString('he-IL');
   el.innerHTML = '<div class="card">'
     + '<div style="font-weight:800;margin-bottom:4px;">📅 מכירות רגילות לפי חודש</div>'
-    + '<div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">מחזור בלבד. מכירות מבוטלות לא נכללות.</div>'
-    + rows.map(r=>'<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;">'
-        + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;">'
-          + '<div style="font-weight:700;">' + escHtml(monthLabelHe(r.month)) + '</div>'
+    + '<div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">מחזור בלבד. מכירות מבוטלות לא נכללות. לחיצה על חודש פותחת את כל המכירות שבו.</div>'
+    + rows.map(r=>{
+        const open = expandedSalesMonths.has(r.month);
+        return '<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;">'
+        + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;cursor:pointer;" onclick="toggleSalesMonth(\'' + r.month + '\')">'
+          + '<div style="font-weight:700;">' + (open ? '▾' : '▸') + ' ' + escHtml(monthLabelHe(r.month)) + '</div>'
           + '<div style="font-weight:800;">' + nis(r.revenue) + ' ₪</div>'
         + '</div>'
         + '<div style="font-size:12.5px;color:var(--muted);margin-top:2px;">' + r.count + ' מכירות · ממוצע ' + nis(r.revenue/r.count) + ' ₪ למכירה</div>'
         + '<div style="font-size:12.5px;color:var(--muted);margin-top:2px;">' + Object.keys(r.sellers).map(k=>escHtml(k) + ': ' + nis(r.sellers[k]) + ' ₪').join(' · ') + '</div>'
-      + '</div>').join('')
+        + (open ? salesOfMonthHtml(r.month) : '')
+      + '</div>';
+      }).join('')
     + '<div class="total-price-box" style="text-align:right;margin-top:10px;">'
       + '<div style="font-weight:800;">סה"כ ' + totalCount + ' מכירות · ' + nis(totalRev) + ' ₪</div>'
       + (cancelledCount ? '<div style="font-size:12px;color:var(--muted);margin-top:2px;">' + cancelledCount + ' מכירות מבוטלות לא נכללו</div>' : '')
