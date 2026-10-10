@@ -322,6 +322,21 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="vaccineMsgModal">
+  <div class="modal-box">
+    <button class="modal-close-x" onclick="closeVaccineMsgModal()">✕</button>
+    <div style="font-weight:800;margin-bottom:6px;">💉 ההודעה שנשלחת ללקוחות על חיסון</div>
+    <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px;">זו ההודעה שנפתחת בוואטסאפ כשלוחצים על תזכורת חיסון. אפשר לשנות אותה כאן, וגם בכל עת מטאב "תזכורות חיסון".</div>
+    <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px;">הברכה בהתחלה ("בוקר טוב" / "צהריים טובים" / "ערב טוב") נוספת אוטומטית לפי שעת השליחה - אין צורך לכתוב אותה.</div>
+    <textarea id="vaccineMsgInput" rows="6" style="width:100%;font-size:13px;" oninput="updateVaccineMsgPreview()"></textarea>
+    <div id="vaccineMsgPreview" style="font-size:12.5px;background:var(--new-badge-light);border-radius:8px;padding:8px 10px;margin-top:8px;"></div>
+    <div class="modal-actions">
+      <button class="btn-ghost" onclick="closeVaccineMsgModal()">סגור</button>
+      <button class="btn-primary" onclick="saveVaccineMsgFromModal()">שמור</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -1334,8 +1349,68 @@ function greetingForNow(now){
   if(h >= 12 && h < eveningFrom) return 'צהריים טובים';
   return 'ערב טוב';
 }
+const VACCINE_MSG_KEY = 'pet-crm-store-vaccine-msg';
+const DEFAULT_VACCINE_BODY = 'כבר עברו חודשיים וחצי מקווה שאתם נהנים מהארנב והוא נהנה מכם, הגיע הזמן לעבור חיסון מוזמנים לתאם וגם לבוא לקנות אוכל במחירים נוחים וטובים מוזמנים לתאם:)';
+// הטקסט נשמר בשרת ולא בקוד, כדי שדוד יוכל לשנות אותו בעצמו וזה יחול על כולם.
+// seenBy מחזיק מי כבר ראה את חלון ההסבר, כך שהוא קופץ פעם אחת בלבד לכל משתמש.
+let vaccineMsg = { body: DEFAULT_VACCINE_BODY, seenBy: [] };
+async function loadVaccineMsg(){
+  try{
+    const res = await window.storage.get(VACCINE_MSG_KEY, true);
+    if(res && res.value){
+      const parsed = JSON.parse(res.value);
+      if(parsed && typeof parsed.body === 'string' && parsed.body.trim()) vaccineMsg = parsed;
+      if(!Array.isArray(vaccineMsg.seenBy)) vaccineMsg.seenBy = [];
+    }
+  }catch(e){ /* ברירת מחדל */ }
+  markSyncedObject(VACCINE_MSG_KEY, vaccineMsg);
+}
+async function saveVaccineMsg(){
+  try{ vaccineMsg = await reconcileObjectStore(VACCINE_MSG_KEY, vaccineMsg); }
+  catch(e){ showToast('שגיאה בשמירת ההודעה'); }
+}
 function vaccineReminderText(){
-  return greetingForNow() + ', כבר עברו חודשיים וחצי מקווה שאתם נהנים מהארנב והוא נהנה מכם, הגיע הזמן לעבור חיסון מוזמנים לתאם וגם לבוא לקנות אוכל במחירים נוחים וטובים מוזמנים לתאם:)';
+  const body = (vaccineMsg && vaccineMsg.body || DEFAULT_VACCINE_BODY).trim();
+  return greetingForNow() + ', ' + body;
+}
+function openVaccineMsgModal(){
+  document.getElementById('vaccineMsgInput').value = (vaccineMsg.body || DEFAULT_VACCINE_BODY);
+  updateVaccineMsgPreview();
+  document.getElementById('vaccineMsgModal').classList.add('open');
+}
+function updateVaccineMsgPreview(){
+  const el = document.getElementById('vaccineMsgPreview');
+  const input = document.getElementById('vaccineMsgInput');
+  if(!el || !input) return;
+  el.innerHTML = '<b>כך זה ייראה עכשיו:</b><br>' + escHtml(greetingForNow() + ', ' + input.value.trim());
+}
+async function closeVaccineMsgModal(){
+  document.getElementById('vaccineMsgModal').classList.remove('open');
+  await markVaccineMsgSeen();
+}
+async function saveVaccineMsgFromModal(){
+  const val = document.getElementById('vaccineMsgInput').value.trim();
+  if(!val){ showToast('ההודעה לא יכולה להיות ריקה'); return; }
+  vaccineMsg.body = val;
+  if(currentUser && !(vaccineMsg.seenBy||[]).includes(currentUser.username)) vaccineMsg.seenBy.push(currentUser.username);
+  await saveVaccineMsg();
+  document.getElementById('vaccineMsgModal').classList.remove('open');
+  showToast('ההודעה עודכנה');
+  if(typeof renderVaccineReminders === 'function') renderVaccineReminders();
+}
+async function markVaccineMsgSeen(){
+  if(!currentUser) return;
+  if((vaccineMsg.seenBy||[]).includes(currentUser.username)) return;
+  vaccineMsg.seenBy = (vaccineMsg.seenBy||[]).concat([currentUser.username]);
+  await saveVaccineMsg();
+}
+// קופץ פעם אחת לכל מנהל, כדי שידע מה בדיוק נשלח ללקוחות ויוכל לשנות לפני השימוש הראשון
+function maybeShowVaccineMsgIntro(){
+  if(!currentUser) return;
+  const isAdmin = currentUser.role==='admin' || currentUser.role==='mainadmin';
+  if(!isAdmin) return;
+  if((vaccineMsg.seenBy||[]).includes(currentUser.username)) return;
+  setTimeout(openVaccineMsgModal, 900);
 }
 function openVaccineWhatsApp(saleId){
   const s = storeSales.find(x=>x.id===saleId);
@@ -1383,6 +1458,7 @@ function renderVaccineReminders(){
   el.innerHTML = '<div class="card">'
     + '<div style="font-weight:800;margin-bottom:4px;">💉 תזכורות חיסון לארנבים</div>'
     + '<div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">כל מי שקנה ארנב מופיע כאן ' + VACCINE_REMINDER_DAYS + ' יום (חודשיים וחצי) אחרי הקנייה. הכפתור פותח וואטסאפ עם ההודעה מוכנה - הברכה בתחילתה משתנה לפי השעה ומתחשבת בשעון קיץ/חורף. השליחה עצמה ידנית.</div>'
+    + '<div style="font-size:12.5px;background:var(--new-badge-light);border-radius:8px;padding:8px 10px;margin-bottom:12px;"><b>ההודעה שתישלח:</b> ' + escHtml(vaccineReminderText()) + ' <span style="cursor:pointer;text-decoration:underline;color:var(--accent-dark);font-weight:700;" onclick="openVaccineMsgModal()">שינוי</span></div>'
     + '<div style="font-weight:800;margin-bottom:6px;">🔔 הגיע הזמן (' + due.length + ')</div>'
     + (due.length ? due.map(s=>row(s,'due')).join('')
                   : '<div style="font-size:12.5px;color:var(--muted);margin-bottom:10px;">אין כרגע אף ארנב שעברו ממנו חודשיים וחצי.</div>')
@@ -1424,7 +1500,9 @@ async function initAppData(){
   await loadStoreCustomCatalog();
   await loadBugReports();
   await loadStoreSales();
+  await loadVaccineMsg();
   populateSaleForm();
+  maybeShowVaccineMsgIntro();
   document.getElementById('subtitle').textContent = 'הנתונים משותפים עם אפליקציית הערים (מלאי + הוצאות)';
 }
 
