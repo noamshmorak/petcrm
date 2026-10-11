@@ -1355,15 +1355,20 @@ const DEFAULT_VACCINE_BODY = 'כבר עברו חודשיים וחצי מקווה
 // seenBy מחזיק מי כבר ראה את חלון ההסבר, כך שהוא קופץ פעם אחת בלבד לכל משתמש.
 let vaccineMsg = { body: DEFAULT_VACCINE_BODY, seenBy: [] };
 async function loadVaccineMsg(){
+  let remote = null;
   try{
     const res = await window.storage.get(VACCINE_MSG_KEY, true);
-    if(res && res.value){
-      const parsed = JSON.parse(res.value);
-      if(parsed && typeof parsed.body === 'string' && parsed.body.trim()) vaccineMsg = parsed;
-      if(!Array.isArray(vaccineMsg.seenBy)) vaccineMsg.seenBy = [];
-    }
-  }catch(e){ /* ברירת מחדל */ }
-  markSyncedObject(VACCINE_MSG_KEY, vaccineMsg);
+    if(res && res.value) remote = JSON.parse(res.value);
+  }catch(e){ remote = null; }
+  // מיזוג שדה-שדה: גם אם חסר אחד השדות בשרת, לא מאבדים את השני. קודם כל האובייקט נדחה
+  // כשה-body היה חסר, ואיתו נמחקה גם רשימת מי שכבר ראה - ולכן החלון "החד-פעמי" חזר כל פעם.
+  if(remote && typeof remote === 'object'){
+    if(typeof remote.body === 'string' && remote.body.trim()) vaccineMsg.body = remote.body;
+    if(Array.isArray(remote.seenBy)) vaccineMsg.seenBy = remote.seenBy;
+  }
+  // תמונת המצב חייבת לשקף מה שבאמת יושב בשרת ולא את ברירת המחדל המקומית: reconcileObjectStore
+  // כותב רק מפתחות שהשתנו מול התמונה הזו, אז מפתח שחסר בשרת חייב להיחשב "שונה" כדי שייכתב.
+  markSyncedObject(VACCINE_MSG_KEY, remote || {});
 }
 async function saveVaccineMsg(){
   try{ vaccineMsg = await reconcileObjectStore(VACCINE_MSG_KEY, vaccineMsg); }
@@ -1402,6 +1407,7 @@ async function markVaccineMsgSeen(){
   if(!currentUser) return;
   if((vaccineMsg.seenBy||[]).includes(currentUser.username)) return;
   vaccineMsg.seenBy = (vaccineMsg.seenBy||[]).concat([currentUser.username]);
+  if(!vaccineMsg.body || !vaccineMsg.body.trim()) vaccineMsg.body = DEFAULT_VACCINE_BODY;
   await saveVaccineMsg();
 }
 // קופץ פעם אחת לכל מנהל, כדי שידע מה בדיוק נשלח ללקוחות ויוכל לשנות לפני השימוש הראשון
