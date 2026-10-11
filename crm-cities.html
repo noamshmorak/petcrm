@@ -6612,9 +6612,19 @@ function computeOrderMarketingCost(o){
   // both went out that week), both shares get added together instead of picking just one.
   const channel = resolveEffectiveChannel(o);
   if(channel){
-    const weekCost = weeklyCostFor(channel, week);
-    const ordersThisWeek = orders.filter(x=>!x.cancelled && x.date && weekStartOf(x.date)===week && resolveEffectiveChannel(x)?.id===channel.id).length;
-    cost += ordersThisWeek>0 ? weekCost/ordersThisWeek : 0;
+    // One publication per round, paid once. The price is taken from the week the round's ad
+    // actually ran (its earliest order), so a week-specific price override still applies, and it
+    // is split across every order of that same city+round on that channel - NOT re-charged for
+    // each later week in which another order happened to come in.
+    const roundOrders = orders.filter(x=>!x.cancelled && x.date
+      && x.city===o.city && (x.roundNumber||0)===(o.roundNumber||0)
+      && resolveEffectiveChannel(x)?.id===channel.id);
+    const firstWeek = roundOrders.reduce((min,x)=>{
+      const w = weekStartOf(x.date);
+      return (!min || w < min) ? w : min;
+    }, null) || week;
+    const roundCost = weeklyCostFor(channel, firstWeek);
+    cost += roundOrders.length>0 ? roundCost/roundOrders.length : 0;
     attributed = true;
   }
   if(isStrongAdRound(o.city, o.roundNumber)){
