@@ -5050,6 +5050,41 @@ async function setComplaintFollowup(orderId, username){
   showToast('הועבר ל' + username + ' והתראה נשלחה');
   renderAdminTabContent();
 }
+// החזרת תלונה שנסגרה בחזרה לרשימה הפתוחה - הסיכום נשמר ולא נמחק, כדי שלא יאבד מה שכבר תועד
+async function reopenComplaint(orderId){
+  if(!isAdminRole()){ showToast('רק מנהל יכול להחזיר תלונה'); return; }
+  const o = orders.find(x=>x.id===orderId);
+  if(!o || !o.managerInquiry) return;
+  showConfirm('להחזיר את התלונה לרשימת הפתוחות?', async ()=>{
+    const mi = o.managerInquiry;
+    mi.resolved = false;
+    mi.resolvedAt = null;
+    mi.resolvedBy = null;
+    mi.escalationSent = false;      // שתיכנס שוב למעקב 48 השעות
+    mi.lastEscalatedAt = null;
+    await saveOrders();
+    logAudit('החזיר תלונה לטיפול', `${o.customer||'לקוח'}`);
+    showToast('התלונה חזרה לרשימת הפתוחות');
+    renderAll();
+    renderAdminTabContent();
+  });
+}
+async function saveComplaintEdits(orderId, noteId, resId){
+  if(!isAdminRole()){ showToast('רק מנהל יכול לערוך'); return; }
+  const o = orders.find(x=>x.id===orderId);
+  if(!o || !o.managerInquiry) return;
+  const noteEl = document.getElementById(noteId), resEl = document.getElementById(resId);
+  const note = noteEl ? noteEl.value.trim() : '';
+  const res = resEl ? resEl.value.trim() : '';
+  if(!note){ showToast('תיאור התלונה לא יכול להיות ריק'); return; }
+  o.managerInquiry.note = note;
+  o.managerInquiry.resolutionNote = res;
+  await saveOrders();
+  logAudit('ערך תלונה', `${o.customer||'לקוח'} · ${res||'(ללא סיכום)'}`);
+  showToast('עודכן');
+  renderAll();
+  renderAdminTabContent();
+}
 async function markComplaintFollowupDone(orderId){
   if(!isAdminRole()){ showToast('רק מנהל יכול לעדכן'); return; }
   const o = orders.find(x=>x.id===orderId);
@@ -7850,6 +7885,18 @@ function renderAdminTabContent(){
           ${mi.resolutionNote
             ? `<div style="font-size:13.5px;margin-top:6px;padding:6px 10px;background:var(--new-badge-light);border-radius:8px;"><b>סוכם:</b> ${escHtml(mi.resolutionNote)}</div>`
             : '<div style="font-size:12.5px;color:var(--muted);margin-top:6px;font-style:italic;">נסגר לפני שהיה שדה סיכום - לא תועד מה סוכם</div>'}
+          ${isAdminRole() ? `
+            <div style="margin-top:8px;font-size:12.5px;">
+              <span style="cursor:pointer;text-decoration:underline;color:var(--muted);" onclick="(function(){const d=document.getElementById('cmpEdit_${o.id}');d.style.display = d.style.display==='none'?'block':'none';})()">✏️ עריכה</span>
+              <span style="cursor:pointer;text-decoration:underline;color:var(--danger);margin-inline-start:12px;" onclick="reopenComplaint('${escAttr(o.id)}')">↩ החזר לפניות פתוחות</span>
+            </div>
+            <div id="cmpEdit_${o.id}" style="display:none;margin-top:8px;">
+              <label style="font-size:12px;color:var(--muted);">התלונה</label>
+              <textarea id="cmpEditNote_${o.id}" rows="2" style="width:100%;font-size:13px;margin-bottom:6px;">${escHtml(mi.note||'')}</textarea>
+              <label style="font-size:12px;color:var(--muted);">מה סוכם</label>
+              <textarea id="cmpEditRes_${o.id}" rows="2" style="width:100%;font-size:13px;margin-bottom:6px;">${escHtml(mi.resolutionNote||'')}</textarea>
+              <button class="btn-primary" style="padding:6px 12px;font-size:12.5px;" onclick="saveComplaintEdits('${escAttr(o.id)}','cmpEditNote_${o.id}','cmpEditRes_${o.id}')">שמור שינויים</button>
+            </div>` : ''}
         </div>`;
     };
     content.innerHTML = `
