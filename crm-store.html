@@ -180,6 +180,7 @@
     <div class="tab" data-tab="report" id="reportTabBtn" style="display:none;">📊 דוח משולב</div>
     <div class="tab" data-tab="monthly" id="monthlyTabBtn" style="display:none;">📅 דוח חודשי</div>
     <div class="tab" data-tab="vaccine" id="vaccineTabBtn" style="display:none;">💉 תזכורות חיסון</div>
+    <div class="tab" data-tab="payouts" id="payoutsTabBtn" style="display:none;">💰 חלוקת כסף</div>
     <div class="tab" data-tab="bugreports" id="bugReportsTabBtn" style="display:none;">🐛 באגים</div>
   </div>
 
@@ -297,6 +298,10 @@
 
   <div id="tab-vaccine" style="display:none;">
     <div id="vaccineContent"></div>
+  </div>
+
+  <div id="tab-payouts" style="display:none;">
+    <div id="payoutsContent"></div>
   </div>
 
   <div id="tab-bugreports" style="display:none;">
@@ -816,6 +821,7 @@ function applyRoleVisibility(){
   document.getElementById('reportTabBtn').style.display = isMain ? '' : 'none';
   document.getElementById('monthlyTabBtn').style.display = isAdmin ? '' : 'none';
   document.getElementById('vaccineTabBtn').style.display = isAdmin ? '' : 'none';
+  document.getElementById('payoutsTabBtn').style.display = isAdmin ? '' : 'none';
   document.getElementById('bugReportsTabBtn').style.display = isAdmin ? '' : 'none';
 }
 function isAdminRole(){ return currentUser && (currentUser.role==='admin' || currentUser.role==='mainadmin'); }
@@ -1479,12 +1485,168 @@ function renderVaccineReminders(){
   + '</div>';
 }
 
+/* ---------- חלוקת כסף - רק מכירות רגילות ---------- */
+const PAYOUTS_KEY = 'pet-crm-store-payouts';
+const COST_SETTINGS_KEY = 'pet-crm-cost-settings'; // משותף עם אפליקציית הירידים - כאן קריאה בלבד
+const VAT_RATE_STORE = 0.18;
+let payouts = [];
+let costSettings = {};
+async function loadCostSettings(){
+  try{
+    const res = await window.storage.get(COST_SETTINGS_KEY, true);
+    costSettings = res && res.value ? JSON.parse(res.value) : {};
+    if(!costSettings || typeof costSettings !== 'object') costSettings = {};
+  }catch(e){ costSettings = {}; }
+}
+// עלות יחידה נלקחת מטבלת העלויות של אפליקציית הירידים, ולא מוגדרת מחדש כאן, כדי שלא
+// תיווצרנה שתי טבלאות עלויות שונות. עדכון עלות נעשה שם, במסך העלויות של המנהל הראשי.
+function unitCostFor(name){
+  const c = costSettings[name];
+  if(c == null) return null;
+  if(typeof c === 'number') return c;
+  const animal = (c.animal != null) ? c.animal : null;
+  const cage = (c.cage != null) ? c.cage : null;
+  if(animal == null && cage == null) return null;
+  return (animal||0) + (cage||0)*(1+VAT_RATE_STORE);
+}
+// עלות המוצרים של מכירה בודדת, וגם אילו פריטים בה אין להם עלות מוגדרת
+function saleProductCost(s){
+  let cost = 0; const missing = [];
+  if(s.animalType){
+    const u = unitCostFor(s.animalType);
+    if(u == null) missing.push(s.animalType); else cost += u * (s.animalQty||1);
+  }
+  (s.foodItems||[]).forEach(f=>{
+    const u = unitCostFor(f.type);
+    if(u == null) missing.push(f.type); else cost += u * (f.quantity||1);
+  });
+  // מכירה בסכום חופשי אינה פריט מהקטלוג, ולכן אין לה עלות מוגדרת
+  (s.freeItems||[]).forEach(f=>{ if((f.amount||0) > 0) missing.push(f.description || 'פריט ללא תיאור'); });
+  return { cost: cost, missing: missing };
+}
+function payoutTotals(){
+  const sales = (storeSales||[]).filter(s=>!s.cancelled);
+  let revenue = 0, productCost = 0; const missing = {};
+  sales.forEach(s=>{
+    revenue += (s.totalPrice||0);
+    const r = saleProductCost(s);
+    productCost += r.cost;
+    r.missing.forEach(n=>{ missing[n] = (missing[n]||0) + 1; });
+  });
+  const distributed = (payouts||[]).reduce((a,p)=>a + (p.amount||0), 0);
+  const base = revenue - productCost;
+  return { revenue: revenue, productCost: productCost, base: base, distributed: distributed,
+           remaining: base - distributed, missing: missing, salesCount: sales.length };
+}
+async function loadPayouts(){
+  try{
+    const res = await window.storage.get(PAYOUTS_KEY, true);
+    payouts = res && res.value ? JSON.parse(res.value) : [];
+    if(!Array.isArray(payouts)) payouts = [];
+  }catch(e){ payouts = []; }
+  markSyncedArray(PAYOUTS_KEY, payouts);
+}
+async function savePayouts(){
+  try{ payouts = await reconcileArrayStore(PAYOUTS_KEY, payouts); }
+  catch(e){ showToast('שגיאה בשמירת החלוקה'); }
+}
+
+async function addPayout(){
+  if(!isAdminRole()){ showToast('רק מנהל יכול לרשום חלוקה'); return; }
+  const dateEl = document.getElementById('payoutDate');
+  const amtEl = document.getElementById('payoutAmount');
+  const toEl = document.getElementById('payoutTo');
+  const noteEl = document.getElementById('payoutNote');
+  const amount = parseFloat(amtEl ? amtEl.value : '');
+  if(isNaN(amount) || amount <= 0){ showToast('יש להזין סכום'); return; }
+  const t = payoutTotals();
+  const rec = {
+    id: genId(),
+    date: (dateEl && dateEl.value) ? dateEl.value : todayStr(),
+    amount: amount,
+    to: toEl ? toEl.value.trim() : '',
+    note: noteEl ? noteEl.value.trim() : '',
+    createdByUsername: currentUser ? currentUser.username : '',
+    createdAt: Date.now()
+  };
+  // אם החלוקה גדולה ממה שנשאר, מבקשים אישור במקום לחסום - לפעמים מחלקים מראש
+  const doSave = async ()=>{
+    payouts.push(rec);
+    await savePayouts();
+    if(amtEl) amtEl.value = '';
+    if(toEl) toEl.value = '';
+    if(noteEl) noteEl.value = '';
+    showToast('נרשמה חלוקה');
+    renderPayouts();
+  };
+  if(amount > t.remaining){
+    showConfirm('הסכום גדול ממה שנשאר לחלוקה (' + Math.round(t.remaining) + ' ש"ח). לרשום בכל זאת?', doSave);
+  } else { await doSave(); }
+}
+async function deletePayout(id){
+  if(!isAdminRole()){ showToast('רק מנהל יכול למחוק'); return; }
+  showConfirm('למחוק את רישום החלוקה?', async ()=>{
+    payouts = payouts.filter(p=>p.id !== id);
+    await savePayouts();
+    showToast('נמחק');
+    renderPayouts();
+  });
+}
+
+function renderPayouts(){
+  const el = document.getElementById('payoutsContent');
+  if(!el) return;
+  if(!isAdminRole()){ el.innerHTML = ''; return; }
+  const nis = n => Math.round(n).toLocaleString('he-IL');
+  const t = payoutTotals();
+  const missingNames = Object.keys(t.missing);
+  const list = (payouts||[]).slice().sort((a,b)=>(b.date||'').localeCompare(a.date||'') || (b.createdAt||0)-(a.createdAt||0));
+  const row = (label, val, muted) => `<div style="display:flex;justify-content:space-between;padding:4px 0;${muted?'color:var(--muted);':''}"><span>${label}</span><b>${val}</b></div>`;
+  let html = `<div class="card">`
+    + `<div style="font-weight:800;margin-bottom:4px;">חלוקת כסף - מכירות רגילות</div>`
+    + `<div style="font-size:12.5px;color:var(--muted);margin-bottom:10px;">החישוב כאן הוא רק מהמכירות הרגילות. הירידים אינם נכללים בו כלל.</div>`
+    + row('מחזור (' + t.salesCount + ' מכירות)', nis(t.revenue) + ' ₪')
+    + row('עלות מוצרים', '-' + nis(t.productCost) + ' ₪', true)
+    + `<div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--border);"><span>רווח אחרי עלות מוצרים</span><b>${nis(t.base)} ₪</b></div>`
+    + row('חולק עד כה', '-' + nis(t.distributed) + ' ₪', true)
+    + `<div style="display:flex;justify-content:space-between;padding:8px 0;border-top:2px solid var(--border);font-size:16px;"><span><b>נשאר לחלק</b></span><b style="color:${t.remaining < 0 ? 'var(--danger)' : 'var(--accent-dark)'};">${nis(t.remaining)} ₪</b></div>`
+    + (t.remaining < 0 ? `<div style="font-size:12.5px;color:var(--danger);">חולק יותר ממה שנצבר - הסכום השלילי הוא עודף שחולק</div>` : '')
+    + `</div>`;
+  if(missingNames.length){
+    html += `<div class="card" style="border:1px solid var(--danger);">`
+      + `<div style="font-weight:700;margin-bottom:4px;">עלויות חסרות - הרווח כאן גבוה מהאמת</div>`
+      + `<div style="font-size:12.5px;color:var(--muted);margin-bottom:6px;">לפריטים הבאים אין עלות מוגדרת, ולכן הם נחשבים כאילו עלו 0. את העלויות מגדירים במסך העלויות באפליקציית הירידים, ומכירה בסכום חופשי לעולם לא תהיה לה עלות אוטומטית.</div>`
+      + missingNames.map(n=>`<div style="font-size:12.5px;">${escHtml(n)} - ${t.missing[n]} פעמים</div>`).join('')
+      + `</div>`;
+  }
+  html += `<div class="card">`
+    + `<div style="font-weight:700;margin-bottom:8px;">רישום חלוקה חדשה</div>`
+    + `<div class="field"><label>תאריך</label><input type="date" id="payoutDate" value="${todayStr()}"></div>`
+    + `<div class="field"><label>סכום שחולק (₪)</label><input type="number" id="payoutAmount" min="0" step="any"></div>`
+    + `<div class="field"><label>למי חולק</label><input id="payoutTo" placeholder='שם'></div>`
+    + `<div class="field"><label>הערה</label><input id="payoutNote" placeholder='לא חובה'></div>`
+    + `<button class="btn-primary" style="width:100%;" onclick="addPayout()">רשום חלוקה</button>`
+    + `</div>`;
+  html += `<div class="card">`
+    + `<div style="font-weight:700;margin-bottom:8px;">חלוקות שנרשמו</div>`
+    + (list.length ? list.map(p=>`<div style="border-bottom:1px solid var(--border);padding:7px 0;">`
+        + `<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;">`
+          + `<div style="font-weight:600;">${escHtml(p.to || 'ללא שם')}</div>`
+          + `<div style="font-weight:800;">${nis(p.amount||0)} ₪</div>`
+        + `</div>`
+        + `<div style="font-size:12px;color:var(--muted);margin-top:2px;">${escHtml(p.date||'')}${p.note ? ' · ' + escHtml(p.note) : ''}${p.createdByUsername ? ' · ' + escHtml(p.createdByUsername) : ''}`
+          + ` · <span style="cursor:pointer;text-decoration:underline;color:var(--danger);" onclick="deletePayout('${escAttr(p.id)}')">מחק</span></div>`
+      + `</div>`).join('') : `<div style="font-size:12.5px;color:var(--muted);">עוד לא נרשמה חלוקה</div>`)
+    + `</div>`;
+  el.innerHTML = html;
+}
+
 /* ---------- tabs + init ---------- */
 document.querySelectorAll('.tab').forEach(tab=>{
   tab.addEventListener('click', ()=>{
     document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
     tab.classList.add('active');
-    ['sale','history','expenses','prices','users','report','monthly','vaccine','bugreports'].forEach(name=>{
+    ['sale','history','expenses','prices','users','report','monthly','vaccine','payouts','bugreports'].forEach(name=>{
       const el = document.getElementById('tab-'+name);
       if(el) el.style.display = (tab.dataset.tab===name) ? '' : 'none';
     });
@@ -1495,6 +1657,7 @@ document.querySelectorAll('.tab').forEach(tab=>{
     if(tab.dataset.tab==='bugreports') renderBugReportsList();
       if(tab.dataset.tab === 'monthly') renderMonthlySalesReport();
       if(tab.dataset.tab === 'vaccine') renderVaccineReminders();
+      if(tab.dataset.tab === 'payouts') renderPayouts();
   });
 });
 
@@ -1507,6 +1670,8 @@ async function initAppData(){
   await loadBugReports();
   await loadStoreSales();
   await loadVaccineMsg();
+  await loadCostSettings();
+  await loadPayouts();
   populateSaleForm();
   maybeShowVaccineMsgIntro();
   document.getElementById('subtitle').textContent = 'הנתונים משותפים עם אפליקציית הערים (מלאי + הוצאות)';
