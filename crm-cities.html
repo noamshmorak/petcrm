@@ -6898,12 +6898,151 @@ function renderAdminRevenueByCity(){
   `).join('');
 }
 
+/* ---------- השלמת מלאי: כמה להזמין כדי שיישאר יעד במלאי אחרי כל ההזמנות הפתוחות ---------- */
+const RESTOCK_KEY = 'pet-crm-restock-settings';
+// כמה יחידות יש בקרטון. מזמינים בקרטונים שלמים, ולכן מעגלים כלפי מעלה.
+const DEFAULT_CARTONS = { 'כלוב ארנב':4, 'כלוב ארנב מוגדל':4, 'כלוב תוכון':10, 'כלוב אוגרים':6 };
+const DEFAULT_RESTOCK_TARGET = 60;
+let restockSettings = { target: DEFAULT_RESTOCK_TARGET, targets:{}, cartons:{} };
+async function loadRestockSettings(){
+  try{
+    const res = await window.storage.get(RESTOCK_KEY, true);
+    const parsed = (res && res.value) ? JSON.parse(res.value) : null;
+    if(parsed && typeof parsed === 'object'){
+      if(typeof parsed.target === 'number') restockSettings.target = parsed.target;
+      if(parsed.targets && typeof parsed.targets === 'object') restockSettings.targets = parsed.targets;
+      if(parsed.cartons && typeof parsed.cartons === 'object') restockSettings.cartons = parsed.cartons;
+    }
+  }catch(e){ /* ברירת מחדל */ }
+  markSyncedObject(RESTOCK_KEY, restockSettings);
+}
+async function saveRestockSettings(){
+  try{ restockSettings = await reconcileObjectStore(RESTOCK_KEY, restockSettings); }
+  catch(e){ showToast('שגיאה בשמירת הגדרות ההשלמה'); }
+}
+function restockCartonFor(name){
+  const c = restockSettings.cartons[name];
+  if(c != null && Number(c) > 0) return Number(c);
+  return DEFAULT_CARTONS[name] || 1;
+}
+function restockTargetFor(name){
+  const t = restockSettings.targets[name];
+  if(t != null && Number(t) >= 0) return Number(t);
+  const g = Number(restockSettings.target);
+  return isNaN(g) ? DEFAULT_RESTOCK_TARGET : g;
+}
+// הביקוש הפתוח: כל מה שכבר הובטח ללקוחות ולא סופק עדיין. היעד הוא מה שרוצים שיישאר
+// במלאי *אחרי* שכל ההזמנות האלה יצאו, ולכן ההזמנה היא יעד + ביקוש פתוח פחות מה שיש.
+function restockDemand(){
+  const animals = {}, cages = {};
+  orders.filter(o=>!o.cancelled && !o.delivered).forEach(o=>{
+    (o.animals||[]).forEach(a=>{
+      const species = ANIMAL_SPECIES_MAP[a.type];
+      if(species) animals[species] = (animals[species]||0) + a.quantity*(ANIMALS_PER_UNIT[a.type]||1);
+    });
+    const cageCounts = computeOrderCageCounts(o);
+    Object.entries(cageCounts).forEach(([type,count])=>{
+      const group = CAGE_GROUP_MAP[type];
+      if(group) cages[group] = (cages[group]||0) + count;
+    });
+  });
+  return { animals: animals, cages: cages };
+}
+function restockRows(){
+  const d = restockDemand();
+  const build = (names, have, demand) => names.map(n=>{
+    const h = have[n]||0, dem = demand[n]||0, target = restockTargetFor(n);
+    const need = Math.max(0, target + dem - h);
+    const carton = restockCartonFor(n);
+    const order = need > 0 ? Math.ceil(need/carton)*carton : 0;
+    return { name:n, have:h, demand:dem, target:target, need:need, carton:carton, order:order };
+  });
+  return {
+    animals: build(ANIMAL_SPECIES_LIST, stock.animals||{}, d.animals),
+    cages: build(CAGE_TYPES_LIST, stock.cages||{}, d.cages)
+  };
+}
+function restockOrderText(){
+  const r = restockRows();
+  const lines = [];
+  r.animals.filter(x=>x.order>0).forEach(x=>lines.push(x.name + ' - ' + x.order));
+  r.cages.filter(x=>x.order>0).forEach(x=>lines.push(x.name + ' - ' + x.order + (x.carton>1 ? ' (' + (x.order/x.carton) + ' קרטונים)' : '')));
+  if(!lines.length) return 'אין צורך בהשלמה - המלאי מכסה את כל ההזמנות הפתוחות והיעד.';
+  return 'הזמנת השלמת מלאי:\n' + lines.join('\n');
+}
+async function setRestockTargetAll(val){
+  const v = parseFloat(val);
+  if(isNaN(v) || v < 0){ showToast('יעד לא תקין'); return; }
+  restockSettings.target = v;
+  await saveRestockSettings();
+  renderAdminTabContent();
+}
+async function setRestockTarget(name, val){
+  const v = parseFloat(val);
+  if(val === '' || isNaN(v)) delete restockSettings.targets[name];
+  else restockSettings.targets[name] = Math.max(0, v);
+  await saveRestockSettings();
+  renderAdminTabContent();
+}
+async function setRestockCarton(name, val){
+  const v = parseFloat(val);
+  if(val === '' || isNaN(v) || v <= 0) delete restockSettings.cartons[name];
+  else restockSettings.cartons[name] = v;
+  await saveRestockSettings();
+  renderAdminTabContent();
+}
+
+function copyRestockOrder(){
+  const text = restockOrderText();
+  const done = ()=>showToast('ההזמנה הועתקה');
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(text).then(done, ()=>showToast('ההעתקה נכשלה')); return; }
+  }catch(e){}
+  try{
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta); done();
+  }catch(e){ showToast('ההעתקה נכשלה'); }
+}
+function restockRowHtml(x){
+  return `<div class="stock-row">`
+    + `<div class="stock-label">${escHtml(x.name)}</div>`
+    + `<div style="font-size:11.5px;color:var(--muted);min-width:104px;text-align:right;">במלאי ${x.have}<br>להזמנות ${x.demand}</div>`
+    + `<input type="number" min="0" style="width:60px;" value="${x.target}" onchange="setRestockTarget('${escAttr(x.name)}', this.value)">`
+    + `<input type="number" min="1" style="width:52px;" value="${x.carton}" onchange="setRestockCarton('${escAttr(x.name)}', this.value)">`
+    + `<div style="min-width:86px;font-weight:800;text-align:left;${x.order ? 'color:var(--danger);' : 'color:var(--muted);'}">${x.order ? x.order : '—'}</div>`
+    + `</div>`;
+}
+function renderRestockHtml(){
+  const r = restockRows();
+  const head = `<div class="stock-row" style="background:var(--new-badge-light);font-size:11.5px;font-weight:700;">`
+    + `<div class="stock-label">סוג</div>`
+    + `<div style="min-width:104px;text-align:right;">מצב</div>`
+    + `<div style="width:60px;text-align:center;">יעד</div>`
+    + `<div style="width:52px;text-align:center;">בקרטון</div>`
+    + `<div style="min-width:86px;text-align:left;">להזמין</div>`
+    + `</div>`;
+  const totalOrder = r.animals.concat(r.cages).filter(x=>x.order>0).length;
+  return `<div style="font-weight:800;margin-bottom:4px;">השלמת מלאי</div>`
+    + `<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">החישוב: יעד + כל ההזמנות הפתוחות שטרם סופקו, פחות מה שיש במלאי. כלומר היעד הוא מה שיישאר במלאי אחרי שכל ההזמנות יצאו. התוצאה מעוגלת כלפי מעלה לקרטון שלם.</div>`
+    + `<div class="field" style="max-width:220px;"><label>יעד לכל הסוגים</label><input type="number" min="0" value="${restockSettings.target}" onchange="setRestockTargetAll(this.value)"></div>`
+    + `<div style="font-size:11.5px;color:var(--muted);margin:-4px 0 12px;">אפשר לדרוס יעד לכל שורה בנפרד, ולעדכן כמה יחידות יש בקרטון. השינויים נשמרים אוטומטית.</div>`
+    + `<div style="font-weight:800;margin:14px 0 6px;">חיות</div>` + head + r.animals.map(restockRowHtml).join('')
+    + `<div style="font-weight:800;margin:16px 0 6px;">כלובים</div>` + head + r.cages.map(restockRowHtml).join('')
+    + `<div style="margin-top:16px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;">`
+      + `<div style="font-weight:700;margin-bottom:6px;">ההזמנה לספק</div>`
+      + `<pre style="white-space:pre-wrap;font-family:inherit;font-size:13px;margin:0 0 8px;">${escHtml(restockOrderText())}</pre>`
+      + (totalOrder ? `<button class="btn-primary" style="padding:7px 14px;font-size:13px;" onclick="copyRestockOrder()">העתק את ההזמנה</button>` : '')
+    + `</div>`;
+}
+
 /* ---------- admin tabs ---------- */
 let adminActiveTab = 'home';
 function adminTabsForRole(){
-  if(currentUser && currentUser.role==='mainadmin') return ['home','complaints','report','trend','revenue','expenses','payroll','reminders','automation','advertising','profitcalendar','repactivity','badaddresses','stock','depot','blockedcustomers','trash','users','auditlog','backup','combinedreport','bugreports'];
+  if(currentUser && currentUser.role==='mainadmin') return ['home','complaints','report','trend','revenue','expenses','payroll','reminders','automation','advertising','profitcalendar','repactivity','badaddresses','stock','restock','depot','blockedcustomers','trash','users','auditlog','backup','combinedreport','bugreports'];
   if(currentUser && currentUser.role==='admin'){
-    const tabs = ['home','complaints','badaddresses','stock','depot','blockedcustomers','backup','bugreports'];
+    const tabs = ['home','complaints','badaddresses','stock','restock','depot','blockedcustomers','backup','bugreports'];
     // A regular admin only gets the payroll tab once the main admin has assigned them at least
     // one rep to manage (managedReps) - otherwise there's nothing scoped for them to see there.
     if((currentUser.managedReps||[]).length>0) tabs.push('payroll');
@@ -6911,7 +7050,7 @@ function adminTabsForRole(){
   }
   return [];
 }
-const ADMIN_TAB_LABELS = { home:'🏠 בית', complaints:'📣 תלונות לקוחות', report:'📊 דוח כספי', trend:'📈 מגמה לאורך זמן', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', reminders:'🔔 תזכורות', automation:'⚙️ אוטומציות', advertising:'📣 פרסום', profitcalendar:'🗓️ לוח פרסום', repactivity:'📅 פעילות נציגים', badaddresses:'🗺️ כתובות בעייתיות', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', blockedcustomers:'🚫 לקוחות בעייתיים', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא', combinedreport:'🔗 דוח משולב', bugreports:'🐛 באגים' };
+const ADMIN_TAB_LABELS = { restock: '📦 השלמת מלאי', home:'🏠 בית', complaints:'📣 תלונות לקוחות', report:'📊 דוח כספי', trend:'📈 מגמה לאורך זמן', revenue:'💰 הכנסות לפי עיר', expenses:'💸 הוצאות', payroll:'🕐 שכר ושעות', reminders:'🔔 תזכורות', automation:'⚙️ אוטומציות', advertising:'📣 פרסום', profitcalendar:'🗓️ לוח פרסום', repactivity:'📅 פעילות נציגים', badaddresses:'🗺️ כתובות בעייתיות', stock:'📦 מלאי', depot:'🚚 נקודת מוצא', blockedcustomers:'🚫 לקוחות בעייתיים', trash:'🗑️ אשפה', users:'👤 משתמשים', auditlog:'📜 יומן שינויים', backup:'📥 גיבוי / ייצוא', combinedreport:'🔗 דוח משולב', bugreports:'🐛 באגים' };
 function renderAdminTabsBar(){
   const bar = document.getElementById('adminTabsBar');
   const tabs = adminTabsForRole();
@@ -8089,6 +8228,8 @@ function renderAdminTabContent(){
         </div>
       `).join('')}
     `;
+  }else if(adminActiveTab==='restock'){
+    content.innerHTML = renderRestockHtml();
   }else if(adminActiveTab==='stock'){
     const { animalShortage, cageShortage } = computeProjectedShortage();
     content.innerHTML = `
@@ -9670,6 +9811,7 @@ document.getElementById('customerSearchInput').addEventListener('input', renderC
 async function initApp(){
   await loadUsers();
   await loadStock();
+  await loadRestockSettings();
   await loadHourReports();
   await loadPayrollExtras();
   await loadAdminHourLogs();
