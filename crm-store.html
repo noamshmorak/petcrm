@@ -1490,13 +1490,54 @@ const PAYOUTS_KEY = 'pet-crm-store-payouts';
 const COST_SETTINGS_KEY = 'pet-crm-cost-settings'; // משותף עם אפליקציית הירידים - כאן קריאה בלבד
 const VAT_RATE_STORE = 0.18;
 let payouts = [];
-let costSettings = {};
+const DEFAULT_COST_MAP = {
+  'תוכון מותאם לאילוף כולל כלוב': { animal:35, cage:14 },
+  '2 תוכונים מותאמים לאילוף כולל כלוב': { animal:65, cage:14 },
+  'קוקטייל כולל כלוב': { animal:120, cage:25 },
+  'קוואקר כולל כלוב': { animal:67, cage:18 },
+  'ארנב כולל כלוב נסורת ואוכל': { animal:55.8, cage:20 },
+  'ארנב ננסי הולנדי ישראלי כולל כלוב נסורת ואוכל': { animal:null, cage:20 },  // cage identical to regular ארנב; purchase cost of the animal itself not yet set - update in admin cost settings
+  'ארנב ננסי הולנדי ישראלי צעיר כולל כלוב נסורת ואוכל': { animal:null, cage:20 },  // same cage as the adult dwarf; purchase cost not yet set
+  'שרקן כולל כלוב נסורת ואוכל': { animal:60.8, cage:20 },
+  '2 אוגרים כולל כלוב': { animal:null, cage:null },
+  '2 תוכונים לא מותאמים לאילוף כולל כלוב': { animal:65, cage:14 },
+  '2 ארנבות כולל כלוב מוגדל': { animal:84, cage:35 },
+  '2 ארנבים ננסי הולנדי ישראלי כולל כלוב מוגדל': { animal:null, cage:35 },  // purchase cost not yet set - update in admin cost settings
+  '2 שרקנים כולל כלוב מוגדל': { animal:94, cage:35 },
+  'חבילת מזון לתוכים (1 יח\')': 3,
+  '3 חבילות מזון לתוכים': 9,
+  '6 חבילות מזון לתוכים': 18,
+  'שק מזון לתוכים (20 ק"ג)': 75,
+  'חבילת מזון למכרסמים (1 יח\')': 2.8,
+  '3 חבילות מזון למכרסמים': 8.4,
+  '6 חבילות מזון למכרסמים': 16.8,
+  'שק מזון למכרסמים (25 ק"ג)': 70,
+  'נסורת פשוטה - 1 יח\'': 2,
+  'נסורת פשוטה - 2 יח\'': 4,
+  'נסורת פשוטה - 4 יח\'': 8,
+  'נסורת איכותית (10 ליטר)': 17,
+  'שק נסורת איכותית (15 ק"ג)': 50,
+  'תא הטלה': null,
+  'כלי אוכל גדול לארנב': null,
+  'כלי אוכל קטן לארנב': null,
+  'מתקן שתייה לארנב 250 מ"ל': null,
+  'מתקן שתייה לארנב 500 מ"ל': null,
+  'כלי אוכל גדול לתוכי': null,
+  'כלי אוכל ענק לתוכי': null,
+  'כלי שתייה קטן': null,
+  'כלי שתייה גדול לתוכי בינוני': null,
+  'כלי שתייה גדול לתוכי': null,
+  'כלי שתייה ענק לתוכי': null
+};
+let costSettings = JSON.parse(JSON.stringify(DEFAULT_COST_MAP));
 async function loadCostSettings(){
+  // המפתח המשותף מחזיק גם הגדרות פרסום. טבלת העלויות עצמה יושבת תחת costs, ומה שחסר בה
+  // נופל לברירות המחדל - בדיוק כמו באפליקציית הירידים, כדי ששתי האפליקציות יראו אותן עלויות.
   try{
     const res = await window.storage.get(COST_SETTINGS_KEY, true);
-    costSettings = res && res.value ? JSON.parse(res.value) : {};
-    if(!costSettings || typeof costSettings !== 'object') costSettings = {};
-  }catch(e){ costSettings = {}; }
+    const parsed = (res && res.value) ? JSON.parse(res.value) : null;
+    costSettings = Object.assign({}, JSON.parse(JSON.stringify(DEFAULT_COST_MAP)), (parsed && parsed.costs) || {});
+  }catch(e){ costSettings = JSON.parse(JSON.stringify(DEFAULT_COST_MAP)); }
 }
 // עלות יחידה נלקחת מטבלת העלויות של אפליקציית הירידים, ולא מוגדרת מחדש כאן, כדי שלא
 // תיווצרנה שתי טבלאות עלויות שונות. עדכון עלות נעשה שם, במסך העלויות של המנהל הראשי.
