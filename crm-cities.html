@@ -1231,7 +1231,7 @@ const CAGE_GROUP_MAP = {
   'תוכון מותאם לאילוף כולל כלוב': 'כלוב תוכון',
   '2 תוכונים מותאמים לאילוף כולל כלוב': 'כלוב תוכון',
   '2 תוכונים לא מותאמים לאילוף כולל כלוב': 'כלוב תוכון',
-  'קוקטייל כולל כלוב': 'כלוב קוקטייל',
+  'קוקטייל כולל כלוב': 'כלוב קוואקר',
   'קוואקר כולל כלוב': 'כלוב קוואקר',
   'ארנב כולל כלוב נסורת ואוכל': 'כלוב ארנב',
   'ארנב ננסי הולנדי ישראלי כולל כלוב נסורת ואוכל': 'כלוב ארנב',
@@ -1270,7 +1270,7 @@ const NO_CAGE_DISCOUNT_MAP = {
   '2 אוגרים כולל כלוב': 60,              // 160-60=100, per עדכון נועם
   '2 תוכונים לא מותאמים לאילוף כולל כלוב': 20  // 200-20=180, per מחירון "חסד לישראל"
 };
-const CAGE_TYPES_LIST = ['כלוב תוכון','כלוב קוקטייל','כלוב קוואקר','כלוב ארנב','כלוב ארנב מוגדל','כלוב שרקן','כלוב שרקן מוגדל','כלוב אוגרים'];
+const CAGE_TYPES_LIST = ['כלוב תוכון','כלוב קוואקר','כלוב ארנב','כלוב ארנב מוגדל','כלוב שרקן','כלוב שרקן מוגדל','כלוב אוגרים'];
 const ANIMAL_STOCK_ALERT_THRESHOLD = 10;
 const CAGE_STOCK_ALERT_THRESHOLD = 20;
 
@@ -1570,6 +1570,16 @@ function defaultStock(){
 function cleanStockShape(s){
   const def = defaultStock();
   const out = { animals: Object.assign(def.animals, s && s.animals || {}), cages: Object.assign(def.cages, s && s.cages || {}) };
+  // כלוב קוקטייל וכלוב קוואקר הם אותו כלוב בפועל. כדי שלא יוצג חוסר מדומה בסוג שלא קיים,
+  // כל כמות שנשמרה בעבר תחת הסוג הישן מתקפלת לתוך הסוג המאוחד והמפתח הישן נמחק.
+  const LEGACY_CAGE_MERGE = { 'כלוב קוקטייל': 'כלוב קוואקר' };
+  Object.keys(LEGACY_CAGE_MERGE).forEach(oldType=>{
+    if(out.cages[oldType] != null){
+      const target = LEGACY_CAGE_MERGE[oldType];
+      out.cages[target] = (out.cages[target]||0) + (out.cages[oldType]||0);
+      delete out.cages[oldType];
+    }
+  });
   Object.keys(out.animals).forEach(k=>{ if(out.animals[k] < 0) out.animals[k] = 0; });
   Object.keys(out.cages).forEach(k=>{ if(out.cages[k] < 0) out.cages[k] = 0; });
   return out;
