@@ -1489,6 +1489,7 @@ function renderVaccineReminders(){
 const PAYOUTS_KEY = 'pet-crm-store-payouts';
 const COST_SETTINGS_KEY = 'pet-crm-cost-settings'; // משותף עם אפליקציית הירידים - כאן קריאה בלבד
 const VAT_RATE_STORE = 0.18;
+const FREE_SALE_LABEL = 'מכירות בסכום חופשי (אין להן עלות מוצר)';
 let payouts = [];
 const DEFAULT_COST_MAP = {
   'תוכון מותאם לאילוף כולל כלוב': { animal:35, cage:14 },
@@ -1562,7 +1563,8 @@ function saleProductCost(s){
     if(u == null) missing.push(f.type); else cost += u * (f.quantity||1);
   });
   // מכירה בסכום חופשי אינה פריט מהקטלוג, ולכן אין לה עלות מוגדרת
-  (s.freeItems||[]).forEach(f=>{ if((f.amount||0) > 0) missing.push(f.description || 'פריט ללא תיאור'); });
+  // כל המכירות בסכום חופשי נאספות לשורה אחת, כי לאף אחת מהן לא תהיה עלות אוטומטית
+  (s.freeItems||[]).forEach(f=>{ if((f.amount||0) > 0) missing.push(FREE_SALE_LABEL); });
   return { cost: cost, missing: missing };
 }
 function payoutTotals(){
