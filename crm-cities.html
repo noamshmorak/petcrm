@@ -6904,29 +6904,35 @@ const RESTOCK_KEY = 'pet-crm-restock-settings';
 const DEFAULT_CARTONS = { 'כלוב ארנב':4, 'כלוב ארנב מוגדל':4, 'כלוב תוכון':10, 'כלוב אוגרים':6 };
 const DEFAULT_RESTOCK_TARGET = 60;
 let restockSettings = { target: DEFAULT_RESTOCK_TARGET, targets:{}, cartons:{} };
+// reconcileObjectStore מחזיר את האובייקט המאוחד מהשרת, ושם עלולים לחסור מפתחות שעוד לא
+// נכתבו. בלי נרמול, targets או cartons חוזרים undefined והמסך קורס - לכן מנרמלים תמיד.
+function normalizeRestockSettings(s){
+  const o = (s && typeof s === 'object') ? s : {};
+  if(typeof o.target !== 'number' || isNaN(o.target)) o.target = DEFAULT_RESTOCK_TARGET;
+  if(!o.targets || typeof o.targets !== 'object') o.targets = {};
+  if(!o.cartons || typeof o.cartons !== 'object') o.cartons = {};
+  return o;
+}
 async function loadRestockSettings(){
+  let remote = null;
   try{
     const res = await window.storage.get(RESTOCK_KEY, true);
-    const parsed = (res && res.value) ? JSON.parse(res.value) : null;
-    if(parsed && typeof parsed === 'object'){
-      if(typeof parsed.target === 'number') restockSettings.target = parsed.target;
-      if(parsed.targets && typeof parsed.targets === 'object') restockSettings.targets = parsed.targets;
-      if(parsed.cartons && typeof parsed.cartons === 'object') restockSettings.cartons = parsed.cartons;
-    }
-  }catch(e){ /* ברירת מחדל */ }
-  markSyncedObject(RESTOCK_KEY, restockSettings);
+    if(res && res.value) remote = JSON.parse(res.value);
+  }catch(e){ remote = null; }
+  restockSettings = normalizeRestockSettings(remote ? Object.assign({}, remote) : null);
+  markSyncedObject(RESTOCK_KEY, remote || {});
 }
 async function saveRestockSettings(){
-  try{ restockSettings = await reconcileObjectStore(RESTOCK_KEY, restockSettings); }
+  try{ restockSettings = normalizeRestockSettings(await reconcileObjectStore(RESTOCK_KEY, restockSettings)); }
   catch(e){ showToast('שגיאה בשמירת הגדרות ההשלמה'); }
 }
 function restockCartonFor(name){
-  const c = restockSettings.cartons[name];
+  const c = (restockSettings.cartons||{})[name];
   if(c != null && Number(c) > 0) return Number(c);
   return DEFAULT_CARTONS[name] || 1;
 }
 function restockTargetFor(name){
-  const t = restockSettings.targets[name];
+  const t = (restockSettings.targets||{})[name];
   if(t != null && Number(t) >= 0) return Number(t);
   const g = Number(restockSettings.target);
   return isNaN(g) ? DEFAULT_RESTOCK_TARGET : g;
@@ -6973,12 +6979,14 @@ function restockOrderText(){
 async function setRestockTargetAll(val){
   const v = parseFloat(val);
   if(isNaN(v) || v < 0){ showToast('יעד לא תקין'); return; }
+  restockSettings = normalizeRestockSettings(restockSettings);
   restockSettings.target = v;
   await saveRestockSettings();
   renderAdminTabContent();
 }
 async function setRestockTarget(name, val){
   const v = parseFloat(val);
+  restockSettings = normalizeRestockSettings(restockSettings);
   if(val === '' || isNaN(v)) delete restockSettings.targets[name];
   else restockSettings.targets[name] = Math.max(0, v);
   await saveRestockSettings();
@@ -6986,6 +6994,7 @@ async function setRestockTarget(name, val){
 }
 async function setRestockCarton(name, val){
   const v = parseFloat(val);
+  restockSettings = normalizeRestockSettings(restockSettings);
   if(val === '' || isNaN(v) || v <= 0) delete restockSettings.cartons[name];
   else restockSettings.cartons[name] = v;
   await saveRestockSettings();
