@@ -7030,6 +7030,17 @@ function restockRowHtml(x){
     + `<div style="min-width:86px;font-weight:800;text-align:left;${x.order ? 'color:var(--danger);' : 'color:var(--muted);'}">${x.order ? x.order : '—'}</div>`
     + `</div>`;
 }
+// אותו חישוב של טאב השלמת מלאי, כטקסט מוכן להעתקה. מוצג גם במסך המלאי עצמו, כדי שמי
+// שמעדכן את המלאי יוכל להעתיק מיד את מה שחסר ולשלוח לספק בלי לעבור טאב.
+function restockOrderBlockHtml(){
+  const has = restockRows().cages.some(x=>x.order>0);
+  return `<div style="margin-top:16px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;">`
+    + `<div style="font-weight:700;margin-bottom:6px;">ההזמנה לספק</div>`
+    + `<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px;">השלמה ליעד ${restockSettings.target} כלובים מכל סוג אחרי כל ההזמנות הפתוחות, מעוגל לקרטון שלם. את היעד וגודל הקרטון משנים בטאב השלמת מלאי.</div>`
+    + `<pre style="white-space:pre-wrap;font-family:inherit;font-size:13px;margin:0 0 8px;">${escHtml(restockOrderText())}</pre>`
+    + (has ? `<button class="btn-primary" style="padding:7px 14px;font-size:13px;" onclick="copyRestockOrder()">העתק את ההזמנה</button>` : '')
+    + `</div>`;
+}
 function renderRestockHtml(){
   const r = restockRows();
   const head = `<div class="stock-row" style="background:var(--new-badge-light);font-size:11.5px;font-weight:700;">`
@@ -7039,17 +7050,12 @@ function renderRestockHtml(){
     + `<div style="width:52px;text-align:center;">בקרטון</div>`
     + `<div style="min-width:86px;text-align:left;">להזמין</div>`
     + `</div>`;
-  const totalOrder = r.cages.filter(x=>x.order>0).length;
   return `<div style="font-weight:800;margin-bottom:4px;">השלמת מלאי - כלובים</div>`
     + `<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">החישוב: יעד + כל ההזמנות הפתוחות שטרם סופקו, פחות מה שיש במלאי. כלומר היעד הוא מה שיישאר במלאי אחרי שכל ההזמנות יצאו. התוצאה מעוגלת כלפי מעלה לקרטון שלם.</div>`
     + `<div class="field" style="max-width:220px;"><label>יעד לכל הסוגים</label><input type="number" min="0" value="${restockSettings.target}" onchange="setRestockTargetAll(this.value)"></div>`
     + `<div style="font-size:11.5px;color:var(--muted);margin:-4px 0 12px;">אפשר לדרוס יעד לכל שורה בנפרד, ולעדכן כמה יחידות יש בקרטון. השינויים נשמרים אוטומטית.</div>`
     + head + r.cages.map(restockRowHtml).join('')
-    + `<div style="margin-top:16px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;">`
-      + `<div style="font-weight:700;margin-bottom:6px;">ההזמנה לספק</div>`
-      + `<pre style="white-space:pre-wrap;font-family:inherit;font-size:13px;margin:0 0 8px;">${escHtml(restockOrderText())}</pre>`
-      + (totalOrder ? `<button class="btn-primary" style="padding:7px 14px;font-size:13px;" onclick="copyRestockOrder()">העתק את ההזמנה</button>` : '')
-    + `</div>`;
+    + restockOrderBlockHtml();
 }
 
 /* ---------- admin tabs ---------- */
@@ -8271,6 +8277,7 @@ function renderAdminTabContent(){
         `).join('')}
       </div>
       <button class="btn-primary" onclick="saveStockSettings()">שמור מלאי</button>
+      ${restockOrderBlockHtml()}
     `;
   }else if(adminActiveTab==='depot'){
     content.innerHTML = `
