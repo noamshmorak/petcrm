@@ -4618,6 +4618,92 @@ function whatsAppOrderReminder(orderId){
 // Looks up which real ad-places (papers/publishers, with a phone number) cover a given
 // schedule "group" name - a group name is always a real city, so an exact match against a
 // place's `cities` list is enough (a place can list several cities if it's one shared paper).
+/* ---------- מועדי סגירה ויציאה של כל עיתון ---------- */
+// לכל עיתון נשמר באיזה יום הוא יוצא, באיזה יום הוא סוגר את המערכת, וכמה שבועות לפני
+// היציאה הסגירה מתרחשת. עיתון שסוגר ביום רביעי של השבוע שלפני היציאה (יוצא ביום ראשון)
+// הוא closeWeeksBefore=1, closeDay=3. מכאן נגזר התאריך האחרון להעברת מודעה לכל שבוע.
+const WEEK_DAY_LABELS = ['ראשון','שני','שלישי','רביעי','חמישי','שישי','שבת'];
+function placePublishDay(p){ return (p && p.publishDay != null && p.publishDay !== '') ? Number(p.publishDay) : null; }
+function placeCloseDay(p){ return (p && p.closeDay != null && p.closeDay !== '') ? Number(p.closeDay) : null; }
+function placeCloseWeeksBefore(p){ return (p && p.closeWeeksBefore != null) ? Number(p.closeWeeksBefore) : 0; }
+function placeDeadlineDate(p, weekStart){
+  const cd = placeCloseDay(p);
+  if(cd == null || !weekStart) return null;
+  const d = new Date(weekStart+'T00:00:00');
+  d.setDate(d.getDate() + cd - 7*placeCloseWeeksBefore(p));
+  return localDateStr(d);
+}
+function placePublishDate(p, weekStart){
+  const pd = placePublishDay(p);
+  if(pd == null || !weekStart) return null;
+  const d = new Date(weekStart+'T00:00:00');
+  d.setDate(d.getDate() + pd);
+  return localDateStr(d);
+}
+// passed = המועד חלף, today = סוגר היום, soon = נותרו עד יומיים, ok = יש זמן
+function deadlineStatus(dateStr){
+  if(!dateStr) return 'unknown';
+  const today = todayStr();
+  if(dateStr < today) return 'passed';
+  if(dateStr === today) return 'today';
+  const diff = (new Date(dateStr+'T00:00:00') - new Date(today+'T00:00:00')) / 86400000;
+  return diff <= 2 ? 'soon' : 'ok';
+}
+function deadlineColor(st){
+  if(st === 'passed') return 'var(--danger)';
+  if(st === 'today' || st === 'soon') return '#B45309';
+  if(st === 'unknown') return 'var(--muted)';
+  return 'var(--accent-dark)';
+}
+function deadlineLabel(p, weekStart){
+  const dl = placeDeadlineDate(p, weekStart);
+  if(!dl) return 'לא הוגדר מועד סגירה';
+  const st = deadlineStatus(dl);
+  const dayTxt = 'יום ' + WEEK_DAY_LABELS[placeCloseDay(p)];
+  const base = 'סגירה ' + dayTxt + ' ' + formatDate(dl);
+  if(st === 'passed') return base + ' - חלף, לא ייכנס לשבוע הזה';
+  if(st === 'today') return base + ' - סוגר היום';
+  if(st === 'soon') return base + ' - נותרו פחות מיומיים';
+  return base;
+}
+// שורת המועדים שמוצגת מתחת לכל שבוע בלוח הפרסום
+function weekDeadlinesHtml(weekStart, groups){
+  const items = [];
+  (groups||[]).forEach(g=>{
+    adPlacesForGroupName(g).forEach(p=>{
+      const dl = placeDeadlineDate(p, weekStart);
+      items.push({ name: p.name, text: deadlineLabel(p, weekStart), color: deadlineColor(deadlineStatus(dl)) });
+    });
+  });
+  if(!items.length) return '';
+  return '<div style="margin-top:4px;display:flex;flex-direction:column;gap:2px;">'
+    + items.map(x=>'<div style="font-size:11.5px;color:' + x.color + ';">' + escHtml(x.name) + ': ' + escHtml(x.text) + '</div>').join('')
+    + '</div>';
+}
+async function setAdPlaceSchedule(id, field, value){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק מנהל ראשי יכול לעדכן מועדים'); return; }
+  const p = adPlaces.find(x=>x.id===id);
+  if(!p) return;
+  if(value === '') delete p[field]; else p[field] = Number(value);
+  await saveAdPlaces();
+  renderAdminTabContent();
+}
+function adPlaceScheduleEditorHtml(p){
+  const daySel = (field, cur, withEmpty) => '<select style="font-size:11.5px;padding:2px 4px;" onchange="setAdPlaceSchedule(\'' + escAttr(p.id) + '\',\'' + field + '\',this.value)">'
+    + (withEmpty ? '<option value=""' + (cur==null?' selected':'') + '>לא הוגדר</option>' : '')
+    + WEEK_DAY_LABELS.map((d,i)=>'<option value="' + i + '"' + (cur===i?' selected':'') + '>' + d + '</option>').join('')
+    + '</select>';
+  const weeksSel = '<select style="font-size:11.5px;padding:2px 4px;" onchange="setAdPlaceSchedule(\'' + escAttr(p.id) + '\',\'closeWeeksBefore\',this.value)">'
+    + '<option value="0"' + (placeCloseWeeksBefore(p)===0?' selected':'') + '>באותו שבוע</option>'
+    + '<option value="1"' + (placeCloseWeeksBefore(p)===1?' selected':'') + '>שבוע לפני</option>'
+    + '<option value="2"' + (placeCloseWeeksBefore(p)===2?' selected':'') + '>שבועיים לפני</option>'
+    + '</select>';
+  return '<div style="font-size:11.5px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:2px 0 6px;">'
+    + '<span>יוצא ביום</span>' + daySel('publishDay', placePublishDay(p), true)
+    + '<span>סוגר ביום</span>' + daySel('closeDay', placeCloseDay(p), true)
+    + weeksSel
+    + '</div>';
+}
 function adPlacesForGroupName(name){
   return adPlaces.filter(p=>Array.isArray(p.cities) && p.cities.includes(name));
 }
@@ -7874,7 +7960,8 @@ function renderAdminTabContent(){
             <div class="row2" style="align-items:center;margin-bottom:4px;">
               <div style="flex:1;font-size:12.5px;">${escHtml(p.name)} - ${escHtml(p.cities.join(', '))} · ${escHtml(p.phone)}</div>
               <button class="icon-btn" onclick="deleteAdPlace('${p.id}')">🗑️</button>
-            </div>`).join('');
+            </div>
+            ${adPlaceScheduleEditorHtml(p)}`).join('');
         }).join('') || '<div style="color:var(--muted);font-size:13px;margin-top:10px;">אין מקומות ברשימה עדיין.</div>'}
       </div>
 
@@ -8164,6 +8251,7 @@ function renderAdminTabContent(){
           <div style="flex:1;text-align:left;">${item.plan.strongAd ? '<span style="color:#B45309;font-weight:800;">🔥 + פרסום חזק</span>' : ''}</div>
         </div>
         ${ov && item.plan.note ? `<div style="font-size:12px;color:var(--muted);margin-top:2px;">${escHtml(item.plan.note)}</div>` : ''}
+        ${weekDeadlinesHtml(item.weekStart, item.plan.groups)}
         ${pcIsMain ? `
           <div style="margin-top:6px;">
             <span onclick="document.getElementById('${editId}').style.display = document.getElementById('${editId}').style.display==='none'?'block':'none'" style="font-size:12px;color:var(--muted);cursor:pointer;user-select:none;">✏️ שינוי לשבוע הזה בלבד</span>
