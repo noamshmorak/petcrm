@@ -8144,7 +8144,9 @@ function renderAdminTabContent(){
     `;
   }else if(adminActiveTab==='profitcalendar'){
     const pcThisWeekStart = weekStartOf(todayStr());
-    const pcAddWeeks = (dateStr, n)=>{ const d = new Date(dateStr+'T00:00:00'); d.setDate(d.getDate()+n*7); return d.toISOString().slice(0,10); };
+    // toISOString ממיר לחצות UTC ומחזיר את היום הקודם בשעון ישראל, ואז כל שבוע קדימה נפל על
+    // שבת במקום ראשון - והחריגות (שנשמרות לפי יום ראשון) לא נמצאו ולא הוצגו כאן.
+    const pcAddWeeks = (dateStr, n)=>{ const d = new Date(dateStr+'T00:00:00'); d.setDate(d.getDate()+n*7); return localDateStr(d); };
     const pcUpcoming = [];
     for(let i=0;i<8;i++){
       const ws = pcAddWeeks(pcThisWeekStart, i);
