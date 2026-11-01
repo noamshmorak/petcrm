@@ -287,9 +287,16 @@
   </div>
 
   <div id="tab-report" style="display:none;">
-    <div id="combinedReportContent">
-      <button class="btn-primary" onclick="loadCombinedReport()">🔄 טען דוח משולב</button>
+    <div class="card">
+      <div style="font-weight:800;margin-bottom:6px;">דוח משולב - ירידים + מכירות רגילות</div>
+      <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px;">אפשר לבחור חודש ושנה, או להשאיר "כל התקופה" לסיכום הכולל. ההכנסה נספרת לפי תאריך המסירה בירידים ותאריך המכירה במכירות הרגילות.</div>
+      <div class="row2" style="margin-bottom:8px;">
+        <select id="combinedMonth"></select>
+        <select id="combinedYear"></select>
+      </div>
+      <button class="btn-primary" style="width:100%;" onclick="loadCombinedReport()">🔄 הצג דוח</button>
     </div>
+    <div id="combinedReportContent"></div>
   </div>
 
   <div id="tab-monthly" style="display:none;">
@@ -1310,9 +1317,44 @@ function renderHistory(){
 /* ---------- combined report (mainadmin only): reads the OTHER app's order/spot-sale data
    read-only (no writes here, so no need for the full reconcile machinery) plus this app's own
    sales and the shared expenses, and adds up revenue/profit across both apps together. ---------- */
+// הדוח המשולב לפי חודש: אפשר לבחור חודש ושנה, או כל התקופה. בירידים ההכנסה נספרת לפי
+// תאריך המסירה בפועל (ולא תאריך ההזמנה), כי זה המועד שבו הכסף באמת נכנס.
+const HE_MONTHS = ['ינואר','פברואר','מרץ','אפריל','מאי','יוני','יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'];
+function populateCombinedPeriod(){
+  const mEl = document.getElementById('combinedMonth'), yEl = document.getElementById('combinedYear');
+  if(!mEl || !yEl || mEl.dataset.ready) return;
+  mEl.innerHTML = '<option value="">כל החודשים</option>' + HE_MONTHS.map((m,i)=>'<option value="' + String(i+1).padStart(2,'0') + '">' + m + '</option>').join('');
+  const years = new Set();
+  (storeSales||[]).forEach(s=>{ if(s.date) years.add(s.date.slice(0,4)); });
+  const nowY = new Date().getFullYear();
+  years.add(String(nowY)); years.add(String(nowY-1));
+  yEl.innerHTML = '<option value="">כל השנים</option>' + [...years].sort().reverse().map(y=>'<option value="' + y + '">' + y + '</option>').join('');
+  mEl.value = String(new Date().getMonth()+1).padStart(2,'0');
+  yEl.value = String(nowY);
+  mEl.dataset.ready = '1';
+}
+function combinedPeriod(){
+  const m = (document.getElementById('combinedMonth')||{}).value || '';
+  const y = (document.getElementById('combinedYear')||{}).value || '';
+  return { month:m, year:y };
+}
+function inCombinedPeriod(dateStr, p){
+  if(!p.month && !p.year) return true;
+  if(!dateStr) return false;
+  if(p.year && dateStr.slice(0,4) !== p.year) return false;
+  if(p.month && dateStr.slice(5,7) !== p.month) return false;
+  return true;
+}
+function combinedPeriodLabel(p){
+  if(!p.month && !p.year) return 'כל התקופה';
+  if(p.month && p.year) return HE_MONTHS[Number(p.month)-1] + ' ' + p.year;
+  if(p.month) return HE_MONTHS[Number(p.month)-1] + ' (כל השנים)';
+  return 'שנת ' + p.year;
+}
 async function loadCombinedReport(){
   const el = document.getElementById('combinedReportContent');
-  el.innerHTML = '<div style="color:var(--muted);">טוען...</div>';
+  const p = combinedPeriod();
+  el.innerHTML = '<div class="card" style="color:var(--muted);">טוען...</div>';
   let otherOrders = [], otherSpotSales = [];
   try{
     const res1 = await window.storage.get(OTHER_APP_ORDERS_KEY, true);
@@ -1322,28 +1364,49 @@ async function loadCombinedReport(){
     const res2 = await window.storage.get(OTHER_APP_SPOT_SALES_KEY, true);
     otherSpotSales = res2 && res2.value ? JSON.parse(res2.value) : [];
   }catch(e){}
-  // Only revenue that's actually already realized: delivered orders (not just active/pending
-  // ones), plus spot sales (which are always an immediate on-the-spot sale, so already realized
-  // by definition) - not a projection of everything currently in the pipeline.
-  const otherRevenue = otherOrders.filter(o=>!o.cancelled && o.delivered).reduce((s,o)=>s+(o.totalPrice||0),0)
-    + otherSpotSales.reduce((s,o)=>s+(o.totalPrice||0),0);
-  const storeRevenue = storeSales.filter(s=>!s.cancelled).reduce((s,x)=>s+(x.totalPrice||0),0);
-  const totalExpenses = manualExpenses.reduce((s,e)=>s+(e.amount||0),0);
-  const combinedRevenue = otherRevenue + storeRevenue;
-  const netCombined = combinedRevenue - totalExpenses;
-  el.innerHTML = `
-    <div class="card">
-      <div style="font-weight:800;margin-bottom:10px;">📊 דוח משולב - שתי האפליקציות</div>
-      <div class="stats-row">
-        <div class="stat"><div class="num">${otherRevenue}</div><div class="lbl">הכנסות שהתקבלו בפועל - ערים ₪</div></div>
-        <div class="stat"><div class="num">${storeRevenue}</div><div class="lbl">הכנסות מכירות רגילות ₪</div></div>
-        <div class="stat"><div class="num">${combinedRevenue}</div><div class="lbl">סה"כ הכנסות משולב ₪</div></div>
-      </div>
-      <div style="margin-top:12px;font-size:13.5px;color:var(--muted);">סה"כ הוצאות (משותפות): ${totalExpenses} ₪</div>
-      <div style="margin-top:6px;font-weight:800;font-size:16px;color:var(--route);">רווח נטו משולב: ${netCombined} ₪</div>
-      <button class="btn-primary" style="margin-top:12px;" onclick="loadCombinedReport()">🔄 רענן</button>
-    </div>
-  `;
+  // רק הכנסה שכבר התממשה: הזמנות שסופקו ומכירות מהשטח, לא כל מה שפתוח בצינור.
+  const orderDate = o => o.deliveryDate || o.date || '';
+  const fairOrders = otherOrders.filter(o=>!o.cancelled && o.delivered && inCombinedPeriod(orderDate(o), p));
+  const spot = (otherSpotSales||[]).filter(o=>inCombinedPeriod(o.date, p));
+  const store = (storeSales||[]).filter(s=>!s.cancelled && inCombinedPeriod(s.date, p));
+  const expenses = (manualExpenses||[]).filter(e=>inCombinedPeriod(e.date, p));
+  const nis = n => Math.round(n).toLocaleString('he-IL');
+  const fairRevenue = fairOrders.reduce((s,o)=>s+(o.totalPrice||0),0) + spot.reduce((s,o)=>s+(o.totalPrice||0),0);
+  const storeRevenue = store.reduce((s,x)=>s+(x.totalPrice||0),0);
+  const totalExpenses = expenses.reduce((s,e)=>s+(e.amount||0),0);
+  const combinedRevenue = fairRevenue + storeRevenue;
+  // פירוט לפי חודש על כל התקופה, כדי לראות מגמה גם כשבוחרים חודש בודד
+  const byMonth = {};
+  const bump = (d, field, amount) => { const k=(d||'').slice(0,7); if(!k) return; byMonth[k] = byMonth[k] || {fair:0, store:0, exp:0}; byMonth[k][field] += amount; };
+  (otherOrders||[]).filter(o=>!o.cancelled && o.delivered).forEach(o=>bump(orderDate(o),'fair',o.totalPrice||0));
+  (otherSpotSales||[]).forEach(o=>bump(o.date,'fair',o.totalPrice||0));
+  (storeSales||[]).filter(s=>!s.cancelled).forEach(s=>bump(s.date,'store',s.totalPrice||0));
+  (manualExpenses||[]).forEach(e=>bump(e.date,'exp',e.amount||0));
+  const months = Object.keys(byMonth).sort().reverse();
+  el.innerHTML = '<div class="card">'
+    + '<div style="font-weight:800;margin-bottom:2px;">📊 ' + escHtml(combinedPeriodLabel(p)) + '</div>'
+    + '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">' + fairOrders.length + ' משלוחים בירידים · ' + store.length + ' מכירות רגילות</div>'
+    + '<div class="stats-row">'
+      + '<div class="stat"><div class="num">' + nis(fairRevenue) + '</div><div class="lbl">ירידים ₪</div></div>'
+      + '<div class="stat"><div class="num">' + nis(storeRevenue) + '</div><div class="lbl">מכירות רגילות ₪</div></div>'
+      + '<div class="stat"><div class="num">' + nis(combinedRevenue) + '</div><div class="lbl">סה"כ מחזור ₪</div></div>'
+    + '</div>'
+    + '<div style="margin-top:12px;font-size:13.5px;color:var(--muted);">הוצאות שנרשמו בתקופה: ' + nis(totalExpenses) + ' ₪</div>'
+    + '<div style="margin-top:4px;font-size:16px;font-weight:800;color:var(--route);">נטו אחרי הוצאות: ' + nis(combinedRevenue-totalExpenses) + ' ₪</div>'
+    + '<div style="margin-top:8px;font-size:11.5px;color:var(--muted);">ההוצאות הן רק מה שנרשם במסך ההוצאות. עלות המוצרים ועלויות הפרסום אינן נכללות כאן.</div>'
+  + '</div>'
+  + '<div class="card">'
+    + '<div style="font-weight:800;margin-bottom:8px;">לפי חודשים</div>'
+    + (months.length ? months.map(k=>{
+        const r = byMonth[k];
+        const tot = r.fair + r.store;
+        const sel = (p.month && p.year && k === p.year + '-' + p.month);
+        return '<div style="border:1px solid ' + (sel ? 'var(--accent-dark)' : 'var(--border)') + ';border-radius:10px;padding:8px 10px;margin-bottom:6px;">'
+          + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;"><div style="font-weight:700;">' + escHtml(monthLabelHe(k)) + '</div><div style="font-weight:800;">' + nis(tot) + ' ₪</div></div>'
+          + '<div style="font-size:12px;color:var(--muted);margin-top:2px;">ירידים ' + nis(r.fair) + ' · רגילות ' + nis(r.store) + (r.exp ? ' · הוצאות ' + nis(r.exp) : '') + '</div>'
+        + '</div>';
+      }).join('') : '<div style="font-size:12.5px;color:var(--muted);">אין נתונים</div>')
+  + '</div>';
 }
 
 /* ---------- תזכורת חיסון לקוני ארנבים (מכירות רגילות בלבד) ----------
@@ -1725,6 +1788,7 @@ document.querySelectorAll('.tab').forEach(tab=>{
     if(tab.dataset.tab==='prices') renderPricesEditor();
     if(tab.dataset.tab==='users') renderUsersList();
     if(tab.dataset.tab==='bugreports') renderBugReportsList();
+      if(tab.dataset.tab === 'report') populateCombinedPeriod();
       if(tab.dataset.tab === 'monthly') renderMonthlySalesReport();
       if(tab.dataset.tab === 'vaccine') renderVaccineReminders();
       if(tab.dataset.tab === 'payouts') renderPayouts();
