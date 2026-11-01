@@ -1233,6 +1233,24 @@ async function submitSale(){
   renderHistory();
   btn.disabled = false;
 }
+// עריכת פרטי לקוח על מכירה קיימת. בכוונה רק שם וטלפון - הסכום והפריטים לא ניתנים לשינוי
+// כאן, כדי שחישוב החלוקה והדוחות לא ישתנו בדיעבד בלי שמישהו שם לב.
+function toggleSaleEdit(id){
+  const d = document.getElementById('saleEdit_'+id);
+  if(d) d.style.display = (d.style.display === 'none' || !d.style.display) ? 'block' : 'none';
+}
+async function saveSaleCustomer(id){
+  if(!isAdminRole()){ showToast('רק מנהל יכול לערוך'); return; }
+  const s = storeSales.find(x=>x.id===id);
+  if(!s) return;
+  const nameEl = document.getElementById('saleEditName_'+id);
+  const phoneEl = document.getElementById('saleEditPhone_'+id);
+  s.customer = nameEl ? nameEl.value.trim() : '';
+  s.customerPhone = phoneEl ? phoneEl.value.trim() : '';
+  await saveStoreSales();
+  showToast('פרטי הלקוח עודכנו');
+  renderHistory();
+}
 function cancelSale(id){
   if(!isAdminRole()){ showToast('רק מנהל יכול לבטל מכירה'); return; }
   const s = storeSales.find(x=>x.id===id);
@@ -1276,6 +1294,15 @@ function renderHistory(){
       <div class="city-totals" style="color:var(--accent-dark);font-weight:700;">💰 ${s.totalPrice} ₪${s.cancelled?' · בוטלה':''}</div>
       <div class="order-sub">נציג: ${escHtml(s.createdByUsername)}</div>
       ${(isAdminRole() && !s.cancelled) ? `<button class="icon-btn" onclick="cancelSale('${s.id}')" title="בטל מכירה">🗑️ בטל</button>` : ''}
+      ${isAdminRole() ? `
+      <div style="margin-top:6px;">
+        <span style="cursor:pointer;text-decoration:underline;color:var(--muted);font-size:12.5px;" onclick="toggleSaleEdit('${s.id}')">✏️ עריכת פרטי לקוח</span>
+        <div id="saleEdit_${s.id}" style="display:none;margin-top:6px;">
+          <input id="saleEditName_${s.id}" placeholder='שם הלקוח' value="${escAttr(s.customer||'')}" style="width:100%;margin-bottom:4px;font-size:13px;">
+          <input id="saleEditPhone_${s.id}" placeholder='טלפון' value="${escAttr(s.customerPhone||'')}" style="width:100%;margin-bottom:4px;font-size:13px;">
+          <button class="btn-primary" style="padding:6px 12px;font-size:12.5px;" onclick="saveSaleCustomer('${s.id}')">שמור</button>
+        </div>
+      </div>` : ''}
     </div>
   `).join('');
 }
