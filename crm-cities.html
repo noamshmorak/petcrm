@@ -369,6 +369,18 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="adSourceModal">
+  <div class="modal-box">
+    <p id="adSourceMessage"></p>
+    <div class="modal-actions" style="flex-direction:column;gap:8px;">
+      <button class="btn-primary" style="width:100%;" onclick="resolveAdSource('new')">📣 פרסום חדש - יצאה מודעה חדשה</button>
+      <button class="btn-primary" style="width:100%;background:var(--muted);" onclick="resolveAdSource('previous')">↩ פרסום קודם - ממשיך מהמודעה הקודמת</button>
+      <button class="btn-primary" style="width:100%;background:#B45309;" onclick="resolveAdSource('strong')">🔥 פרסום חזק</button>
+      <button class="btn-ghost" style="width:100%;" onclick="resolveAdSource('unknown')">לא יודע</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="roundChoiceModal">
   <div class="modal-box">
     <button class="modal-close-x" onclick="resolveRoundChoice(null)">✕</button>
@@ -3934,6 +3946,7 @@ function pushNewOrder(data, roundNumber){
   logAudit('צור הזמנה', `${data.customer||'לקוח'} · ${cityDisplayName(data.city, roundNumber)}${data.discount>0?' · הנחה '+data.discount+'₪':''}`);
   showToast('ההזמנה נוספה');
   queueAddressCheck(newId); // background, never blocks the rep or the save
+  if(shouldAskAdSource(data.city, roundNumber, newId, data.date)) askAdSource(data.city, roundNumber, data.date);
 }
 function finishSubmitOrder(){
   document.getElementById('fCustomer').value='';
@@ -6733,6 +6746,144 @@ function getCityMarketingRate(city){
 // 2. Local ad channel (explicit pick, or auto-resolved - see resolveEffectiveChannel): this
 //    order's share of that channel's cost for its week (split across that channel's own orders).
 // 3. Fallback: the old city-level estimate (cityMarketingSpend or the general average).
+/* ---------- רישום פרסומים בפועל ---------- */
+// הבעיה שזה פותר: עד כה המערכת הניחה שכל סבב חדש בעיר הוא פרסום חדש, ולכן חייבה מחיר
+// מודעה גם כשההזמנות המשיכו לטפטף מהמודעה הקודמת. עכשיו הנציג נשאל פעם אחת, בהזמנה
+// הראשונה, מאיפה ההזמנה הגיעה - וזה הופך את עלות הפרסום לנתון מתועד ולא להשערה.
+const AD_PUBLICATIONS_KEY = 'pet-crm-ad-publications';
+let adPublications = [];
+async function loadAdPublications(){
+  try{
+    const res = await window.storage.get(AD_PUBLICATIONS_KEY, true);
+    adPublications = res && res.value ? JSON.parse(res.value) : [];
+    if(!Array.isArray(adPublications)) adPublications = [];
+  }catch(e){ adPublications = []; }
+  markSyncedArray(AD_PUBLICATIONS_KEY, adPublications);
+}
+async function saveAdPublications(){
+  try{ adPublications = await reconcileArrayStore(AD_PUBLICATIONS_KEY, adPublications); }
+  catch(e){ showToast('שגיאה בשמירת רישום הפרסום'); }
+}
+const AD_SOURCE_LABELS = { 'new':'פרסום חדש', 'previous':'פרסום קודם', 'strong':'פרסום חזק', 'unknown':'לא ידוע' };
+function adPubsForCity(city){
+  return adPublications.filter(p=>p.city===city).sort((a,b)=>(a.weekStart||'').localeCompare(b.weekStart||''));
+}
+// הרשומה שתקפה להזמנה: האחרונה שהתחילה לא אחרי שבוע ההזמנה
+function adPubForOrder(o){
+  if(!o || !o.date) return null;
+  const w = weekStartOf(o.date);
+  const list = adPubsForCity(o.city).filter(p=>(p.weekStart||'') <= w);
+  return list.length ? list[list.length-1] : null;
+}
+function ordersForAdPub(pub){
+  const list = adPubsForCity(pub.city);
+  const idx = list.findIndex(p=>p.id===pub.id);
+  const nextWeek = (idx >= 0 && list[idx+1]) ? list[idx+1].weekStart : null;
+  return orders.filter(o=>!o.cancelled && o.date && o.city===pub.city
+    && weekStartOf(o.date) >= pub.weekStart
+    && (!nextWeek || weekStartOf(o.date) < nextWeek));
+}
+// האם לשאול את הנציג. שואלים בהזמנה הראשונה של סבב, וגם כשחלף יותר משבוע בלי הזמנה
+// בעיר - כי אז סביר שיצאה מודעה חדשה ולא המשך של הקודמת.
+function shouldAskAdSource(city, roundNumber, newId, dateStr){
+  if(!dateStr) return false;
+  const w = weekStartOf(dateStr);
+  if(adPublications.some(p=>p.city===city && p.weekStart===w)) return false;
+  const others = orders.filter(o=>o.id!==newId && !o.cancelled && o.city===city && o.date);
+  if(others.length === 0) return true;
+  const sameRound = others.filter(o=>(o.roundNumber||0)===(roundNumber||0));
+  if(sameRound.length === 0) return true;
+  const latest = others.map(o=>o.date).sort().pop();
+  const gapDays = (new Date(dateStr+'T00:00:00') - new Date(latest+'T00:00:00')) / 86400000;
+  return gapDays > 7;
+}
+async function recordAdSource(city, roundNumber, dateStr, kind){
+  const w = weekStartOf(dateStr);
+  const ch = (typeof channelForCityWeek === 'function') ? channelForCityWeek(city, w) : null;
+  const fallbackCh = adChannels.filter(c=>Array.isArray(c.cities) && c.cities.includes(city))[0] || null;
+  const useCh = ch || fallbackCh;
+  const rec = {
+    id: 'pub'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),
+    city: city, roundNumber: roundNumber||0, weekStart: w, date: dateStr, kind: kind,
+    channelId: useCh ? useCh.id : null,
+    channelName: useCh ? useCh.name : '',
+    price: (kind === 'new' && useCh) ? weeklyCostFor(useCh, w) : 0,
+    createdByUsername: currentUser ? currentUser.username : '',
+    createdAt: Date.now()
+  };
+  adPublications.push(rec);
+  await saveAdPublications();
+  logAudit('רשם מקור פרסום', cityDisplayName(city, roundNumber) + ' · ' + AD_SOURCE_LABELS[kind]);
+}
+let adSourcePending = null;
+// נשאל את הנציג פעם אחת לכל מודעה. התשובה היא מה שהופך את עלות הפרסום למדויקת,
+// ולכן אין כאן כפתור סגירה - אבל יש 'לא יודע' כדי שלא ניתקע אם הוא באמת לא יודע.
+function askAdSource(city, roundNumber, dateStr, onDone){
+  adSourcePending = { city:city, roundNumber:roundNumber, date:dateStr, cb:onDone };
+  const prev = adPubsForCity(city).filter(p=>p.kind==='new').pop();
+  const prevTxt = prev ? ' המודעה האחרונה שנרשמה בעיר הזאת: ' + formatDate(prev.weekStart) + '.' : ' אין מודעה קודמת שנרשמה בעיר הזאת.';
+  document.getElementById('adSourceMessage').textContent =
+    'זו ההזמנה הראשונה ב' + cityDisplayName(city, roundNumber) + '. מאיזה פרסום היא הגיעה?' + prevTxt + ' התשובה קובעת אם יירשם מחיר מודעה חדש לחודש הזה.';
+  document.getElementById('adSourceModal').classList.add('open');
+}
+async function resolveAdSource(kind){
+  const p = adSourcePending;
+  adSourcePending = null;
+  document.getElementById('adSourceModal').classList.remove('open');
+  if(!p) return;
+  await recordAdSource(p.city, p.roundNumber, p.date, kind);
+  if(kind === 'new'){
+    const rec = adPublications[adPublications.length-1];
+    showToast('נרשם פרסום חדש' + (rec && rec.price ? ' · ' + rec.price + ' ש"ח' : ''));
+  }
+  if(p.cb) p.cb(kind);
+  renderAll();
+}
+// מה נרשם בפועל כפרסום. זה המקור האמיתי לעלות הפרסום בדוחות, ולכן המנהל יכול לתקן כאן
+// סוג ומחיר - למשל כשהמודעה הייתה חצי עמוד ולא עמוד שלם.
+function adPublicationsAdminHtml(){
+  const list = (adPublications||[]).slice().sort((a,b)=>(b.weekStart||'').localeCompare(a.weekStart||''));
+  const nis = n => Math.round(n||0).toLocaleString('he-IL');
+  const byMonth = {};
+  list.filter(p=>p.kind==='new').forEach(p=>{ const k=(p.weekStart||'').slice(0,7); byMonth[k]=(byMonth[k]||0)+(p.price||0); });
+  const months = Object.keys(byMonth).sort().reverse();
+  return '<div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:14px;">'
+    + '<div style="font-weight:700;margin-bottom:4px;">\u{1F4F0} פרסומים שנרשמו בפועל</div>'
+    + '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">כל פעם שנפתחת הזמנה ראשונה בעיר, הנציג נשאל אם זה פרסום חדש או המשך של הקודם. רק "פרסום חדש" נחשב עלות. אפשר לתקן כאן סוג ומחיר.</div>'
+    + (months.length ? '<div style="font-size:12.5px;margin-bottom:8px;">' + months.map(m=>'<b>' + m + ':</b> ' + nis(byMonth[m]) + ' ₪').join(' · ') + '</div>' : '')
+    + (list.length ? list.map(p=>'<div style="border-bottom:1px solid var(--border);padding:6px 0;font-size:12.5px;">'
+        + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;">'
+          + '<div><b>' + escHtml(cityDisplayName(p.city, p.roundNumber)) + '</b> · ' + escHtml(p.channelName||'ללא ערוץ') + '</div>'
+          + '<div>' + escHtml(formatDate(p.weekStart)) + '</div>'
+        + '</div>'
+        + '<div style="margin-top:3px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">'
+          + '<select style="font-size:11.5px;padding:2px 4px;" onchange="setAdPubField(\'' + escAttr(p.id) + '\',\'kind\',this.value)">'
+            + ['new','previous','strong','unknown'].map(k=>'<option value="' + k + '"' + (p.kind===k?' selected':'') + '>' + AD_SOURCE_LABELS[k] + '</option>').join('')
+          + '</select>'
+          + '<input type="number" min="0" style="width:80px;font-size:11.5px;" value="' + (p.price||0) + '" onchange="setAdPubField(\'' + escAttr(p.id) + '\',\'price\',this.value)">'
+          + '<span style="color:var(--muted);">' + ordersForAdPub(p).length + ' הזמנות</span>'
+          + '<span style="cursor:pointer;text-decoration:underline;color:var(--danger);" onclick="deleteAdPub(\'' + escAttr(p.id) + '\')">מחק</span>'
+        + '</div>'
+      + '</div>').join('') : '<div style="font-size:12.5px;color:var(--muted);">עוד לא נרשם פרסום. הרישום מתחיל מההזמנה הבאה שתיפתח בעיר חדשה.</div>')
+  + '</div>';
+}
+async function setAdPubField(id, field, value){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק מנהל ראשי יכול לעדכן'); return; }
+  const p = adPublications.find(x=>x.id===id);
+  if(!p) return;
+  if(field === 'price') p.price = Math.max(0, parseFloat(value)||0);
+  else { p.kind = value; if(value !== 'new') p.price = 0; }
+  await saveAdPublications();
+  renderAdminTabContent();
+}
+async function deleteAdPub(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק מנהל ראשי יכול למחוק'); return; }
+  showConfirm('למחוק את רישום הפרסום?', async ()=>{
+    adPublications = adPublications.filter(x=>x.id!==id);
+    await saveAdPublications();
+    renderAdminTabContent();
+  });
+}
 function computeOrderMarketingCost(o){
   if(!o.date) return getCityMarketingRate(o.city);
   const week = weekStartOf(o.date);
@@ -6741,6 +6892,24 @@ function computeOrderMarketingCost(o){
   // Local channel and the nationwide "strong ad" campaign are independent costs - if an order's
   // week/round genuinely ran under both at once (e.g. the local paper AND the national campaign
   // both went out that week), both shares get added together instead of picking just one.
+  // אם יש רישום פרסום בפועל לעיר הזאת, הוא קובע - ולא ההנחה שכל סבב חדש הוא מודעה חדשה.
+  const pub = adPubForOrder(o);
+  if(pub){
+    if(pub.kind === 'new'){
+      const share = ordersForAdPub(pub);
+      cost += share.length ? (pub.price||0)/share.length : 0;
+    }
+    // 'previous' - ההזמנה הגיעה מהמודעה הקודמת ולכן אין עלות חדשה
+    // 'unknown' - לא נרשם, ואנחנו לא ממציאים מחיר
+    attributed = true;
+    if(isStrongAdRound(o.city, o.roundNumber) || pub.kind === 'strong'){
+      const weekCost = weeklyCostFor(strongAdCampaign, week);
+      const ordersThisWeek = orders.filter(x=>!x.cancelled && x.date && weekStartOf(x.date)===week
+        && (isStrongAdRound(x.city, x.roundNumber) || (adPubForOrder(x)||{}).kind === 'strong')).length;
+      cost += ordersThisWeek>0 ? weekCost/ordersThisWeek : 0;
+    }
+    return cost;
+  }
   const channel = resolveEffectiveChannel(o);
   if(channel){
     // One publication per round, paid once. The price is taken from the week the round's ad
@@ -7965,6 +8134,7 @@ function renderAdminTabContent(){
         }).join('') || '<div style="color:var(--muted);font-size:13px;margin-top:10px;">אין מקומות ברשימה עדיין.</div>'}
       </div>
 
+      ${adPublicationsAdminHtml()}
       <div style="border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:14px;">
         <div style="font-weight:700;margin-bottom:4px;">🎯 ערי יעד להרחבת פרסום</div>
         <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">רשימת תכנון - ערים ששוקלים להתחיל לפרסם בהן, לפני שיש בפועל מקום פרסום/מפרסם מסודר (זה מופיע למעלה ב"מקומות פרסום"). אפשר להוסיף הערה חופשית ליד כל עיר (למשל "לבדוק חרדים" או "קול קורא").</div>
@@ -9924,6 +10094,7 @@ async function initApp(){
   await loadUsers();
   await loadStock();
   await loadRestockSettings();
+  await loadAdPublications();
   await loadHourReports();
   await loadPayrollExtras();
   await loadAdminHourLogs();
