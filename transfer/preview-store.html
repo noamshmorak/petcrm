@@ -1,0 +1,1921 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>מכירות רגילות - חסד לישראל</title>
+<link rel="manifest" href="manifest-store.json">
+<link rel="icon" href="icon-store-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="apple-touch-icon-store.png">
+<meta name="theme-color" content="#2098C9">
+<meta name="mobile-web-app-capable" content="yes">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<style>
+  :root{
+    --bg:#FAF7F2;--surface:#FFFFFF;--ink:#1E2A38;--muted:#6B7280;
+    --accent:#D9A441;--accent-dark:#B8842E;--route:#3B6255;--route-light:#E4EEE9;
+    --danger:#C1544C;--border:#E5DFD3;--new-badge:#3E6FA8;--new-badge-light:#E6EEF7;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:'Heebo',sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased;}
+  .app{max-width:760px;margin:0 auto;padding:16px;padding-bottom:80px;}
+  header.top{display:flex;flex-direction:column;gap:2px;padding:14px 4px 18px;}
+  header.top h1{font-size:22px;font-weight:800;margin:0;letter-spacing:-0.2px;}
+  header.top p{margin:0;color:var(--muted);font-size:13px;}
+  .tabs{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:5px;margin-bottom:16px;}
+  .tab{text-align:center;padding:9px 6px;border-radius:10px;font-size:13.5px;font-weight:600;color:var(--muted);cursor:pointer;user-select:none;transition:all .15s ease;}
+  .tab.active{background:var(--ink);color:#fff;}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:16px;margin-bottom:12px;}
+  .stats-row{display:flex;gap:10px;margin-bottom:16px;}
+  .stat{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:12px 10px;text-align:center;}
+  .stat .num{font-size:20px;font-weight:800;color:var(--ink);}
+  .stat .lbl{font-size:11px;color:var(--muted);margin-top:2px;}
+  label{display:block;font-size:13px;font-weight:600;color:var(--muted);margin-bottom:6px;}
+  .field{margin-bottom:14px;}
+  input,select,textarea{width:100%;padding:11px 12px;border-radius:10px;border:1.5px solid var(--border);font-family:'Heebo',sans-serif;font-size:15px;background:#fff;color:var(--ink);}
+  textarea{resize:vertical;}
+  input:focus,select:focus{outline:none;border-color:var(--accent);}
+  .row2{display:flex;gap:10px;}
+  .row2>div{flex:1;}
+  button{font-family:'Heebo',sans-serif;cursor:pointer;border:none;border-radius:10px;font-weight:700;font-size:15px;padding:12px 16px;}
+  .btn-primary{background:var(--accent);color:#2A1F0A;width:100%;}
+  .btn-primary:active{background:var(--accent-dark);}
+  .btn-ghost{background:transparent;color:var(--muted);border:1px solid var(--border);}
+  .btn-danger-text{background:transparent;color:var(--danger);font-size:13px;padding:6px 10px;}
+  .btn-ship{background:var(--route-light);color:var(--route);font-size:13px;font-weight:700;padding:8px 14px;border-radius:10px;width:auto;margin-top:10px;margin-inline-end:8px;}
+  .btn-pack{background:var(--new-badge-light);color:var(--new-badge);font-size:13px;font-weight:700;padding:8px 14px;border-radius:10px;width:auto;margin-top:10px;}
+  .search{margin-bottom:14px;}
+
+  .animal-item{border:1px solid var(--border);border-radius:12px;padding:10px;margin-bottom:10px;background:#fdfcfa;}
+  .animal-row{display:flex;gap:8px;align-items:center;}
+  .animal-row select{flex:2;}
+  .animal-row input{flex:1;}
+  .remove-animal-btn{background:transparent;border:1px solid var(--border);color:var(--muted);width:38px;height:38px;padding:0;border-radius:10px;font-size:16px;flex-shrink:0;}
+  .info-btn{background:var(--new-badge-light);border:1px solid var(--new-badge-light);color:var(--new-badge);width:38px;height:38px;padding:0;border-radius:10px;font-size:16px;flex-shrink:0;}
+  .animalColorSelect{margin-top:8px;}
+  .row-price{font-size:12.5px;color:var(--accent-dark);font-weight:700;margin-top:6px;text-align:left;}
+  .add-animal{font-size:13.5px;font-weight:700;color:var(--accent-dark);cursor:pointer;display:inline-block;margin-top:2px;}
+
+  .pair-option{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:13.5px;font-weight:500;color:var(--ink);background:var(--new-badge-light);padding:9px 12px;border-radius:10px;flex-wrap:wrap;}
+  .pair-option input[type=checkbox]{width:auto;}
+  .cage-toggle{display:flex;gap:6px;margin-top:6px;width:100%;}
+  .cage-toggle button{flex:1;padding:6px 8px;font-size:12.5px;font-weight:600;border-radius:8px;background:#fff;border:1.5px solid var(--border);color:var(--muted);width:auto;}
+  .cage-toggle button.active{background:var(--new-badge);color:#fff;border-color:var(--new-badge);}
+
+  .total-price-box{background:var(--route-light);color:var(--route);border-radius:12px;padding:12px 14px;text-align:center;font-weight:800;font-size:16px;margin-bottom:14px;}
+
+  .route-list{position:relative;padding-inline-start:22px;}
+  .route-list::before{content:"";position:absolute;top:8px;bottom:8px;right:9px;width:2px;background:var(--route-light);}
+  .city-card{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px 16px;margin-bottom:12px;}
+  .city-card::before{content:"";position:absolute;top:20px;right:-22px;width:11px;height:11px;border-radius:50%;background:var(--route);border:2px solid var(--bg);}
+  .city-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;flex-wrap:wrap;gap:4px;}
+  .city-name-wrap{display:flex;align-items:center;gap:8px;}
+  .city-name{font-size:17px;font-weight:800;}
+  .city-last{font-size:12px;color:var(--muted);}
+  .badge-new{background:var(--new-badge-light);color:var(--new-badge);font-size:11px;font-weight:700;padding:3px 9px;border-radius:10px;}
+  .city-breakdown{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;}
+  .chip{background:var(--route-light);color:var(--route);font-size:12.5px;font-weight:600;padding:4px 10px;border-radius:20px;}
+  .city-totals{font-size:13px;color:var(--muted);}
+  .toggle-orders{font-size:13px;color:var(--accent-dark);font-weight:600;margin-top:8px;cursor:pointer;}
+  .city-orders{margin-top:10px;border-top:1px solid var(--border);padding-top:10px;display:none;}
+  .city-orders.open{display:block;}
+
+  .order-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);}
+  .order-row:last-child{border-bottom:none;}
+  .order-main{font-size:14.5px;font-weight:600;}
+  .order-sub{font-size:12.5px;color:var(--muted);margin-top:2px;}
+  .order-actions{display:flex;gap:4px;flex-shrink:0;}
+  .icon-btn{background:transparent;border:none;font-size:16px;padding:4px 6px;color:var(--muted);}
+
+  .empty{text-align:center;padding:40px 10px;color:var(--muted);}
+  .empty .big{font-size:34px;margin-bottom:8px;}
+
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 18px;border-radius:20px;font-size:13px;font-weight:600;opacity:0;transition:opacity .25s ease;pointer-events:none;z-index:50;}
+  .toast.show{opacity:1;}
+
+  .err{color:var(--danger);font-size:12px;margin-top:5px;font-weight:600;}
+  .cancelled{opacity:0.5;}
+  .cancelled .order-main, .cancelled .order-sub{text-decoration:line-through;}
+  .badge-cancelled{background:var(--danger);color:#fff;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;margin-inline-start:6px;text-decoration:none;display:inline-block;}
+  .badge-shipped{background:var(--route);color:#fff;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;margin-inline-start:6px;text-decoration:none;display:inline-block;}
+
+  .modal-overlay{display:none;position:fixed;inset:0;background:rgba(30,42,56,0.45);z-index:200;align-items:center;justify-content:center;padding:20px;}
+  .modal-overlay.open{display:flex;}
+  /* the confirm ("are you sure?") dialog can be triggered from inside another already-open
+     modal (e.g. admin panel) - it must always render above every other modal, regardless of
+     DOM order, or it ends up hidden behind whatever opened it and becomes unusable. */
+  #confirmModal{z-index:400;}
+  .modal-box{background:#fff;border-radius:16px;padding:22px;max-width:340px;width:100%;text-align:center;max-height:80vh;overflow-y:auto;position:relative;}
+  .modal-box p{font-size:15px;font-weight:600;margin:0 0 14px;color:var(--ink);}
+  .modal-box input{margin-bottom:16px;}
+  .modal-actions{display:flex;gap:10px;}
+  .modal-actions button{flex:1;}
+  .pack-item{display:flex;align-items:flex-start;gap:10px;padding:10px 2px;border-bottom:1px solid var(--border);cursor:pointer;}
+  .pack-item:last-child{border-bottom:none;}
+  .modal-close-x{position:absolute;top:10px;left:10px;background:var(--bg);border:1px solid var(--border);color:var(--muted);width:32px;height:32px;border-radius:50%;font-size:16px;font-weight:700;padding:0;display:flex;align-items:center;justify-content:center;line-height:1;}
+  .addr-suggestions{position:absolute;top:100%;right:0;left:0;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 6px 18px rgba(0,0,0,0.12);max-height:220px;overflow-y:auto;z-index:50;display:none;}
+  .addr-suggestions.open{display:block;}
+  .addr-suggestion-item{padding:9px 12px;font-size:13.5px;cursor:pointer;border-bottom:1px solid var(--border);}
+  .addr-suggestion-item:last-child{border-bottom:none;}
+  .addr-suggestion-item:hover{background:var(--bg);}
+  .addr-suggestion-hint{padding:8px 12px;font-size:12px;color:var(--muted);}
+
+  .login-overlay{position:fixed;inset:0;background:var(--bg);z-index:500;display:flex;align-items:center;justify-content:center;padding:20px;}
+  .login-overlay.hidden{display:none;}
+  .login-box{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:26px 22px;max-width:340px;width:100%;text-align:center;}
+  .login-box h2{margin:0 0 4px;font-size:20px;}
+  .login-box p{color:var(--muted);font-size:13px;margin:0 0 18px;}
+
+  .alert-banner{background:#FBEAEA;border:1.5px solid var(--danger);color:var(--danger);border-radius:14px;padding:12px 14px;margin-bottom:14px;font-size:13px;font-weight:600;line-height:1.6;}
+  .alert-banner .alert-title{font-weight:800;margin-bottom:4px;font-size:14px;}
+
+  .admin-tabs{display:flex;gap:6px;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:4px;margin-bottom:14px;flex-wrap:wrap;}
+  .admin-tab{flex:1;text-align:center;padding:8px 6px;border-radius:9px;font-size:12.5px;font-weight:700;color:var(--muted);cursor:pointer;user-select:none;min-width:80px;}
+  .admin-tab.active{background:var(--ink);color:#fff;}
+  .stock-row{display:flex;align-items:center;gap:10px;border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin-bottom:8px;}
+  .stock-row .stock-label{flex:1;font-size:13px;font-weight:600;text-align:right;}
+  .stock-row input{width:90px;flex-shrink:0;}
+  .stock-low{border-color:var(--danger);background:#FBEAEA;}
+  .user-row{border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;text-align:right;}
+  .user-row .user-name{font-weight:700;font-size:14px;}
+  .user-row .user-role{font-size:12px;color:var(--muted);}
+  .role-badge{background:var(--new-badge-light);color:var(--new-badge);font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;margin-inline-start:6px;}
+  .role-badge.mainadmin{background:var(--accent);color:#2A1F0A;}
+</style>
+
+<body>
+
+<div class="login-overlay" id="loginOverlay">
+  <div class="login-box">
+    <h2>🛍️ מכירות רגילות</h2>
+    <p>יש להתחבר כדי להיכנס למערכת</p>
+    <div class="field" style="text-align:right;">
+      <label>שם משתמש</label>
+      <input id="loginUsername" placeholder="שם משתמש">
+    </div>
+    <div class="field" style="text-align:right;">
+      <label>סיסמה</label>
+      <input id="loginPassword" type="password" placeholder="סיסמה">
+    </div>
+    <div id="loginErr" class="err" style="display:none;margin-bottom:10px;">שם משתמש או סיסמה שגויים</div>
+    <button class="btn-primary" onclick="attemptLogin()">כניסה</button>
+  </div>
+</div>
+
+<div class="app" id="appRoot" style="display:none;">
+  <header class="top">
+    <h1>🛍️ מכירות רגילות</h1>
+    <p id="subtitle">טוען נתונים...</p>
+    <div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap;align-items:center;">
+      <span style="font-size:12.5px;color:var(--muted);cursor:pointer;margin-inline-start:auto;" onclick="logout()" id="logoutLink"></span>
+    </div>
+  </header>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="sale">💵 מכירה חדשה</div>
+    <div class="tab" data-tab="history">היסטוריית מכירות</div>
+    <div class="tab" data-tab="expenses" id="expensesTabBtn" style="display:none;">💰 הוצאות</div>
+    <div class="tab" data-tab="prices" id="pricesTabBtn" style="display:none;">🏷️ מחירון</div>
+    <div class="tab" data-tab="users" id="usersTabBtn" style="display:none;">👥 משתמשים</div>
+    <div class="tab" data-tab="report" id="reportTabBtn" style="display:none;">📊 דוח משולב</div>
+    <div class="tab" data-tab="monthly" id="monthlyTabBtn" style="display:none;">📅 דוח חודשי</div>
+    <div class="tab" data-tab="vaccine" id="vaccineTabBtn" style="display:none;">💉 תזכורות חיסון</div>
+    <div class="tab" data-tab="payouts" id="payoutsTabBtn" style="display:none;">💰 חלוקת כסף</div>
+    <div class="tab" data-tab="bugreports" id="bugReportsTabBtn" style="display:none;">🐛 באגים</div>
+  </div>
+
+  <div id="tab-sale">
+    <div class="card">
+      <div class="row2">
+        <div class="field">
+          <label>שם לקוח (לא חובה)</label>
+          <input id="saleCustomer" placeholder="שם הלקוח">
+        </div>
+        <div class="field">
+          <label>טלפון לקוח (לא חובה)</label>
+          <input id="saleCustomerPhone" placeholder="050-1234567" type="tel">
+        </div>
+      </div>
+      <div class="field">
+        <label>בעל חיים (לא חובה - אפשר לדלג ולהשתמש רק בתיאור חופשי למטה)</label>
+        <select id="saleAnimalType" onchange="updateSaleTotal()"></select>
+      </div>
+      <div class="field" id="saleAnimalQtyWrap">
+        <label>כמות</label>
+        <input type="number" id="saleAnimalQty" min="1" value="1" oninput="updateSaleTotal()">
+      </div>
+      <div class="field">
+        <label>מזון / אביזרים מהמחירון (לא חובה)</label>
+        <div id="saleFoodRows"></div>
+        <div class="add-animal" onclick="addSaleFoodRow()">+ הוסף מזון / אביזר מהמחירון</div>
+      </div>
+      <div class="field">
+        <label>פריט/שירות לא מהמחירון - תיאור חופשי + סכום (לא חובה)</label>
+        <div id="saleFreeRows"></div>
+        <div class="add-animal" onclick="addSaleFreeRow()">+ הוסף פריט במלל חופשי</div>
+      </div>
+      <div class="total-price-box" id="saleTotalBox">סה"כ למכירה: 0 ₪</div>
+      <button class="btn-primary" style="margin-top:12px;width:100%;" onclick="submitSale()">✅ בצע מכירה</button>
+    </div>
+  </div>
+
+  <div id="tab-history" style="display:none;">
+    <div class="route-list" id="historyList"></div>
+  </div>
+
+  <div id="tab-expenses" style="display:none;">
+    <div class="card">
+      <div style="font-weight:800;margin-bottom:8px;">הוספת הוצאה (משותפת עם אפליקציית הערים)</div>
+      <div class="row2">
+        <div class="field"><label>שם ההוצאה</label><input id="newExpenseName" placeholder="לדוגמה: דלק"></div>
+        <div class="field"><label>סכום (₪)</label><input type="number" id="newExpenseAmount" min="0"></div>
+      </div>
+      <div class="field"><label>תאריך</label><input type="date" id="newExpenseDate"></div>
+      <button class="btn-primary" onclick="addManualExpense()">➕ הוסף הוצאה</button>
+    </div>
+    <div id="expensesList"></div>
+  </div>
+
+  <div id="tab-prices" style="display:none;">
+    <div class="card">
+      <div style="font-weight:800;margin-bottom:8px;">➕ הוספת מוצר חדש (לאפליקציה זו בלבד)</div>
+      <div class="row2">
+        <input id="newStoreProductName" placeholder="שם המוצר">
+        <select id="newStoreProductCategory">
+          <option value="animal">בעל חיים</option>
+          <option value="food">מזון / אביזר</option>
+        </select>
+      </div>
+      <div class="field"><label>מחיר (₪)</label><input type="number" id="newStoreProductPrice" min="0"></div>
+      <button class="btn-primary" onclick="addStoreCustomProduct()">➕ הוסף מוצר</button>
+    </div>
+    <div class="card">
+      <div style="font-weight:800;margin-bottom:8px;">מחירי בעלי חיים (לאפליקציה זו בלבד)</div>
+      <div id="animalPricesList"></div>
+      <div style="font-weight:800;margin:16px 0 8px;">מחירי מזון ואביזרים (לאפליקציה זו בלבד)</div>
+      <div id="foodPricesList"></div>
+      <button class="btn-primary" style="margin-top:12px;" onclick="saveStorePrices()">💾 שמור מחירון</button>
+    </div>
+  </div>
+
+  <div id="tab-users" style="display:none;">
+    <div class="card">
+      <div style="font-weight:800;margin-bottom:8px;">הוספת משתמש חדש (נפרד לגמרי מאפליקציית הערים)</div>
+      <div class="row2">
+        <div class="field"><label>שם משתמש</label><input id="newUserUsername"></div>
+        <div class="field"><label>סיסמה</label><input id="newUserPassword" type="text"></div>
+      </div>
+      <div class="field">
+        <label>תפקיד</label>
+        <select id="newUserRole"><option value="rep">נציג</option><option value="admin">מנהל</option></select>
+      </div>
+      <button class="btn-primary" onclick="addStoreUser()">➕ הוסף משתמש</button>
+    </div>
+    <div class="card">
+      <div style="font-weight:800;margin-bottom:4px;">קישור משתמש שכבר קיים באפליקציית הערים</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">משתמש שכבר קיים באפליקציית הערים (למשל דוד המנהל) יוכל להיכנס גם לכאן עם אותו שם משתמש וסיסמה בדיוק - הסיסמה שלו לא תשתנה, אנחנו רק מוסיפים אותו לרשימה של האפליקציה הזו.</div>
+      <div class="row2">
+        <div class="field"><label>שם משתמש (זהה למה שיש לו באפליקציית הערים)</label><input id="linkUserUsername"></div>
+        <div class="field">
+          <label>תפקיד באפליקציה הזו</label>
+          <select id="linkUserRole"><option value="rep">נציג</option><option value="admin">מנהל</option></select>
+        </div>
+      </div>
+      <button class="btn-primary" onclick="linkExistingUser()">🔗 קשר משתמש קיים</button>
+    </div>
+    <div id="usersList"></div>
+  </div>
+
+  <div id="tab-report" style="display:none;">
+    <div class="card">
+      <div style="font-weight:800;margin-bottom:6px;">דוח משולב - ירידים + מכירות רגילות</div>
+      <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px;">אפשר לבחור חודש ושנה, או להשאיר "כל התקופה" לסיכום הכולל. ההכנסה נספרת לפי תאריך המסירה בירידים ותאריך המכירה במכירות הרגילות.</div>
+      <div class="row2" style="margin-bottom:8px;">
+        <select id="combinedMonth"></select>
+        <select id="combinedYear"></select>
+      </div>
+      <button class="btn-primary" style="width:100%;" onclick="loadCombinedReport()">🔄 הצג דוח</button>
+    </div>
+    <div id="combinedReportContent"></div>
+  </div>
+
+  <div id="tab-monthly" style="display:none;">
+    <div id="monthlySalesContent"></div>
+  </div>
+
+  <div id="tab-vaccine" style="display:none;">
+    <div id="vaccineContent"></div>
+  </div>
+
+  <div id="tab-payouts" style="display:none;">
+    <div id="payoutsContent"></div>
+  </div>
+
+  <div id="tab-bugreports" style="display:none;">
+    <div class="card">
+      <div style="font-weight:800;margin-bottom:8px;">➕ דיווח באג חדש</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">הדיווח משותף גם עם אפליקציית הערים. פעם ביום Claude בודק אוטומטית את כל הדיווחים החדשים ומתקן בעצמו מקרים ברורים (ומסמן "טופל" בעצמו כשמצליח) - אין צורך להעתיק/לשלוח כלום. לתיקון דחוף שלא יכול לחכות עד הבדיקה היומית, אפשר גם לפנות ישירות בשיחה עם Claude ולתאר את הבאג.</div>
+      <textarea id="newBugReportText" rows="3" style="width:100%;" placeholder="תאר/י מה קרה, איפה, ואיזה מקרה - ככל שיהיה יותר מפורט, כך יהיה קל יותר למצוא ולתקן"></textarea>
+      <button class="btn-primary" style="margin-top:8px;width:100%;" onclick="submitBugReport()">🐛 שלח דיווח</button>
+    </div>
+    <div id="bugReportsList"></div>
+  </div>
+
+</div>
+
+<div class="modal-overlay" id="confirmModal">
+  <div class="modal-box">
+    <button class="modal-close-x" onclick="closeConfirm(false)">✕</button>
+    <p id="confirmMessage"></p>
+    <div class="modal-actions">
+      <button class="btn-ghost" onclick="closeConfirm(false)">ביטול</button>
+      <button class="btn-primary" onclick="closeConfirm(true)">אישור</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="vaccineMsgModal">
+  <div class="modal-box">
+    <button class="modal-close-x" onclick="closeVaccineMsgModal()">✕</button>
+    <div style="font-weight:800;margin-bottom:6px;">💉 ההודעה שנשלחת ללקוחות על חיסון</div>
+    <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px;">זו ההודעה שנפתחת בוואטסאפ כשלוחצים על תזכורת חיסון. אפשר לשנות אותה כאן, וגם בכל עת מטאב "תזכורות חיסון".</div>
+    <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px;">הברכה בהתחלה ("בוקר טוב" / "צהריים טובים" / "ערב טוב") נוספת אוטומטית לפי שעת השליחה - אין צורך לכתוב אותה.</div>
+    <textarea id="vaccineMsgInput" rows="6" style="width:100%;font-size:13px;" oninput="updateVaccineMsgPreview()"></textarea>
+    <div id="vaccineMsgPreview" style="font-size:12.5px;background:var(--new-badge-light);border-radius:8px;padding:8px 10px;margin-top:8px;"></div>
+    <div class="modal-actions">
+      <button class="btn-ghost" onclick="closeVaccineMsgModal()">סגור</button>
+      <button class="btn-primary" onclick="saveVaccineMsgFromModal()">שמור</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const SUPABASE_URL = 'https://vraxhwrirrrptawxgztf.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_-729QUM1pXlABgVUWijGiw_Xf0GTspj';
+const _sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+/* ---------- shared storage shim (identical to crm-cities.html, so both apps talk to the
+   exact same Supabase kv_store table/CAS protocol) ---------- */
+let _kvVersionColumnMissing = false;
+window.storage = {
+  async get(key, _shared){
+    if(_kvVersionColumnMissing){
+      const { data, error } = await _sb.from('kv_store').select('value').eq('key', key).maybeSingle();
+      if(error){ console.error('[storage.get] key=', key, error); throw error; }
+      if(!data) return null;
+      return { value: JSON.stringify(data.value), version: 0 };
+    }
+    const { data, error } = await _sb.from('kv_store').select('value, version').eq('key', key).maybeSingle();
+    if(error){
+      if(error.code === '42703'){
+        _kvVersionColumnMissing = true;
+        return this.get(key, _shared);
+      }
+      console.error('[storage.get] key=', key, error); throw error;
+    }
+    if(!data) return null;
+    return { value: JSON.stringify(data.value), version: typeof data.version === 'number' ? data.version : 0 };
+  },
+  async set(key, valueStr, _shared){
+    const parsed = JSON.parse(valueStr);
+    const { error } = await _sb.from('kv_store').upsert({ key, value: parsed, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+    if(error){ console.error('[storage.set] key=', key, error); throw error; }
+  },
+  async casSet(key, valueStr, expectedVersion){
+    if(_kvVersionColumnMissing) { await this.set(key, valueStr, true); return { ok:true, version:0, noVersioning:true }; }
+    const parsed = JSON.parse(valueStr);
+    const nowIso = new Date().toISOString();
+    if(expectedVersion == null){
+      const { error } = await _sb.from('kv_store').insert({ key, value: parsed, updated_at: nowIso, version: 1 });
+      if(error){
+        if(error.code === '42703'){ _kvVersionColumnMissing = true; await this.set(key, valueStr, true); return { ok:true, version:0, noVersioning:true }; }
+        if(error.code === '23505') return { ok:false, conflict:true };
+        throw error;
+      }
+      return { ok:true, version:1 };
+    }
+    const { data, error } = await _sb.from('kv_store')
+      .update({ value: parsed, updated_at: nowIso, version: expectedVersion+1 })
+      .eq('key', key).eq('version', expectedVersion)
+      .select('version');
+    if(error){
+      if(error.code === '42703'){ _kvVersionColumnMissing = true; await this.set(key, valueStr, true); return { ok:true, version:0, noVersioning:true }; }
+      throw error;
+    }
+    if(!data || data.length===0) return { ok:false, conflict:true };
+    return { ok:true, version: data[0].version };
+  }
+};
+
+/* ---------- generic CAS save infrastructure (identical to crm-cities.html) ---------- */
+const _saveQueues = {};
+function withSaveQueue(key, fn){
+  const prev = _saveQueues[key] || Promise.resolve();
+  const run = prev.then(fn, fn);
+  _saveQueues[key] = run.catch(()=>{});
+  return run;
+}
+async function casRetryWrite(key, buildFn, maxAttempts){
+  maxAttempts = maxAttempts || 8;
+  for(let attempt=0; attempt<maxAttempts; attempt++){
+    const res = await window.storage.get(key, true);
+    const remoteVersion = res ? res.version : null;
+    const remoteValue = res && res.value ? JSON.parse(res.value) : null;
+    const newValue = buildFn(remoteValue);
+    const writeRes = await window.storage.casSet(key, JSON.stringify(newValue), remoteVersion);
+    if(writeRes.ok) return newValue;
+  }
+  throw new Error('שמירה נכשלה אחרי כמה ניסיונות (התנגשות עם מכשיר אחר) - key: '+key);
+}
+const _reconcileSnapshots = {};
+function _snapshotArrayById(list, idField){
+  idField = idField || 'id';
+  const m = new Map();
+  (list||[]).forEach(o => { if(o && o[idField]!=null) m.set(o[idField], JSON.stringify(o)); });
+  return m;
+}
+function markSyncedArray(storageKey, list, idField){
+  _reconcileSnapshots[storageKey] = _snapshotArrayById(list, idField);
+}
+function _mergeArraysById(remoteList, localList, lastSynced, idField){
+  idField = idField || 'id';
+  const remoteMap = new Map((remoteList||[]).filter(o=>o && o[idField]!=null).map(o=>[o[idField], o]));
+  const localIds = new Set((localList||[]).filter(o=>o && o[idField]!=null).map(o=>o[idField]));
+  const deletedByMe = [...lastSynced.keys()].filter(id => !localIds.has(id));
+  const changedOrNewByMe = (localList||[]).filter(o => o && o[idField]!=null && lastSynced.get(o[idField]) !== JSON.stringify(o));
+  deletedByMe.forEach(id => remoteMap.delete(id));
+  changedOrNewByMe.forEach(o => remoteMap.set(o[idField], o));
+  return [...remoteMap.values()];
+}
+async function reconcileArrayStore(storageKey, localList, idField){
+  idField = idField || 'id';
+  return withSaveQueue(storageKey, async ()=>{
+    const lastSynced = _reconcileSnapshots[storageKey] || new Map();
+    const finalList = await casRetryWrite(storageKey, (remoteValue)=>{
+      return _mergeArraysById(remoteValue || [], localList, lastSynced, idField);
+    });
+    markSyncedArray(storageKey, finalList, idField);
+    return finalList;
+  });
+}
+function markSyncedObject(storageKey, obj){
+  const m = new Map();
+  Object.keys(obj||{}).forEach(k => m.set(k, JSON.stringify(obj[k])));
+  _reconcileSnapshots[storageKey] = m;
+}
+async function reconcileObjectStore(storageKey, localObj){
+  return withSaveQueue(storageKey, async ()=>{
+    const lastSynced = _reconcileSnapshots[storageKey] || new Map();
+    const merged = await casRetryWrite(storageKey, (remoteValue)=>{
+      const remoteObj = remoteValue || {};
+      const m = Object.assign({}, remoteObj);
+      Object.keys(localObj||{}).forEach(k=>{
+        if(lastSynced.get(k) !== JSON.stringify(localObj[k])) m[k] = localObj[k];
+      });
+      [...lastSynced.keys()].forEach(k=>{ if(!localObj || !(k in localObj)) delete m[k]; });
+      return m;
+    });
+    markSyncedObject(storageKey, merged);
+    return merged;
+  });
+}
+
+/* ---------- utils (identical to crm-cities.html) ---------- */
+function escAttr(str){ return String(str).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+function escHtml(str){
+  if(str==null) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+function showToast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 1800);
+}
+let confirmCallback = null;
+function showConfirm(message, onConfirm){
+  document.getElementById('confirmMessage').textContent = message;
+  confirmCallback = onConfirm;
+  document.getElementById('confirmModal').classList.add('open');
+}
+function closeConfirm(result){
+  document.getElementById('confirmModal').classList.remove('open');
+  const cb = confirmCallback;
+  confirmCallback = null;
+  if(result && cb) cb();
+}
+function genId(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+
+/* ---------- shared catalog + shared stock structure (must match crm-cities.html exactly,
+   since both apps deduct from the SAME stock keyed by these exact species/cage-group names) ---------- */
+const ANIMAL_OPTIONS = [
+  'תוכון מותאם לאילוף כולל כלוב',
+  '2 תוכונים מותאמים לאילוף כולל כלוב',
+  'קוקטייל כולל כלוב',
+  'קוואקר כולל כלוב',
+  'ארנב כולל כלוב נסורת ואוכל',
+  'ארנב ננסי הולנדי ישראלי כולל כלוב נסורת ואוכל',
+  'שרקן כולל כלוב נסורת ואוכל',
+  '2 אוגרים כולל כלוב',
+  '2 תוכונים לא מותאמים לאילוף כולל כלוב',
+  '2 ארנבות כולל כלוב מוגדל',
+  '2 שרקנים כולל כלוב מוגדל'
+];
+const FOOD_OPTIONS = [
+  'חבילת מזון לתוכים (1 יח\')',
+  '3 חבילות מזון לתוכים',
+  '6 חבילות מזון לתוכים',
+  'שק מזון לתוכים (20 ק"ג)',
+  'חבילת מזון למכרסמים (1 יח\')',
+  '3 חבילות מזון למכרסמים',
+  '6 חבילות מזון למכרסמים',
+  'שק מזון למכרסמים (25 ק"ג)',
+  'נסורת פשוטה - 1 יח\'',
+  'נסורת פשוטה - 2 יח\'',
+  'נסורת פשוטה - 4 יח\'',
+  'נסורת איכותית (10 ליטר)',
+  'שק נסורת איכותית (15 ק"ג)',
+  'תא הטלה',
+  'כלי אוכל גדול לארנב',
+  'כלי אוכל קטן לארנב',
+  'מתקן שתייה לארנב 250 מ"ל',
+  'מתקן שתייה לארנב 500 מ"ל',
+  'כלי אוכל גדול לתוכי',
+  'כלי אוכל ענק לתוכי',
+  'כלי שתייה קטן',
+  'כלי שתייה גדול לתוכי בינוני',
+  'כלי שתייה גדול לתוכי',
+  'כלי שתייה ענק לתוכי'
+];
+const CAGE_GROUP_MAP = {
+  'תוכון מותאם לאילוף כולל כלוב': 'כלוב תוכון',
+  '2 תוכונים מותאמים לאילוף כולל כלוב': 'כלוב תוכון',
+  '2 תוכונים לא מותאמים לאילוף כולל כלוב': 'כלוב תוכון',
+  'קוקטייל כולל כלוב': 'כלוב קוקטייל',
+  'קוואקר כולל כלוב': 'כלוב קוואקר',
+  'ארנב כולל כלוב נסורת ואוכל': 'כלוב ארנב',
+  'ארנב ננסי הולנדי ישראלי כולל כלוב נסורת ואוכל': 'כלוב ארנב',
+  '2 ארנבות כולל כלוב מוגדל': 'כלוב ארנב מוגדל',
+  'שרקן כולל כלוב נסורת ואוכל': 'כלוב שרקן',
+  '2 שרקנים כולל כלוב מוגדל': 'כלוב שרקן מוגדל',
+  '2 אוגרים כולל כלוב': 'כלוב אוגרים'
+};
+const ANIMAL_SPECIES_MAP = {
+  'תוכון מותאם לאילוף כולל כלוב': 'תוכון',
+  '2 תוכונים מותאמים לאילוף כולל כלוב': 'תוכון',
+  '2 תוכונים לא מותאמים לאילוף כולל כלוב': 'תוכון',
+  'קוקטייל כולל כלוב': 'קוקטייל',
+  'קוואקר כולל כלוב': 'קוואקר',
+  'ארנב כולל כלוב נסורת ואוכל': 'ארנב',
+  '2 ארנבות כולל כלוב מוגדל': 'ארנב',
+  'ארנב ננסי הולנדי ישראלי כולל כלוב נסורת ואוכל': 'ארנב ננסי הולנדי ישראלי',
+  'שרקן כולל כלוב נסורת ואוכל': 'שרקן',
+  '2 שרקנים כולל כלוב מוגדל': 'שרקן',
+  '2 אוגרים כולל כלוב': 'אוגר'
+};
+const ANIMAL_SPECIES_LIST = ['תוכון','קוקטייל','קוואקר','ארנב','ארנב ננסי הולנדי ישראלי','שרקן','אוגר'];
+const CAGE_TYPES_LIST = ['כלוב תוכון','כלוב קוקטייל','כלוב קוואקר','כלוב ארנב','כלוב ארנב מוגדל','כלוב שרקן','כלוב שרקן מוגדל','כלוב אוגרים'];
+const ANIMALS_PER_UNIT = {
+  'תוכון מותאם לאילוף כולל כלוב': 1,
+  '2 תוכונים מותאמים לאילוף כולל כלוב': 2,
+  '2 תוכונים לא מותאמים לאילוף כולל כלוב': 2,
+  'קוקטייל כולל כלוב': 1,
+  'קוואקר כולל כלוב': 1,
+  'ארנב כולל כלוב נסורת ואוכל': 1,
+  'ארנב ננסי הולנדי ישראלי כולל כלוב נסורת ואוכל': 1,
+  '2 ארנבות כולל כלוב מוגדל': 2,
+  'שרקן כולל כלוב נסורת ואוכל': 1,
+  '2 שרקנים כולל כלוב מוגדל': 2,
+  '2 אוגרים כולל כלוב': 2
+};
+
+/* ---------- shared keys (same Supabase project as crm-cities.html) ---------- */
+const STOCK_KEY = 'pet-crm-stock';           // shared with crm-cities.html
+const EXPENSES_KEY = 'pet-crm-expenses';     // shared with crm-cities.html
+const OTHER_APP_ORDERS_KEY = 'pet-crm-orders';       // read-only, for the combined report
+const OTHER_APP_SPOT_SALES_KEY = 'pet-crm-spot-sales'; // read-only, for the combined report
+
+/* ---------- this app's OWN separate keys ---------- */
+const STORE_USERS_KEY = 'pet-crm-store-users';
+const STORE_SALES_KEY = 'pet-crm-store-sales';
+const STORE_PRICES_KEY = 'pet-crm-store-prices';
+const STORE_CUSTOM_CATALOG_KEY = 'pet-crm-store-custom-catalog'; // extra product names added ONLY in this app - never touches the shared crm-cities catalog
+const BUG_REPORTS_KEY = 'pet-crm-bug-reports'; // shared with crm-cities.html
+
+const MAIN_ADMIN_USERNAME = 'נועם';
+
+/* ---------- stock (shared - identical logic to crm-cities.html) ---------- */
+let stock = { animals:{}, cages:{} };
+let lastSyncedStock = { animals:{}, cages:{} };
+function defaultStock(){
+  const animals = {}; ANIMAL_SPECIES_LIST.forEach(s=>animals[s]=0);
+  const cages = {}; CAGE_TYPES_LIST.forEach(c=>cages[c]=0);
+  return { animals, cages };
+}
+function cleanStockShape(s){
+  const def = defaultStock();
+  const out = { animals: Object.assign(def.animals, s && s.animals || {}), cages: Object.assign(def.cages, s && s.cages || {}) };
+  Object.keys(out.animals).forEach(k=>{ if(out.animals[k] < 0) out.animals[k] = 0; });
+  Object.keys(out.cages).forEach(k=>{ if(out.cages[k] < 0) out.cages[k] = 0; });
+  return out;
+}
+async function loadStock(){
+  try{
+    const res = await window.storage.get(STOCK_KEY, true);
+    stock = res && res.value ? JSON.parse(res.value) : defaultStock();
+  }catch(e){ stock = defaultStock(); }
+  stock = cleanStockShape(stock);
+  lastSyncedStock = JSON.parse(JSON.stringify(stock));
+}
+async function saveStock(){
+  try{
+    await withSaveQueue(STOCK_KEY, async ()=>{
+      const localAnimals = stock.animals, localCages = stock.cages;
+      const lastAnimals = lastSyncedStock.animals, lastCages = lastSyncedStock.cages;
+      const merged = await casRetryWrite(STOCK_KEY, (remoteValue)=>{
+        const remoteStock = cleanStockShape(remoteValue || defaultStock());
+        const m = { animals: Object.assign({}, remoteStock.animals), cages: Object.assign({}, remoteStock.cages) };
+        Object.keys(localAnimals).forEach(k=>{
+          const delta = (localAnimals[k]||0) - (lastAnimals[k]||0);
+          if(delta !== 0) m.animals[k] = Math.max(0, (m.animals[k]||0) + delta);
+        });
+        Object.keys(localCages).forEach(k=>{
+          const delta = (localCages[k]||0) - (lastCages[k]||0);
+          if(delta !== 0) m.cages[k] = Math.max(0, (m.cages[k]||0) + delta);
+        });
+        return m;
+      });
+      stock = merged;
+      lastSyncedStock = JSON.parse(JSON.stringify(merged));
+    });
+  }catch(e){ showToast('שגיאה בשמירת המלאי'); }
+}
+function stockDeduct(map, key, qty){ if(!key || !qty) return; map[key] = Math.max(0, (map[key]||0) - qty); }
+function stockRestore(map, key, qty){ if(!key || !qty) return; map[key] = (map[key]||0) + qty; }
+
+/* ---------- expenses (shared - identical logic to crm-cities.html) ---------- */
+let manualExpenses = [];
+let businessLoans = [];
+let businessDebts = [];
+async function loadExpensesData(){
+  try{
+    const res = await window.storage.get(EXPENSES_KEY, true);
+    const data = res && res.value ? JSON.parse(res.value) : {};
+    manualExpenses = Array.isArray(data.manualExpenses) ? data.manualExpenses : [];
+    businessLoans = Array.isArray(data.businessLoans) ? data.businessLoans : [];
+    businessDebts = Array.isArray(data.businessDebts) ? data.businessDebts : [];
+    markSyncedArray('EXPENSES::expenses', manualExpenses);
+    markSyncedArray('EXPENSES::loans', businessLoans);
+    markSyncedArray('EXPENSES::debts', businessDebts);
+  }catch(e){ manualExpenses = []; businessLoans = []; businessDebts = []; }
+}
+async function saveExpensesData(){
+  try{
+    await withSaveQueue(EXPENSES_KEY, async ()=>{
+      const localExpenses = manualExpenses, localLoans = businessLoans, localDebts = businessDebts;
+      const snapExpenses = _reconcileSnapshots['EXPENSES::expenses']||new Map();
+      const snapLoans = _reconcileSnapshots['EXPENSES::loans']||new Map();
+      const snapDebts = _reconcileSnapshots['EXPENSES::debts']||new Map();
+      const result = await casRetryWrite(EXPENSES_KEY, (remoteValue)=>{
+        const data = remoteValue || {};
+        const remoteExpenses = Array.isArray(data.manualExpenses) ? data.manualExpenses : [];
+        const remoteLoans = Array.isArray(data.businessLoans) ? data.businessLoans : [];
+        const remoteDebts = Array.isArray(data.businessDebts) ? data.businessDebts : [];
+        return {
+          manualExpenses: _mergeArraysById(remoteExpenses, localExpenses, snapExpenses),
+          businessLoans: _mergeArraysById(remoteLoans, localLoans, snapLoans),
+          businessDebts: _mergeArraysById(remoteDebts, localDebts, snapDebts)
+        };
+      });
+      manualExpenses = result.manualExpenses;
+      businessLoans = result.businessLoans;
+      businessDebts = result.businessDebts;
+      markSyncedArray('EXPENSES::expenses', manualExpenses);
+      markSyncedArray('EXPENSES::loans', businessLoans);
+      markSyncedArray('EXPENSES::debts', businessDebts);
+    });
+  }catch(e){ showToast('שגיאה בשמירת הנתונים הכספיים'); }
+}
+function addManualExpense(){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול להוסיף הוצאה'); return; }
+  const name = document.getElementById('newExpenseName').value.trim();
+  const amount = parseFloat(document.getElementById('newExpenseAmount').value);
+  const date = document.getElementById('newExpenseDate').value || todayStr();
+  if(!name || !amount){ showToast('יש למלא שם וסכום להוצאה'); return; }
+  manualExpenses.push({ id: genId(), name, amount, date, createdAt: Date.now() });
+  saveExpensesData().then(renderExpensesList);
+  showToast('ההוצאה נוספה');
+  document.getElementById('newExpenseName').value=''; document.getElementById('newExpenseAmount').value='';
+}
+function deleteManualExpense(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול למחוק הוצאה'); return; }
+  showConfirm('למחוק את ההוצאה הזו?', ()=>{
+    manualExpenses = manualExpenses.filter(e=>e.id!==id);
+    saveExpensesData().then(renderExpensesList);
+    showToast('ההוצאה נמחקה');
+  });
+}
+function renderExpensesList(){
+  const el = document.getElementById('expensesList');
+  if(!el) return;
+  const total = manualExpenses.reduce((s,e)=>s+(e.amount||0),0);
+  el.innerHTML = `<div style="font-weight:800;margin:10px 0;">סה"כ הוצאות: ${total} ₪</div>` +
+    manualExpenses.slice().sort((a,b)=>b.createdAt-a.createdAt).map(e=>`
+      <div class="city-card">
+        <div class="city-head"><div class="city-name">${escHtml(e.name)}</div><div class="city-last">${formatDate(e.date)}</div></div>
+        <div class="city-totals">💸 ${e.amount} ₪</div>
+        <button class="icon-btn" onclick="deleteManualExpense('${e.id}')" title="מחק">🗑️</button>
+      </div>
+    `).join('');
+}
+function formatDate(d){
+  if(!d) return '';
+  const parts = d.split('-');
+  if(parts.length!==3) return d;
+  return `${parts[2]}/${parts[1]}/${parts[0]}`;
+}
+
+/* ---------- this app's OWN users (separate login list; password verification is shared
+   server-side via the same RPCs, but role/authorization is ALWAYS resolved from THIS app's
+   own list - a valid password for a username that only exists in the other app does NOT
+   grant access here, by design). ---------- */
+let currentUser = null;
+let storeUsers = [];
+function defaultStoreUsers(){ return [{ username: MAIN_ADMIN_USERNAME, role: 'mainadmin' }]; }
+function findStoreUser(username){ return storeUsers.find(u=>u.username===username); }
+async function loadStoreUsers(){
+  let fetchFailed = false;
+  try{
+    const res = await window.storage.get(STORE_USERS_KEY, true);
+    storeUsers = res && res.value ? JSON.parse(res.value) : [];
+  }catch(e){ storeUsers = []; fetchFailed = true; }
+  markSyncedArray(STORE_USERS_KEY, storeUsers, 'username');
+  if(fetchFailed) return;
+  // IMPORTANT: never call set_user_password/ensureCredentials for the main admin here - his
+  // password already exists (shared with crm-cities.html) and must never be touched/reset from
+  // this app. Only the local profile record (role) is bootstrapped if missing.
+  if(!Array.isArray(storeUsers) || storeUsers.length===0) storeUsers = defaultStoreUsers();
+  if(!storeUsers.some(u=>u.role==='mainadmin')) storeUsers.unshift({ username: MAIN_ADMIN_USERNAME, role: 'mainadmin' });
+  await saveStoreUsers();
+}
+async function saveStoreUsers(){
+  try{ storeUsers = await reconcileArrayStore(STORE_USERS_KEY, storeUsers, 'username'); }
+  catch(e){ showToast('שגיאה בשמירת המשתמשים'); }
+}
+function roleLabel(role){
+  if(role==='mainadmin') return 'מנהל ראשי';
+  if(role==='admin') return 'מנהל';
+  return 'נציג';
+}
+async function ensureCredentials(username, password){
+  try{ await _sb.rpc('set_user_password', { p_username: username, p_new_password: password }); }
+  catch(e){ console.error('[ensureCredentials]', e); }
+}
+async function attemptLogin(){
+  const username = document.getElementById('loginUsername').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  const errEl = document.getElementById('loginErr');
+  let ok = false;
+  try{
+    const { data, error } = await _sb.rpc('verify_login', { p_username: username, p_password: password });
+    if(error){ console.error('[verify_login]', error); }
+    else if(data && data.length){ ok = true; }
+  }catch(e){ console.error('[verify_login]', e); }
+  if(!ok){ errEl.textContent = 'שם משתמש או סיסמה שגויים'; errEl.style.display = 'block'; return; }
+  const u = findStoreUser(username);
+  if(!u){
+    errEl.textContent = 'המשתמש הזה לא רשום לאפליקציית המכירות הזו - פנה/י למנהל הראשי כדי שיוסיף אותך כאן בנפרד';
+    errEl.style.display = 'block';
+    return;
+  }
+  errEl.style.display = 'none';
+  currentUser = { username: u.username, role: u.role };
+  try{ sessionStorage.setItem('pet-crm-store-current-user', username); }catch(e){}
+  document.getElementById('loginOverlay').classList.add('hidden');
+  document.getElementById('appRoot').style.display = '';
+  document.getElementById('logoutLink').textContent = `👤 ${u.username} (${roleLabel(u.role)}) · התנתקות`;
+  applyRoleVisibility();
+  initAppData();
+}
+function tryAutoLogin(){
+  let username = null;
+  try{ username = sessionStorage.getItem('pet-crm-store-current-user'); }catch(e){}
+  if(!username) return false;
+  const u = findStoreUser(username);
+  if(!u) return false;
+  currentUser = { username: u.username, role: u.role };
+  document.getElementById('loginOverlay').classList.add('hidden');
+  document.getElementById('appRoot').style.display = '';
+  document.getElementById('logoutLink').textContent = `👤 ${u.username} (${roleLabel(u.role)}) · התנתקות`;
+  applyRoleVisibility();
+  return true;
+}
+function logout(){
+  currentUser = null;
+  try{ sessionStorage.removeItem('pet-crm-store-current-user'); }catch(e){}
+  document.getElementById('loginOverlay').classList.remove('hidden');
+  document.getElementById('appRoot').style.display = 'none';
+}
+function applyRoleVisibility(){
+  const isAdmin = currentUser && (currentUser.role==='admin' || currentUser.role==='mainadmin');
+  const isMain = currentUser && currentUser.role==='mainadmin';
+  document.getElementById('expensesTabBtn').style.display = 'none';
+  document.getElementById('pricesTabBtn').style.display = isAdmin ? '' : 'none'; // any admin (not just mainadmin) can maintain the price list
+  document.getElementById('usersTabBtn').style.display = isMain ? '' : 'none';
+  document.getElementById('reportTabBtn').style.display = 'none';
+  document.getElementById('monthlyTabBtn').style.display = isAdmin ? '' : 'none';
+  document.getElementById('vaccineTabBtn').style.display = isAdmin ? '' : 'none';
+  document.getElementById('payoutsTabBtn').style.display = isAdmin ? '' : 'none';
+  document.getElementById('bugReportsTabBtn').style.display = 'none';
+}
+function isAdminRole(){ return currentUser && (currentUser.role==='admin' || currentUser.role==='mainadmin'); }
+
+async function addStoreUser(){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול להוסיף משתמשים'); return; }
+  const username = document.getElementById('newUserUsername').value.trim();
+  const password = document.getElementById('newUserPassword').value;
+  const role = document.getElementById('newUserRole').value;
+  if(!username || !password){ showToast('יש למלא שם משתמש וסיסמה'); return; }
+  if(findStoreUser(username)){ showToast('שם משתמש כבר קיים באפליקציה הזו'); return; }
+  // Safety check: credentials (passwords) are shared globally across both apps by username -
+  // warn before silently overwriting a password that belongs to someone in the OTHER app.
+  try{
+    const res = await window.storage.get('pet-crm-users', true);
+    const otherUsers = res && res.value ? JSON.parse(res.value) : [];
+    if(otherUsers.some(u=>u.username===username)){
+      showToast(`שם המשתמש "${username}" כבר קיים באפליקציית הערים - בחר/י שם אחר כדי לא לדרוס את הסיסמה שלו/שלה`);
+      return;
+    }
+  }catch(e){ /* if this check fails, proceed anyway - not critical */ }
+  storeUsers.push({ username, role });
+  await saveStoreUsers();
+  await ensureCredentials(username, password);
+  showToast('המשתמש נוסף');
+  document.getElementById('newUserUsername').value=''; document.getElementById('newUserPassword').value='';
+  renderUsersList();
+}
+async function linkExistingUser(){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לקשר משתמשים'); return; }
+  const username = document.getElementById('linkUserUsername').value.trim();
+  const role = document.getElementById('linkUserRole').value;
+  if(!username){ showToast('יש למלא שם משתמש'); return; }
+  if(findStoreUser(username)){ showToast('המשתמש הזה כבר רשום באפליקציה הזו'); return; }
+  // Confirm the username genuinely exists (with a real password) in the other app before linking -
+  // otherwise this would create a login that can never actually succeed (verify_login would reject
+  // a password for a username with no credentials at all).
+  try{
+    const res = await window.storage.get('pet-crm-users', true);
+    const otherUsers = res && res.value ? JSON.parse(res.value) : [];
+    if(!otherUsers.some(u=>u.username===username)){
+      showToast(`לא נמצא משתמש בשם "${username}" באפליקציית הערים - בדוק/י את האיות, או השתמש/י ב"הוספת משתמש חדש" למעלה אם זה משתמש חדש לגמרי`);
+      return;
+    }
+  }catch(e){ showToast('שגיאה בבדיקת המשתמש - נסה/י שוב'); return; }
+  // Deliberately NOT calling ensureCredentials here - his/her existing password (shared globally
+  // by username across both apps) stays exactly as-is. We're only granting this app's own
+  // authorization/role for that already-valid login.
+  storeUsers.push({ username, role });
+  await saveStoreUsers();
+  showToast(`${username} מקושר/ת עכשיו - יוכל/תוכל להיכנס לכאן עם אותה סיסמה כמו באפליקציית הערים`);
+  document.getElementById('linkUserUsername').value = '';
+  renderUsersList();
+}
+function deleteStoreUser(username){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול למחוק משתמשים'); return; }
+  const u = findStoreUser(username);
+  if(!u || u.role==='mainadmin') return;
+  showConfirm(`למחוק את המשתמש "${username}" מאפליקציית המכירות?`, async ()=>{
+    storeUsers = storeUsers.filter(x=>x.username!==username);
+    await saveStoreUsers();
+    try{ await _sb.rpc('delete_user_credentials', { p_username: username }); }catch(e){ console.error(e); }
+    showToast('המשתמש נמחק');
+    renderUsersList();
+  });
+}
+function updateStoreUserRole(username, role){
+  if(!currentUser || currentUser.role!=='mainadmin') return;
+  const u = findStoreUser(username);
+  if(!u || u.role==='mainadmin') return;
+  u.role = role;
+  saveStoreUsers();
+  showToast('התפקיד עודכן');
+}
+function renderUsersList(){
+  const el = document.getElementById('usersList');
+  if(!el) return;
+  el.innerHTML = storeUsers.map(u=>`
+    <div class="user-row" style="display:flex;align-items:center;gap:8px;padding:10px;border:1px solid var(--border);border-radius:10px;margin-bottom:8px;">
+      <div style="flex:1;">
+        <span class="user-name">${escHtml(u.username)}</span>
+        <span class="role-badge ${u.role==='mainadmin'?'mainadmin':''}">${roleLabel(u.role)}</span>
+      </div>
+      ${u.role!=='mainadmin' ? `
+        <select onchange="updateStoreUserRole('${escAttr(u.username)}', this.value)">
+          <option value="rep" ${u.role==='rep'?'selected':''}>נציג</option>
+          <option value="admin" ${u.role==='admin'?'selected':''}>מנהל</option>
+        </select>
+        <button class="icon-btn" onclick="deleteStoreUser('${escAttr(u.username)}')" title="מחק">🗑️</button>
+      ` : ''}
+    </div>
+  `).join('');
+}
+
+/* ---------- this app's OWN, separately editable price list (same item names as the other
+   app's catalog, for stock compatibility - only the numbers differ) ---------- */
+let storePrices = { animalPrices: {}, foodPrices: {} };
+async function loadStorePrices(){
+  try{
+    const res = await window.storage.get(STORE_PRICES_KEY, true);
+    storePrices = res && res.value ? JSON.parse(res.value) : { animalPrices:{}, foodPrices:{} };
+  }catch(e){ storePrices = { animalPrices:{}, foodPrices:{} }; }
+  if(!storePrices.animalPrices) storePrices.animalPrices = {};
+  if(!storePrices.foodPrices) storePrices.foodPrices = {};
+  markSyncedObject(STORE_PRICES_KEY, storePrices);
+}
+async function saveStorePrices(){
+  if(!isAdminRole()){ showToast('אין לך הרשאה לערוך מחירים'); return; }
+  storeAnimalCatalog().forEach(t=>{
+    const inp = document.querySelector(`.price-animal[data-type="${CSS.escape(t)}"]`);
+    if(inp){ const v = parseFloat(inp.value); storePrices.animalPrices[t] = isNaN(v) ? 0 : v; }
+  });
+  storeFoodCatalog().forEach(t=>{
+    const inp = document.querySelector(`.price-food[data-type="${CSS.escape(t)}"]`);
+    if(inp){ const v = parseFloat(inp.value); storePrices.foodPrices[t] = isNaN(v) ? 0 : v; }
+  });
+  try{
+    storePrices = await reconcileObjectStore(STORE_PRICES_KEY, storePrices);
+    showToast('המחירון נשמר');
+  }catch(e){ showToast('שגיאה בשמירת המחירון'); }
+}
+
+/* ---------- custom product catalog - EXTRA product names added only in this app, on top of
+   the shared ANIMAL_OPTIONS/FOOD_OPTIONS list copied from crm-cities.html. Never touches the
+   other app's catalog or data - purely additive, this-app-only. Any admin (not just mainadmin)
+   can manage these, so a store manager can keep the price list current without needing the
+   main admin's login. ---------- */
+let storeCustomCatalog = { animals: [], food: [] };
+async function loadStoreCustomCatalog(){
+  try{
+    const res = await window.storage.get(STORE_CUSTOM_CATALOG_KEY, true);
+    storeCustomCatalog = res && res.value ? JSON.parse(res.value) : { animals: [], food: [] };
+  }catch(e){ storeCustomCatalog = { animals: [], food: [] }; }
+  if(!Array.isArray(storeCustomCatalog.animals)) storeCustomCatalog.animals = [];
+  if(!Array.isArray(storeCustomCatalog.food)) storeCustomCatalog.food = [];
+  markSyncedObject(STORE_CUSTOM_CATALOG_KEY, storeCustomCatalog);
+}
+async function saveStoreCustomCatalog(){
+  try{ storeCustomCatalog = await reconcileObjectStore(STORE_CUSTOM_CATALOG_KEY, storeCustomCatalog); }
+  catch(e){ showToast('שגיאה בשמירת רשימת המוצרים'); }
+}
+function storeAnimalCatalog(){ return [...ANIMAL_OPTIONS, ...storeCustomCatalog.animals]; }
+function storeFoodCatalog(){ return [...FOOD_OPTIONS, ...storeCustomCatalog.food]; }
+async function addStoreCustomProduct(){
+  if(!isAdminRole()){ showToast('אין לך הרשאה להוסיף מוצרים'); return; }
+  const nameEl = document.getElementById('newStoreProductName');
+  const categoryEl = document.getElementById('newStoreProductCategory');
+  const priceEl = document.getElementById('newStoreProductPrice');
+  const name = nameEl.value.trim();
+  const category = categoryEl.value;
+  const price = parseFloat(priceEl.value) || 0;
+  if(!name){ showToast('נא להזין שם מוצר'); return; }
+  if(storeAnimalCatalog().includes(name) || storeFoodCatalog().includes(name)){ showToast('מוצר בשם הזה כבר קיים ברשימה'); return; }
+  if(category==='animal') storeCustomCatalog.animals.push(name); else storeCustomCatalog.food.push(name);
+  await saveStoreCustomCatalog();
+  if(category==='animal') storePrices.animalPrices[name] = price; else storePrices.foodPrices[name] = price;
+  await reconcileObjectStore(STORE_PRICES_KEY, storePrices).then(v=>{ storePrices = v; }).catch(()=>{});
+  showToast('המוצר נוסף');
+  nameEl.value=''; priceEl.value='';
+  renderPricesEditor();
+  populateSaleForm();
+}
+async function deleteStoreCustomProduct(category, name){
+  if(!isAdminRole()){ showToast('אין לך הרשאה למחוק מוצרים'); return; }
+  showConfirm(`למחוק את "${name}" מרשימת המוצרים?`, async ()=>{
+    if(category==='animal') storeCustomCatalog.animals = storeCustomCatalog.animals.filter(n=>n!==name);
+    else storeCustomCatalog.food = storeCustomCatalog.food.filter(n=>n!==name);
+    await saveStoreCustomCatalog();
+    if(category==='animal') delete storePrices.animalPrices[name]; else delete storePrices.foodPrices[name];
+    await reconcileObjectStore(STORE_PRICES_KEY, storePrices).then(v=>{ storePrices = v; }).catch(()=>{});
+    showToast('המוצר נמחק');
+    renderPricesEditor();
+    populateSaleForm();
+  });
+}
+
+/* ---------- bug reports (shared with crm-cities.html) ---------- */
+let bugReports = [];
+async function loadBugReports(){
+  try{
+    const res = await window.storage.get(BUG_REPORTS_KEY, true);
+    bugReports = res && res.value ? JSON.parse(res.value) : [];
+    if(!Array.isArray(bugReports)) bugReports = [];
+  }catch(e){ bugReports = []; }
+  markSyncedArray(BUG_REPORTS_KEY, bugReports);
+}
+async function saveBugReports(){
+  try{ bugReports = await reconcileArrayStore(BUG_REPORTS_KEY, bugReports); }
+  catch(e){ showToast('שגיאה בשמירת דיווח הבאג'); }
+}
+async function submitBugReport(){
+  if(!isAdminRole()){ showToast('רק מנהלים יכולים לדווח על באגים'); return; }
+  const textEl = document.getElementById('newBugReportText');
+  const text = textEl.value.trim();
+  if(!text){ showToast('נא לתאר את הבאג'); return; }
+  bugReports.push({
+    id: 'bug_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
+    reporter: currentUser.username, role: currentUser.role, app: 'store',
+    text, createdAt: Date.now(), status: 'open'
+  });
+  await saveBugReports();
+  textEl.value = '';
+  showToast('הדיווח נשלח - תוכל לראות אותו ברשימה למטה');
+  renderBugReportsList();
+}
+async function setBugReportStatus(id, status){
+  if(!isAdminRole()){ showToast('רק מנהלים יכולים לעדכן סטטוס באג'); return; }
+  const r = bugReports.find(x=>x.id===id);
+  if(!r) return;
+  r.status = status;
+  await saveBugReports();
+  renderBugReportsList();
+}
+// Claude's daily auto-triage classifies some reports as a request to CHANGE how the system
+// behaves (pricing, permissions, business rules) rather than a plain bug - those get parked at
+// 'needs_approval' and Claude will NOT touch code for them until the mainadmin explicitly signs
+// off here. Approval is intentionally restricted to mainadmin only (not a regular admin like
+// David) since these are changes to the rules of the system itself, not just a broken feature.
+async function approveBugReportChange(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול לאשר שינוי'); return; }
+  const r = bugReports.find(x=>x.id===id);
+  if(!r) return;
+  r.status = 'approved';
+  await saveBugReports();
+  renderBugReportsList();
+}
+async function deleteBugReport(id){
+  if(!currentUser || currentUser.role!=='mainadmin'){ showToast('רק המנהל הראשי יכול למחוק דיווח באג'); return; }
+  showConfirm('למחוק את הדיווח הזה?', async ()=>{
+    bugReports = bugReports.filter(x=>x.id!==id);
+    await saveBugReports();
+    renderBugReportsList();
+  });
+}
+function renderBugReportsList(){
+  const el = document.getElementById('bugReportsList');
+  if(!el) return;
+  const isMain = currentUser && currentUser.role==='mainadmin';
+  const statusLabel = {open:'🔴 פתוח', needs_approval:'🟡 ממתין לאישור מנהל ראשי', approved:'🟢 מאושר - ממתין לביצוע', fixed:'✅ טופל', dismissed:'⚪ נדחה'};
+  const sorted = bugReports.slice().sort((a,b)=>b.createdAt-a.createdAt);
+  el.innerHTML = sorted.length===0 ? '<div style="color:var(--muted);font-size:13px;">אין עדיין דיווחים.</div>' : sorted.map(r=>`
+    <div class="card" style="padding:10px 14px;margin-bottom:8px;">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;">
+        <div style="font-weight:700;">${statusLabel[r.status]||r.status} · ${escHtml(r.reporter)} (${r.app==='store'?'מכירות רגילות':'ערים'})</div>
+        ${isMain ? `<button class="icon-btn" onclick="deleteBugReport('${r.id}')" title="מחק">🗑️</button>` : ''}
+      </div>
+      <div style="font-size:13.5px;margin-top:6px;white-space:pre-wrap;">${escHtml(r.text)}</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:6px;">${new Date(r.createdAt).toLocaleDateString('he-IL')}</div>
+      ${r.status==='needs_approval' ? `<div style="background:#fffbea;border:1px solid #e0c250;border-radius:8px;padding:8px 10px;margin-top:8px;font-size:12.5px;">🟡 Claude זיהה שזו בקשה לשינוי בכללי המערכת (לא באג) - נדרש אישור מנהל ראשי לפני שהוא יבצע את זה.${isMain ? `<button class="btn-primary" style="display:block;width:100%;margin-top:6px;" onclick="approveBugReportChange('${r.id}')">✅ אשר לביצוע</button>` : ''}</div>` : ''}
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+        ${r.status!=='open' ? `<button class="btn-ghost" onclick="setBugReportStatus('${r.id}','open')">🔴 סמן כפתוח</button>` : ''}
+        ${r.status!=='fixed' ? `<button class="btn-ghost" onclick="setBugReportStatus('${r.id}','fixed')">✅ סמן כטופל</button>` : ''}
+        ${r.status!=='dismissed' ? `<button class="btn-ghost" onclick="setBugReportStatus('${r.id}','dismissed')">⚪ סמן כנדחה</button>` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+function renderPricesEditor(){
+  const a = document.getElementById('animalPricesList');
+  const f = document.getElementById('foodPricesList');
+  if(!a || !f) return;
+  a.innerHTML = storeAnimalCatalog().map(t=>`
+    <div class="row2" style="align-items:center;">
+      <div style="flex:2;font-size:13.5px;">${t}</div>
+      <input type="number" class="price-animal" data-type="${escAttr(t)}" min="0" value="${storePrices.animalPrices[t]||0}" style="flex:1;">
+      ${storeCustomCatalog.animals.includes(t) ? `<button class="icon-btn" onclick="deleteStoreCustomProduct('animal','${escAttr(t)}')">🗑️</button>` : ''}
+    </div>
+  `).join('');
+  f.innerHTML = storeFoodCatalog().map(t=>`
+    <div class="row2" style="align-items:center;">
+      <div style="flex:2;font-size:13.5px;">${t}</div>
+      <input type="number" class="price-food" data-type="${escAttr(t)}" min="0" value="${storePrices.foodPrices[t]||0}" style="flex:1;">
+      ${storeCustomCatalog.food.includes(t) ? `<button class="icon-btn" onclick="deleteStoreCustomProduct('food','${escAttr(t)}')">🗑️</button>` : ''}
+    </div>
+  `).join('');
+}
+
+/* ---------- sale (point-of-sale) screen ---------- */
+let saleFoodRowCounter = 0;
+function populateSaleForm(){
+  const sel = document.getElementById('saleAnimalType');
+  sel.innerHTML = '<option value="">— ללא בעל חיים (ציוד בלבד) —</option>' +
+    storeAnimalCatalog().map(t=>`<option value="${escAttr(t)}">${t} — ${storePrices.animalPrices[t]||0} ₪</option>`).join('');
+  document.getElementById('saleFoodRows').innerHTML = '';
+  updateSaleTotal();
+}
+function addSaleFoodRow(){
+  saleFoodRowCounter++;
+  const id = 'sfrow'+saleFoodRowCounter;
+  const opts = storeFoodCatalog().map(f=>`<option value="${escAttr(f)}">${f} — ${storePrices.foodPrices[f]||0} ₪</option>`).join('');
+  document.getElementById('saleFoodRows').insertAdjacentHTML('beforeend', `
+    <div class="animal-item" data-food-row-id="${id}">
+      <div class="animal-row">
+        <select class="saleFoodTypeSelect" onchange="updateSaleTotal()">${opts}</select>
+        <input type="number" class="saleFoodQtyInput" min="1" value="1" oninput="updateSaleTotal()">
+        <button type="button" class="remove-animal-btn" onclick="removeSaleFoodRow('${id}')">✕</button>
+      </div>
+    </div>
+  `);
+  updateSaleTotal();
+}
+function removeSaleFoodRow(id){
+  const el = document.querySelector(`[data-food-row-id="${id}"]`);
+  if(el) el.remove();
+  updateSaleTotal();
+}
+function collectSaleFoodRows(){
+  const rows = [];
+  document.querySelectorAll('#saleFoodRows .animal-item').forEach(r=>{
+    const type = r.querySelector('.saleFoodTypeSelect').value;
+    const qty = parseInt(r.querySelector('.saleFoodQtyInput').value) || 1;
+    rows.push({ type, quantity: qty });
+  });
+  return rows;
+}
+let saleFreeRowCounter = 0;
+function addSaleFreeRow(){
+  saleFreeRowCounter++;
+  const id = 'sfreerow'+saleFreeRowCounter;
+  document.getElementById('saleFreeRows').insertAdjacentHTML('beforeend', `
+    <div class="animal-item" data-free-row-id="${id}">
+      <div class="animal-row">
+        <input type="text" class="saleFreeDescInput" placeholder="תיאור (לדוגמה: תיקון כלוב)" style="flex:2;">
+        <input type="number" class="saleFreeAmountInput" min="0" placeholder="סכום ₪" oninput="updateSaleTotal()" style="flex:1;">
+        <button type="button" class="remove-animal-btn" onclick="removeSaleFreeRow('${id}')">✕</button>
+      </div>
+    </div>
+  `);
+  updateSaleTotal();
+}
+function removeSaleFreeRow(id){
+  const el = document.querySelector(`[data-free-row-id="${id}"]`);
+  if(el) el.remove();
+  updateSaleTotal();
+}
+function collectSaleFreeRows(){
+  const rows = [];
+  document.querySelectorAll('#saleFreeRows .animal-item').forEach(r=>{
+    const description = r.querySelector('.saleFreeDescInput').value.trim();
+    const amount = Number(r.querySelector('.saleFreeAmountInput').value) || 0;
+    if(description || amount) rows.push({ description, amount });
+  });
+  return rows;
+}
+function updateSaleTotal(){
+  const animalType = document.getElementById('saleAnimalType').value;
+  const animalQty = parseInt(document.getElementById('saleAnimalQty').value) || 1;
+  document.getElementById('saleAnimalQtyWrap').style.display = animalType ? '' : 'none';
+  let total = 0;
+  if(animalType) total += (storePrices.animalPrices[animalType]||0) * animalQty;
+  collectSaleFoodRows().forEach(f=>{ total += (storePrices.foodPrices[f.type]||0) * f.quantity; });
+  collectSaleFreeRows().forEach(f=>{ total += (f.amount||0); });
+  document.getElementById('saleTotalBox').textContent = `סה"כ למכירה: ${total} ₪`;
+}
+
+let storeSales = [];
+async function loadStoreSales(){
+  try{
+    const res = await window.storage.get(STORE_SALES_KEY, true);
+    storeSales = res && res.value ? JSON.parse(res.value) : [];
+  }catch(e){ storeSales = []; }
+  markSyncedArray(STORE_SALES_KEY, storeSales, 'id');
+}
+async function saveStoreSales(){
+  try{ storeSales = await reconcileArrayStore(STORE_SALES_KEY, storeSales, 'id'); }
+  catch(e){ showToast('שגיאה בשמירת המכירה'); }
+}
+
+async function submitSale(){
+  const btn = document.querySelector('#tab-sale .btn-primary');
+  if(btn.disabled) return;
+  const customer = document.getElementById('saleCustomer').value.trim();
+  const customerPhone = document.getElementById('saleCustomerPhone').value.trim();
+  const animalType = document.getElementById('saleAnimalType').value;
+  const animalQty = parseInt(document.getElementById('saleAnimalQty').value) || 1;
+  const foodItems = collectSaleFoodRows();
+  const freeItems = collectSaleFreeRows();
+  if(!animalType && foodItems.length===0 && freeItems.length===0){ showToast('יש לבחור בעל חיים, מזון/אביזר, או להוסיף פריט במלל חופשי'); return; }
+  let totalPrice = 0;
+  if(animalType) totalPrice += (storePrices.animalPrices[animalType]||0) * animalQty;
+  foodItems.forEach(f=>{ totalPrice += (storePrices.foodPrices[f.type]||0) * f.quantity; });
+  freeItems.forEach(f=>{ totalPrice += (f.amount||0); });
+
+  btn.disabled = true;
+  const sale = {
+    id: genId(), customer, customerPhone, animalType, animalQty: animalType ? animalQty : 0, foodItems, freeItems,
+    totalPrice, date: todayStr(), createdAt: Date.now(),
+    createdByUsername: currentUser ? currentUser.username : '', cancelled: false
+  };
+  storeSales.push(sale);
+  await saveStoreSales();
+
+  if(animalType){
+    const species = ANIMAL_SPECIES_MAP[animalType];
+    if(species) stockDeduct(stock.animals, species, animalQty*(ANIMALS_PER_UNIT[animalType]||1));
+    const cageGroup = CAGE_GROUP_MAP[animalType];
+    if(cageGroup) stockDeduct(stock.cages, cageGroup, animalQty);
+    await saveStock();
+  }
+
+  showToast(`המכירה נשמרה - סה"כ ${totalPrice} ₪`);
+  document.getElementById('saleCustomer').value = '';
+  document.getElementById('saleCustomerPhone').value = '';
+  document.getElementById('saleAnimalType').value = '';
+  document.getElementById('saleAnimalQty').value = '1';
+  document.getElementById('saleFoodRows').innerHTML = '';
+  document.getElementById('saleFreeRows').innerHTML = '';
+  updateSaleTotal();
+  renderHistory();
+  btn.disabled = false;
+}
+// עריכת פרטי לקוח על מכירה קיימת. בכוונה רק שם וטלפון - הסכום והפריטים לא ניתנים לשינוי
+// כאן, כדי שחישוב החלוקה והדוחות לא ישתנו בדיעבד בלי שמישהו שם לב.
+function toggleSaleEdit(id){
+  const d = document.getElementById('saleEdit_'+id);
+  if(d) d.style.display = (d.style.display === 'none' || !d.style.display) ? 'block' : 'none';
+}
+async function saveSaleCustomer(id){
+  if(!isAdminRole()){ showToast('רק מנהל יכול לערוך'); return; }
+  const s = storeSales.find(x=>x.id===id);
+  if(!s) return;
+  const nameEl = document.getElementById('saleEditName_'+id);
+  const phoneEl = document.getElementById('saleEditPhone_'+id);
+  s.customer = nameEl ? nameEl.value.trim() : '';
+  s.customerPhone = phoneEl ? phoneEl.value.trim() : '';
+  await saveStoreSales();
+  showToast('פרטי הלקוח עודכנו');
+  renderHistory();
+}
+function cancelSale(id){
+  if(!isAdminRole()){ showToast('רק מנהל יכול לבטל מכירה'); return; }
+  const s = storeSales.find(x=>x.id===id);
+  if(!s || s.cancelled) return;
+  showConfirm('לבטל את המכירה הזו? המלאי יוחזר.', async ()=>{
+    s.cancelled = true;
+    await saveStoreSales();
+    if(s.animalType){
+      const species = ANIMAL_SPECIES_MAP[s.animalType];
+      if(species) stockRestore(stock.animals, species, s.animalQty*(ANIMALS_PER_UNIT[s.animalType]||1));
+      const cageGroup = CAGE_GROUP_MAP[s.animalType];
+      if(cageGroup) stockRestore(stock.cages, cageGroup, s.animalQty);
+      await saveStock();
+    }
+    showToast('המכירה בוטלה והמלאי הוחזר');
+    renderHistory();
+  });
+}
+function formatFoodItemsList(items){
+  if(!items || !items.length) return '';
+  return items.map(f=>`${f.type} ×${f.quantity}`).join(', ');
+}
+function formatFreeItemsList(items){
+  if(!items || !items.length) return '';
+  return items.map(f=>`${f.description||'פריט'}${f.amount?' ('+f.amount+'₪)':''}`).join(', ');
+}
+function renderHistory(){
+  const el = document.getElementById('historyList');
+  if(!el) return;
+  let list = storeSales.slice().sort((a,b)=>b.createdAt-a.createdAt);
+  if(!isAdminRole()) list = list.filter(s=>s.createdByUsername===currentUser.username);
+  if(list.length===0){ el.innerHTML = `<div class="empty"><div class="big">🛍️</div>עדיין אין מכירות.</div>`; return; }
+  el.innerHTML = list.map(s=>`
+    <div class="city-card" style="${s.cancelled?'opacity:0.5;':''}">
+      <div class="city-head">
+        <div class="city-name-wrap"><div class="city-name">${s.customer ? escHtml(s.customer) : 'ללא שם לקוח'}</div></div>
+        <div class="city-last">${formatDate(s.date)}</div>
+      </div>
+      ${s.customerPhone ? `<div class="order-sub"><a href="tel:${s.customerPhone.replace(/-/g,'')}" style="color:var(--accent-dark);font-weight:700;">${escHtml(s.customerPhone)}</a></div>` : ''}
+      <div class="city-totals">${s.animalType ? escHtml(s.animalType)+' ×'+s.animalQty : ''}${s.foodItems&&s.foodItems.length ? (s.animalType?' · ':'')+formatFoodItemsList(s.foodItems) : ''}${s.freeItems&&s.freeItems.length ? ((s.animalType||(s.foodItems&&s.foodItems.length))?' · ':'')+formatFreeItemsList(s.freeItems) : ''}</div>
+      <div class="city-totals" style="color:var(--accent-dark);font-weight:700;">💰 ${s.totalPrice} ₪${s.cancelled?' · בוטלה':''}</div>
+      <div class="order-sub">נציג: ${escHtml(s.createdByUsername)}</div>
+      ${(isAdminRole() && !s.cancelled) ? `<button class="icon-btn" onclick="cancelSale('${s.id}')" title="בטל מכירה">🗑️ בטל</button>` : ''}
+      ${isAdminRole() ? `
+      <div style="margin-top:6px;">
+        <span style="cursor:pointer;text-decoration:underline;color:var(--muted);font-size:12.5px;" onclick="toggleSaleEdit('${s.id}')">✏️ עריכת פרטי לקוח</span>
+        <div id="saleEdit_${s.id}" style="display:none;margin-top:6px;">
+          <input id="saleEditName_${s.id}" placeholder='שם הלקוח' value="${escAttr(s.customer||'')}" style="width:100%;margin-bottom:4px;font-size:13px;">
+          <input id="saleEditPhone_${s.id}" placeholder='טלפון' value="${escAttr(s.customerPhone||'')}" style="width:100%;margin-bottom:4px;font-size:13px;">
+          <button class="btn-primary" style="padding:6px 12px;font-size:12.5px;" onclick="saveSaleCustomer('${s.id}')">שמור</button>
+        </div>
+      </div>` : ''}
+    </div>
+  `).join('');
+}
+
+/* ---------- combined report (mainadmin only): reads the OTHER app's order/spot-sale data
+   read-only (no writes here, so no need for the full reconcile machinery) plus this app's own
+   sales and the shared expenses, and adds up revenue/profit across both apps together. ---------- */
+// הדוח המשולב לפי חודש: אפשר לבחור חודש ושנה, או כל התקופה. בירידים ההכנסה נספרת לפי
+// תאריך המסירה בפועל (ולא תאריך ההזמנה), כי זה המועד שבו הכסף באמת נכנס.
+const HE_MONTHS = ['ינואר','פברואר','מרץ','אפריל','מאי','יוני','יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'];
+function populateCombinedPeriod(){
+  const mEl = document.getElementById('combinedMonth'), yEl = document.getElementById('combinedYear');
+  if(!mEl || !yEl || mEl.dataset.ready) return;
+  mEl.innerHTML = '<option value="">כל החודשים</option>' + HE_MONTHS.map((m,i)=>'<option value="' + String(i+1).padStart(2,'0') + '">' + m + '</option>').join('');
+  const years = new Set();
+  (storeSales||[]).forEach(s=>{ if(s.date) years.add(s.date.slice(0,4)); });
+  const nowY = new Date().getFullYear();
+  years.add(String(nowY)); years.add(String(nowY-1));
+  yEl.innerHTML = '<option value="">כל השנים</option>' + [...years].sort().reverse().map(y=>'<option value="' + y + '">' + y + '</option>').join('');
+  mEl.value = String(new Date().getMonth()+1).padStart(2,'0');
+  yEl.value = String(nowY);
+  mEl.dataset.ready = '1';
+}
+function combinedPeriod(){
+  const m = (document.getElementById('combinedMonth')||{}).value || '';
+  const y = (document.getElementById('combinedYear')||{}).value || '';
+  return { month:m, year:y };
+}
+function inCombinedPeriod(dateStr, p){
+  if(!p.month && !p.year) return true;
+  if(!dateStr) return false;
+  if(p.year && dateStr.slice(0,4) !== p.year) return false;
+  if(p.month && dateStr.slice(5,7) !== p.month) return false;
+  return true;
+}
+function combinedPeriodLabel(p){
+  if(!p.month && !p.year) return 'כל התקופה';
+  if(p.month && p.year) return HE_MONTHS[Number(p.month)-1] + ' ' + p.year;
+  if(p.month) return HE_MONTHS[Number(p.month)-1] + ' (כל השנים)';
+  return 'שנת ' + p.year;
+}
+async function loadCombinedReport(){
+  const el = document.getElementById('combinedReportContent');
+  const p = combinedPeriod();
+  el.innerHTML = '<div class="card" style="color:var(--muted);">טוען...</div>';
+  let otherOrders = [], otherSpotSales = [];
+  try{
+    const res1 = await window.storage.get(OTHER_APP_ORDERS_KEY, true);
+    otherOrders = res1 && res1.value ? JSON.parse(res1.value) : [];
+  }catch(e){}
+  try{
+    const res2 = await window.storage.get(OTHER_APP_SPOT_SALES_KEY, true);
+    otherSpotSales = res2 && res2.value ? JSON.parse(res2.value) : [];
+  }catch(e){}
+  // רק הכנסה שכבר התממשה: הזמנות שסופקו ומכירות מהשטח, לא כל מה שפתוח בצינור.
+  const orderDate = o => o.deliveryDate || o.date || '';
+  const fairOrders = otherOrders.filter(o=>!o.cancelled && o.delivered && inCombinedPeriod(orderDate(o), p));
+  const spot = (otherSpotSales||[]).filter(o=>inCombinedPeriod(o.date, p));
+  const store = (storeSales||[]).filter(s=>!s.cancelled && inCombinedPeriod(s.date, p));
+  const expenses = (manualExpenses||[]).filter(e=>inCombinedPeriod(e.date, p));
+  const nis = n => Math.round(n).toLocaleString('he-IL');
+  const fairRevenue = fairOrders.reduce((s,o)=>s+(o.totalPrice||0),0) + spot.reduce((s,o)=>s+(o.totalPrice||0),0);
+  const storeRevenue = store.reduce((s,x)=>s+(x.totalPrice||0),0);
+  const totalExpenses = expenses.reduce((s,e)=>s+(e.amount||0),0);
+  const combinedRevenue = fairRevenue + storeRevenue;
+  // פירוט לפי חודש על כל התקופה, כדי לראות מגמה גם כשבוחרים חודש בודד
+  const byMonth = {};
+  const bump = (d, field, amount) => { const k=(d||'').slice(0,7); if(!k) return; byMonth[k] = byMonth[k] || {fair:0, store:0, exp:0}; byMonth[k][field] += amount; };
+  (otherOrders||[]).filter(o=>!o.cancelled && o.delivered).forEach(o=>bump(orderDate(o),'fair',o.totalPrice||0));
+  (otherSpotSales||[]).forEach(o=>bump(o.date,'fair',o.totalPrice||0));
+  (storeSales||[]).filter(s=>!s.cancelled).forEach(s=>bump(s.date,'store',s.totalPrice||0));
+  (manualExpenses||[]).forEach(e=>bump(e.date,'exp',e.amount||0));
+  const months = Object.keys(byMonth).sort().reverse();
+  el.innerHTML = '<div class="card">'
+    + '<div style="font-weight:800;margin-bottom:2px;">📊 ' + escHtml(combinedPeriodLabel(p)) + '</div>'
+    + '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">' + fairOrders.length + ' משלוחים בירידים · ' + store.length + ' מכירות רגילות</div>'
+    + '<div class="stats-row">'
+      + '<div class="stat"><div class="num">' + nis(fairRevenue) + '</div><div class="lbl">ירידים ₪</div></div>'
+      + '<div class="stat"><div class="num">' + nis(storeRevenue) + '</div><div class="lbl">מכירות רגילות ₪</div></div>'
+      + '<div class="stat"><div class="num">' + nis(combinedRevenue) + '</div><div class="lbl">סה"כ מחזור ₪</div></div>'
+    + '</div>'
+    + '<div style="margin-top:12px;font-size:13.5px;color:var(--muted);">הוצאות שנרשמו בתקופה: ' + nis(totalExpenses) + ' ₪</div>'
+    + '<div style="margin-top:4px;font-size:16px;font-weight:800;color:var(--route);">נטו אחרי הוצאות: ' + nis(combinedRevenue-totalExpenses) + ' ₪</div>'
+    + '<div style="margin-top:8px;font-size:11.5px;color:var(--muted);">ההוצאות הן רק מה שנרשם במסך ההוצאות. עלות המוצרים ועלויות הפרסום אינן נכללות כאן.</div>'
+  + '</div>'
+  + '<div class="card">'
+    + '<div style="font-weight:800;margin-bottom:8px;">לפי חודשים</div>'
+    + (months.length ? months.map(k=>{
+        const r = byMonth[k];
+        const tot = r.fair + r.store;
+        const sel = (p.month && p.year && k === p.year + '-' + p.month);
+        return '<div style="border:1px solid ' + (sel ? 'var(--accent-dark)' : 'var(--border)') + ';border-radius:10px;padding:8px 10px;margin-bottom:6px;">'
+          + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;"><div style="font-weight:700;">' + escHtml(monthLabelHe(k)) + '</div><div style="font-weight:800;">' + nis(tot) + ' ₪</div></div>'
+          + '<div style="font-size:12px;color:var(--muted);margin-top:2px;">ירידים ' + nis(r.fair) + ' · רגילות ' + nis(r.store) + (r.exp ? ' · הוצאות ' + nis(r.exp) : '') + '</div>'
+        + '</div>';
+      }).join('') : '<div style="font-size:12.5px;color:var(--muted);">אין נתונים</div>')
+  + '</div>';
+}
+
+/* ---------- תזכורת חיסון לקוני ארנבים (מכירות רגילות בלבד) ----------
+   חודשיים וחצי אחרי הקנייה הלקוח אמור לחסן את הארנב. המסך מרכז את מי שהגיע זמנו, עם כפתור
+   שפותח וואטסאפ עם ההודעה מוכנה - השליחה עצמה ידנית, לא אוטומטית. */
+const VACCINE_REMINDER_DAYS = 75; // חודשיים וחצי
+// מזהה קנייה של ארנב גם כשהיא נרשמה כמכירה בסכום חופשי ולא מהקטלוג
+function saleIsRabbit(s){
+  if(/ארנב/.test(s.animalType||'')) return true;
+  return (s.freeItems||[]).some(f=>/ארנב/.test(f.description||''));
+}
+// הטלפונים נשמרים בכמה פורמטים (+972 52-440-1505 / +972502338558 / 0524422220) - הכל לאותו תקן
+function normalizeIlPhone(raw){
+  let d = (raw||'').replace(/\D/g,'');
+  if(!d) return '';
+  if(d.startsWith('972')) return d;
+  if(d.startsWith('0')) return '972' + d.slice(1);
+  if(d.length === 9) return '972' + d;
+  return d;
+}
+function saleHasUsablePhone(s){ return normalizeIlPhone(s.customerPhone).length >= 11; }
+function daysSinceDate(dateStr){
+  if(!dateStr) return 0;
+  return Math.floor((Date.now() - new Date(dateStr+'T00:00:00').getTime())/86400000);
+}
+// ברכה לפי שעת השליחה, עם התאמה לחורף/קיץ: בקיץ מחשיך מאוחר יותר, אז "ערב טוב" מתחיל שעה מאוחר יותר.
+// זיהוי שעון קיץ נעשה מול היסט אזור הזמן בינואר מול יולי, כך שזה נכון מעצמו בכל שנה.
+function greetingForNow(now){
+  const d = now || new Date();
+  const h = d.getHours();
+  const jan = new Date(d.getFullYear(), 0, 1).getTimezoneOffset();
+  const jul = new Date(d.getFullYear(), 6, 1).getTimezoneOffset();
+  const isSummerTime = d.getTimezoneOffset() < Math.max(jan, jul);
+  const eveningFrom = isSummerTime ? 18 : 17;
+  if(h >= 5 && h < 12) return 'בוקר טוב';
+  if(h >= 12 && h < eveningFrom) return 'צהריים טובים';
+  return 'ערב טוב';
+}
+const VACCINE_MSG_KEY = 'pet-crm-store-vaccine-msg';
+const DEFAULT_VACCINE_BODY = 'כבר עברו חודשיים וחצי מקווה שאתם נהנים מהארנב והוא נהנה מכם, הגיע הזמן לעבור חיסון מוזמנים לתאם וגם לבוא לקנות אוכל במחירים נוחים וטובים מוזמנים לתאם:)';
+// הטקסט נשמר בשרת ולא בקוד, כדי שדוד יוכל לשנות אותו בעצמו וזה יחול על כולם.
+// seenBy מחזיק מי כבר ראה את חלון ההסבר, כך שהוא קופץ פעם אחת בלבד לכל משתמש.
+let vaccineMsg = { body: DEFAULT_VACCINE_BODY, seenBy: [] };
+async function loadVaccineMsg(){
+  let remote = null;
+  try{
+    const res = await window.storage.get(VACCINE_MSG_KEY, true);
+    if(res && res.value) remote = JSON.parse(res.value);
+  }catch(e){ remote = null; }
+  // מיזוג שדה-שדה: גם אם חסר אחד השדות בשרת, לא מאבדים את השני. קודם כל האובייקט נדחה
+  // כשה-body היה חסר, ואיתו נמחקה גם רשימת מי שכבר ראה - ולכן החלון "החד-פעמי" חזר כל פעם.
+  if(remote && typeof remote === 'object'){
+    if(typeof remote.body === 'string' && remote.body.trim()) vaccineMsg.body = remote.body;
+    if(Array.isArray(remote.seenBy)) vaccineMsg.seenBy = remote.seenBy;
+  }
+  // תמונת המצב חייבת לשקף מה שבאמת יושב בשרת ולא את ברירת המחדל המקומית: reconcileObjectStore
+  // כותב רק מפתחות שהשתנו מול התמונה הזו, אז מפתח שחסר בשרת חייב להיחשב "שונה" כדי שייכתב.
+  markSyncedObject(VACCINE_MSG_KEY, remote || {});
+}
+async function saveVaccineMsg(){
+  try{ vaccineMsg = await reconcileObjectStore(VACCINE_MSG_KEY, vaccineMsg); }
+  catch(e){ showToast('שגיאה בשמירת ההודעה'); }
+}
+function vaccineReminderText(){
+  const body = (vaccineMsg && vaccineMsg.body || DEFAULT_VACCINE_BODY).trim();
+  return greetingForNow() + ', ' + body;
+}
+function openVaccineMsgModal(){
+  document.getElementById('vaccineMsgInput').value = (vaccineMsg.body || DEFAULT_VACCINE_BODY);
+  updateVaccineMsgPreview();
+  document.getElementById('vaccineMsgModal').classList.add('open');
+}
+function updateVaccineMsgPreview(){
+  const el = document.getElementById('vaccineMsgPreview');
+  const input = document.getElementById('vaccineMsgInput');
+  if(!el || !input) return;
+  el.innerHTML = '<b>כך זה ייראה עכשיו:</b><br>' + escHtml(greetingForNow() + ', ' + input.value.trim());
+}
+async function closeVaccineMsgModal(){
+  document.getElementById('vaccineMsgModal').classList.remove('open');
+  await markVaccineMsgSeen();
+}
+async function saveVaccineMsgFromModal(){
+  const val = document.getElementById('vaccineMsgInput').value.trim();
+  if(!val){ showToast('ההודעה לא יכולה להיות ריקה'); return; }
+  vaccineMsg.body = val;
+  if(currentUser && !(vaccineMsg.seenBy||[]).includes(currentUser.username)) vaccineMsg.seenBy.push(currentUser.username);
+  await saveVaccineMsg();
+  document.getElementById('vaccineMsgModal').classList.remove('open');
+  showToast('ההודעה עודכנה');
+  if(typeof renderVaccineReminders === 'function') renderVaccineReminders();
+}
+async function markVaccineMsgSeen(){
+  if(!currentUser) return;
+  if((vaccineMsg.seenBy||[]).includes(currentUser.username)) return;
+  vaccineMsg.seenBy = (vaccineMsg.seenBy||[]).concat([currentUser.username]);
+  if(!vaccineMsg.body || !vaccineMsg.body.trim()) vaccineMsg.body = DEFAULT_VACCINE_BODY;
+  await saveVaccineMsg();
+}
+// קופץ פעם אחת לכל מנהל, כדי שידע מה בדיוק נשלח ללקוחות ויוכל לשנות לפני השימוש הראשון
+function maybeShowVaccineMsgIntro(){
+  if(!currentUser) return;
+  const isAdmin = currentUser.role==='admin' || currentUser.role==='mainadmin';
+  if(!isAdmin) return;
+  if((vaccineMsg.seenBy||[]).includes(currentUser.username)) return;
+  setTimeout(openVaccineMsgModal, 900);
+}
+function openVaccineWhatsApp(saleId){
+  const s = storeSales.find(x=>x.id===saleId);
+  if(!s) return;
+  const phone = normalizeIlPhone(s.customerPhone);
+  if(!phone){ showToast('אין מספר טלפון תקין למכירה הזו'); return; }
+  window.open('https://wa.me/' + phone + '?text=' + encodeURIComponent(vaccineReminderText()), '_blank');
+}
+async function markVaccineReminderSent(saleId, sent){
+  const s = storeSales.find(x=>x.id===saleId);
+  if(!s) return;
+  s.vaccineReminderSentAt = sent ? Date.now() : null;
+  s.vaccineReminderSentBy = sent ? (currentUser ? currentUser.username : '') : null;
+  await saveStoreSales();
+  renderVaccineReminders();
+}
+function renderVaccineReminders(){
+  const el = document.getElementById('vaccineContent');
+  if(!el) return;
+  const rabbits = (storeSales||[]).filter(s=>!s.cancelled && saleIsRabbit(s));
+  const sent = rabbits.filter(s=>s.vaccineReminderSentAt);
+  const pending = rabbits.filter(s=>!s.vaccineReminderSentAt);
+  const due = pending.filter(s=>daysSinceDate(s.date) >= VACCINE_REMINDER_DAYS && saleHasUsablePhone(s))
+                     .sort((a,b)=>daysSinceDate(b.date)-daysSinceDate(a.date));
+  const upcoming = pending.filter(s=>daysSinceDate(s.date) < VACCINE_REMINDER_DAYS && saleHasUsablePhone(s))
+                          .sort((a,b)=>daysSinceDate(b.date)-daysSinceDate(a.date));
+  const noPhone = pending.filter(s=>!saleHasUsablePhone(s));
+  const who = s => (s.customer||'').trim() || 'לקוח ללא שם';
+  const row = (s, mode)=>{
+    const d = daysSinceDate(s.date);
+    const left = VACCINE_REMINDER_DAYS - d;
+    return `
+      <div style="border:1px solid ${mode==='due'?'var(--accent-dark)':'var(--border)'};border-radius:10px;padding:10px 12px;margin-bottom:8px;${mode==='due'?'background:var(--new-badge-light);':''}">
+        <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:baseline;">
+          <div style="font-weight:700;">${escHtml(who(s))}</div>
+          <div style="font-size:12.5px;color:var(--muted);">${mode==='due' ? 'עברו ' + d + ' ימים' : 'עוד ' + left + ' ימים'}</div>
+        </div>
+        <div style="font-size:12.5px;color:var(--muted);margin-top:2px;">נקנה ${escHtml(s.date)}${s.customerPhone?' · '+escHtml(s.customerPhone):''}</div>
+        ${mode==='due' ? `<div class="row2" style="gap:6px;margin-top:8px;">
+            <button class="btn-primary" style="padding:6px 12px;font-size:12.5px;" onclick="openVaccineWhatsApp('${escAttr(s.id)}')">💬 פתח וואטסאפ עם ההודעה</button>
+            <button class="btn-secondary" style="padding:6px 12px;font-size:12.5px;" onclick="markVaccineReminderSent('${escAttr(s.id)}', true)">✅ סמן כנשלח</button>
+          </div>` : ''}
+      </div>`;
+  };
+  el.innerHTML = '<div class="card">'
+    + '<div style="font-weight:800;margin-bottom:4px;">💉 תזכורות חיסון לארנבים</div>'
+    + '<div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">כל מי שקנה ארנב מופיע כאן ' + VACCINE_REMINDER_DAYS + ' יום (חודשיים וחצי) אחרי הקנייה. הכפתור פותח וואטסאפ עם ההודעה מוכנה - הברכה בתחילתה משתנה לפי השעה ומתחשבת בשעון קיץ/חורף. השליחה עצמה ידנית.</div>'
+    + '<div style="font-size:12.5px;background:var(--new-badge-light);border-radius:8px;padding:8px 10px;margin-bottom:12px;"><b>ההודעה שתישלח:</b> ' + escHtml(vaccineReminderText()) + ' <span style="cursor:pointer;text-decoration:underline;color:var(--accent-dark);font-weight:700;" onclick="openVaccineMsgModal()">שינוי</span></div>'
+    + '<div style="font-weight:800;margin-bottom:6px;">🔔 הגיע הזמן (' + due.length + ')</div>'
+    + (due.length ? due.map(s=>row(s,'due')).join('')
+                  : '<div style="font-size:12.5px;color:var(--muted);margin-bottom:10px;">אין כרגע אף ארנב שעברו ממנו חודשיים וחצי.</div>')
+    + '<div style="font-weight:800;margin:16px 0 6px;">⏳ בדרך (' + upcoming.length + ')</div>'
+    + (upcoming.length ? upcoming.map(s=>row(s,'upcoming')).join('')
+                       : '<div style="font-size:12.5px;color:var(--muted);">אין מכירות ארנבים ממתינות.</div>')
+    + (noPhone.length ? '<div style="font-weight:800;margin:16px 0 6px;">⚠️ בלי טלפון (' + noPhone.length + ')</div>'
+        + '<div style="font-size:12.5px;color:var(--muted);margin-bottom:6px;">קניות ארנב שאי אפשר לשלוח אליהן תזכורת כי לא נרשם מספר טלפון.</div>'
+        + noPhone.map(s=>'<div style="border:1px dashed var(--border);border-radius:10px;padding:8px 12px;margin-bottom:6px;font-size:12.5px;">' + escHtml(who(s)) + ' · נקנה ' + escHtml(s.date) + '</div>').join('') : '')
+    + (sent.length ? '<div style="font-weight:800;margin:16px 0 6px;">✅ נשלחו (' + sent.length + ')</div>'
+        + sent.sort((a,b)=>b.vaccineReminderSentAt-a.vaccineReminderSentAt).map(s=>'<div style="border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin-bottom:6px;font-size:12.5px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;"><span>' + escHtml(who(s)) + ' · נקנה ' + escHtml(s.date) + '</span><span style="color:var(--muted);cursor:pointer;text-decoration:underline;" onclick="markVaccineReminderSent(\'' + escAttr(s.id) + '\', false)">בטל סימון</span></div>').join('') : '')
+  + '</div>';
+}
+
+/* ---------- חלוקת כסף - רק מכירות רגילות ---------- */
+const PAYOUTS_KEY = 'pet-crm-store-payouts';
+const COST_SETTINGS_KEY = 'pet-crm-cost-settings'; // משותף עם אפליקציית הירידים - כאן קריאה בלבד
+const VAT_RATE_STORE = 0.18;
+const FREE_SALE_LABEL = 'מכירות בסכום חופשי (אין להן עלות מוצר)';
+let payouts = [];
+const DEFAULT_COST_MAP = {
+  'תוכון מותאם לאילוף כולל כלוב': { animal:35, cage:14 },
+  '2 תוכונים מותאמים לאילוף כולל כלוב': { animal:65, cage:14 },
+  'קוקטייל כולל כלוב': { animal:120, cage:25 },
+  'קוואקר כולל כלוב': { animal:67, cage:18 },
+  'ארנב כולל כלוב נסורת ואוכל': { animal:55.8, cage:20 },
+  'ארנב ננסי הולנדי ישראלי כולל כלוב נסורת ואוכל': { animal:null, cage:20 },  // cage identical to regular ארנב; purchase cost of the animal itself not yet set - update in admin cost settings
+  'ארנב ננסי הולנדי ישראלי צעיר כולל כלוב נסורת ואוכל': { animal:null, cage:20 },  // same cage as the adult dwarf; purchase cost not yet set
+  'שרקן כולל כלוב נסורת ואוכל': { animal:60.8, cage:20 },
+  '2 אוגרים כולל כלוב': { animal:null, cage:null },
+  '2 תוכונים לא מותאמים לאילוף כולל כלוב': { animal:65, cage:14 },
+  '2 ארנבות כולל כלוב מוגדל': { animal:84, cage:35 },
+  '2 ארנבים ננסי הולנדי ישראלי כולל כלוב מוגדל': { animal:null, cage:35 },  // purchase cost not yet set - update in admin cost settings
+  '2 שרקנים כולל כלוב מוגדל': { animal:94, cage:35 },
+  'חבילת מזון לתוכים (1 יח\')': 3,
+  '3 חבילות מזון לתוכים': 9,
+  '6 חבילות מזון לתוכים': 18,
+  'שק מזון לתוכים (20 ק"ג)': 75,
+  'חבילת מזון למכרסמים (1 יח\')': 2.8,
+  '3 חבילות מזון למכרסמים': 8.4,
+  '6 חבילות מזון למכרסמים': 16.8,
+  'שק מזון למכרסמים (25 ק"ג)': 70,
+  'נסורת פשוטה - 1 יח\'': 2,
+  'נסורת פשוטה - 2 יח\'': 4,
+  'נסורת פשוטה - 4 יח\'': 8,
+  'נסורת איכותית (10 ליטר)': 17,
+  'שק נסורת איכותית (15 ק"ג)': 50,
+  'תא הטלה': null,
+  'כלי אוכל גדול לארנב': null,
+  'כלי אוכל קטן לארנב': null,
+  'מתקן שתייה לארנב 250 מ"ל': null,
+  'מתקן שתייה לארנב 500 מ"ל': null,
+  'כלי אוכל גדול לתוכי': null,
+  'כלי אוכל ענק לתוכי': null,
+  'כלי שתייה קטן': null,
+  'כלי שתייה גדול לתוכי בינוני': null,
+  'כלי שתייה גדול לתוכי': null,
+  'כלי שתייה ענק לתוכי': null
+};
+let costSettings = JSON.parse(JSON.stringify(DEFAULT_COST_MAP));
+async function loadCostSettings(){
+  // המפתח המשותף מחזיק גם הגדרות פרסום. טבלת העלויות עצמה יושבת תחת costs, ומה שחסר בה
+  // נופל לברירות המחדל - בדיוק כמו באפליקציית הירידים, כדי ששתי האפליקציות יראו אותן עלויות.
+  try{
+    const res = await window.storage.get(COST_SETTINGS_KEY, true);
+    const parsed = (res && res.value) ? JSON.parse(res.value) : null;
+    costSettings = Object.assign({}, JSON.parse(JSON.stringify(DEFAULT_COST_MAP)), (parsed && parsed.costs) || {});
+  }catch(e){ costSettings = JSON.parse(JSON.stringify(DEFAULT_COST_MAP)); }
+}
+// עלות יחידה נלקחת מטבלת העלויות של אפליקציית הירידים, ולא מוגדרת מחדש כאן, כדי שלא
+// תיווצרנה שתי טבלאות עלויות שונות. עדכון עלות נעשה שם, במסך העלויות של המנהל הראשי.
+function unitCostFor(name){
+  const c = costSettings[name];
+  if(c == null) return null;
+  if(typeof c === 'number') return c;
+  const animal = (c.animal != null) ? c.animal : null;
+  const cage = (c.cage != null) ? c.cage : null;
+  if(animal == null && cage == null) return null;
+  return (animal||0) + (cage||0)*(1+VAT_RATE_STORE);
+}
+// עלות המוצרים של מכירה בודדת, וגם אילו פריטים בה אין להם עלות מוגדרת
+function saleProductCost(s){
+  let cost = 0; const missing = [];
+  if(s.animalType){
+    const u = unitCostFor(s.animalType);
+    if(u == null) missing.push(s.animalType); else cost += u * (s.animalQty||1);
+  }
+  (s.foodItems||[]).forEach(f=>{
+    const u = unitCostFor(f.type);
+    if(u == null) missing.push(f.type); else cost += u * (f.quantity||1);
+  });
+  // מכירה בסכום חופשי אינה פריט מהקטלוג, ולכן אין לה עלות מוגדרת
+  // כל המכירות בסכום חופשי נאספות לשורה אחת, כי לאף אחת מהן לא תהיה עלות אוטומטית
+  (s.freeItems||[]).forEach(f=>{ if((f.amount||0) > 0) missing.push(FREE_SALE_LABEL); });
+  return { cost: cost, missing: missing };
+}
+function payoutTotals(){
+  const sales = (storeSales||[]).filter(s=>!s.cancelled);
+  let revenue = 0, productCost = 0; const missing = {};
+  sales.forEach(s=>{
+    revenue += (s.totalPrice||0);
+    const r = saleProductCost(s);
+    productCost += r.cost;
+    r.missing.forEach(n=>{ missing[n] = (missing[n]||0) + 1; });
+  });
+  const distributed = (payouts||[]).reduce((a,p)=>a + (p.amount||0), 0);
+  const base = revenue - productCost;
+  return { revenue: revenue, productCost: productCost, base: base, distributed: distributed,
+           remaining: base - distributed, missing: missing, salesCount: sales.length };
+}
+async function loadPayouts(){
+  try{
+    const res = await window.storage.get(PAYOUTS_KEY, true);
+    payouts = res && res.value ? JSON.parse(res.value) : [];
+    if(!Array.isArray(payouts)) payouts = [];
+  }catch(e){ payouts = []; }
+  markSyncedArray(PAYOUTS_KEY, payouts);
+}
+async function savePayouts(){
+  try{ payouts = await reconcileArrayStore(PAYOUTS_KEY, payouts); }
+  catch(e){ showToast('שגיאה בשמירת החלוקה'); }
+}
+
+async function addPayout(){
+  if(!isAdminRole()){ showToast('רק מנהל יכול לרשום חלוקה'); return; }
+  const dateEl = document.getElementById('payoutDate');
+  const amtEl = document.getElementById('payoutAmount');
+  const toEl = document.getElementById('payoutTo');
+  const noteEl = document.getElementById('payoutNote');
+  const amount = parseFloat(amtEl ? amtEl.value : '');
+  if(isNaN(amount) || amount <= 0){ showToast('יש להזין סכום'); return; }
+  const t = payoutTotals();
+  const rec = {
+    id: genId(),
+    date: (dateEl && dateEl.value) ? dateEl.value : todayStr(),
+    amount: amount,
+    to: toEl ? toEl.value.trim() : '',
+    note: noteEl ? noteEl.value.trim() : '',
+    createdByUsername: currentUser ? currentUser.username : '',
+    createdAt: Date.now()
+  };
+  // אם החלוקה גדולה ממה שנשאר, מבקשים אישור במקום לחסום - לפעמים מחלקים מראש
+  const doSave = async ()=>{
+    payouts.push(rec);
+    await savePayouts();
+    if(amtEl) amtEl.value = '';
+    if(toEl) toEl.value = '';
+    if(noteEl) noteEl.value = '';
+    showToast('נרשמה חלוקה');
+    renderPayouts();
+  };
+  if(amount > t.remaining){
+    showConfirm('הסכום גדול ממה שנשאר לחלוקה (' + Math.round(t.remaining) + ' ש"ח). לרשום בכל זאת?', doSave);
+  } else { await doSave(); }
+}
+async function deletePayout(id){
+  if(!isAdminRole()){ showToast('רק מנהל יכול למחוק'); return; }
+  showConfirm('למחוק את רישום החלוקה?', async ()=>{
+    payouts = payouts.filter(p=>p.id !== id);
+    await savePayouts();
+    showToast('נמחק');
+    renderPayouts();
+  });
+}
+
+function renderPayouts(){
+  const el = document.getElementById('payoutsContent');
+  if(!el) return;
+  if(!isAdminRole()){ el.innerHTML = ''; return; }
+  const nis = n => Math.round(n).toLocaleString('he-IL');
+  const t = payoutTotals();
+  const missingNames = Object.keys(t.missing);
+  const list = (payouts||[]).slice().sort((a,b)=>(b.date||'').localeCompare(a.date||'') || (b.createdAt||0)-(a.createdAt||0));
+  const row = (label, val, muted) => `<div style="display:flex;justify-content:space-between;padding:4px 0;${muted?'color:var(--muted);':''}"><span>${label}</span><b>${val}</b></div>`;
+  let html = `<div class="card">`
+    + `<div style="font-weight:800;margin-bottom:4px;">חלוקת כסף - מכירות רגילות</div>`
+    + `<div style="font-size:12.5px;color:var(--muted);margin-bottom:10px;">החישוב כאן הוא רק מהמכירות הרגילות. הירידים אינם נכללים בו כלל.</div>`
+    + row('מחזור (' + t.salesCount + ' מכירות)', nis(t.revenue) + ' ₪')
+    + row('עלות מוצרים', '-' + nis(t.productCost) + ' ₪', true)
+    + `<div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--border);"><span>רווח אחרי עלות מוצרים</span><b>${nis(t.base)} ₪</b></div>`
+    + row('חולק עד כה', '-' + nis(t.distributed) + ' ₪', true)
+    + `<div style="display:flex;justify-content:space-between;padding:8px 0;border-top:2px solid var(--border);font-size:16px;"><span><b>נשאר לחלק</b></span><b style="color:${t.remaining < 0 ? 'var(--danger)' : 'var(--accent-dark)'};">${nis(t.remaining)} ₪</b></div>`
+    + (t.remaining < 0 ? `<div style="font-size:12.5px;color:var(--danger);">חולק יותר ממה שנצבר - הסכום השלילי הוא עודף שחולק</div>` : '')
+    + `</div>`;
+  if(missingNames.length){
+    html += `<div class="card" style="border:1px solid var(--danger);">`
+      + `<div style="font-weight:700;margin-bottom:4px;">עלויות חסרות - הרווח כאן גבוה מהאמת</div>`
+      + `<div style="font-size:12.5px;color:var(--muted);margin-bottom:6px;">לפריטים הבאים אין עלות מוגדרת, ולכן הם נחשבים כאילו עלו 0. את העלויות מגדירים במסך העלויות באפליקציית הירידים, ומכירה בסכום חופשי לעולם לא תהיה לה עלות אוטומטית.</div>`
+      + missingNames.map(n=>`<div style="font-size:12.5px;">${escHtml(n)} - ${t.missing[n]} פעמים</div>`).join('')
+      + `</div>`;
+  }
+  html += `<div class="card">`
+    + `<div style="font-weight:700;margin-bottom:8px;">רישום חלוקה חדשה</div>`
+    + `<div class="field"><label>תאריך</label><input type="date" id="payoutDate" value="${todayStr()}"></div>`
+    + `<div class="field"><label>סכום שחולק (₪)</label><input type="number" id="payoutAmount" min="0" step="any"></div>`
+    + `<div class="field"><label>למי חולק</label><input id="payoutTo" placeholder='שם'></div>`
+    + `<div class="field"><label>הערה</label><input id="payoutNote" placeholder='לא חובה'></div>`
+    + `<button class="btn-primary" style="width:100%;" onclick="addPayout()">רשום חלוקה</button>`
+    + `</div>`;
+  html += `<div class="card">`
+    + `<div style="font-weight:700;margin-bottom:8px;">חלוקות שנרשמו</div>`
+    + (list.length ? list.map(p=>`<div style="border-bottom:1px solid var(--border);padding:7px 0;">`
+        + `<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;">`
+          + `<div style="font-weight:600;">${escHtml(p.to || 'ללא שם')}</div>`
+          + `<div style="font-weight:800;">${nis(p.amount||0)} ₪</div>`
+        + `</div>`
+        + `<div style="font-size:12px;color:var(--muted);margin-top:2px;">${escHtml(p.date||'')}${p.note ? ' · ' + escHtml(p.note) : ''}${p.createdByUsername ? ' · ' + escHtml(p.createdByUsername) : ''}`
+          + ` · <span style="cursor:pointer;text-decoration:underline;color:var(--danger);" onclick="deletePayout('${escAttr(p.id)}')">מחק</span></div>`
+      + `</div>`).join('') : `<div style="font-size:12.5px;color:var(--muted);">עוד לא נרשמה חלוקה</div>`)
+    + `</div>`;
+  el.innerHTML = html;
+}
+
+/* ---------- tabs + init ---------- */
+document.querySelectorAll('.tab').forEach(tab=>{
+  tab.addEventListener('click', ()=>{
+    document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+    tab.classList.add('active');
+    ['sale','history','expenses','prices','users','report','monthly','vaccine','payouts','bugreports'].forEach(name=>{
+      const el = document.getElementById('tab-'+name);
+      if(el) el.style.display = (tab.dataset.tab===name) ? '' : 'none';
+    });
+    if(tab.dataset.tab==='history') renderHistory();
+    if(tab.dataset.tab==='expenses') renderExpensesList();
+    if(tab.dataset.tab==='prices') renderPricesEditor();
+    if(tab.dataset.tab==='users') renderUsersList();
+    if(tab.dataset.tab==='bugreports') renderBugReportsList();
+      if(tab.dataset.tab === 'report') populateCombinedPeriod();
+      if(tab.dataset.tab === 'monthly') renderMonthlySalesReport();
+      if(tab.dataset.tab === 'vaccine') renderVaccineReminders();
+      if(tab.dataset.tab === 'payouts') renderPayouts();
+  });
+});
+
+async function initAppData(){
+  document.getElementById('subtitle').textContent = 'טוען נתונים...';
+  await loadStock();
+  await loadExpensesData();
+  await loadStorePrices();
+  await loadStoreCustomCatalog();
+  await loadBugReports();
+  await loadStoreSales();
+  await loadVaccineMsg();
+  await loadCostSettings();
+  await loadPayouts();
+  populateSaleForm();
+  maybeShowVaccineMsgIntro();
+  document.getElementById('subtitle').textContent = 'הנתונים משותפים עם אפליקציית הערים (מלאי + הוצאות)';
+}
+
+async function initApp(){
+  await loadStoreUsers();
+  document.getElementById('newExpenseDate').value = todayStr();
+  if(tryAutoLogin()) await initAppData();
+}
+initApp();
+
+if('serviceWorker' in navigator){
+  window.addEventListener('load', ()=>{
+    // Explicit scope keeps this PWA's own identity/service-worker limited to just this page,
+    // separate from the cities app's PWA (which shares the same origin) - without this, opening
+    // this page used to get swallowed into the already-installed crm-cities app shell instead of
+    // being installable as its own distinct app.
+    navigator.serviceWorker.register('sw-store.js', {scope: './crm-store.html'}).catch(()=>{ /* offline shell is a bonus, not critical */ });
+  });
+}
+
+/* ---------- דוח מכירות רגילות לפי חודש (מחזור בלבד, למנהלים) ----------
+   בכוונה בלי עמודת רווח: לרוב המוצרים כאן לא מוגדרת עלות במחירון, ולכן כל "רווח" שהיה מוצג
+   כאן היה מנופח ומטעה. מכירות מבוטלות לא נכללות בשום סכום. */
+function monthlyStoreSalesRows(){
+  const live = (storeSales||[]).filter(s=>!s.cancelled);
+  const byMonth = {};
+  live.forEach(s=>{
+    const m = (s.date||'').slice(0,7) || 'ללא תאריך';
+    if(!byMonth[m]) byMonth[m] = { month:m, count:0, revenue:0, sellers:{} };
+    const b = byMonth[m];
+    b.count++;
+    b.revenue += (s.totalPrice||0);
+    const who = s.createdByUsername || 'לא צוין';
+    b.sellers[who] = (b.sellers[who]||0) + (s.totalPrice||0);
+  });
+  return Object.values(byMonth).sort((a,b)=>b.month.localeCompare(a.month));
+}
+const HEB_MONTH_NAMES = ['ינואר','פברואר','מרץ','אפריל','מאי','יוני','יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'];
+function monthLabelHe(m){
+  if(!m || m.length!==7) return m || '';
+  const parts = m.split('-');
+  const idx = parseInt(parts[1],10)-1;
+  return (HEB_MONTH_NAMES[idx]||parts[1]) + ' ' + parts[0];
+}
+// אילו חודשים פתוחים כרגע בדוח - נשמר רק בזיכרון, כדי שרינדור מחדש לא יסגור מה שפתחת
+const expandedSalesMonths = new Set();
+function toggleSalesMonth(month){
+  if(expandedSalesMonths.has(month)) expandedSalesMonths.delete(month);
+  else expandedSalesMonths.add(month);
+  renderMonthlySalesReport();
+}
+// תיאור מה נמכר: גם פריט מהקטלוג, גם מזון, וגם מכירה בסכום חופשי (שם המוצר יושב ב-freeItems)
+function saleItemsLabel(s){
+  const parts = [];
+  if(s.animalType) parts.push(s.animalType + (s.animalQty>1 ? ' x'+s.animalQty : ''));
+  (s.foodItems||[]).forEach(f=>parts.push(f.type + (f.quantity>1 ? ' x'+f.quantity : '')));
+  (s.freeItems||[]).forEach(f=>parts.push(f.description || 'פריט ללא תיאור'));
+  return parts.length ? parts.join(' · ') : 'ללא פירוט';
+}
+function salesOfMonthHtml(month){
+  const nis = n => Math.round(n).toLocaleString('he-IL');
+  const list = (storeSales||[]).filter(s=>!s.cancelled && (s.date||'').slice(0,7)===month)
+                               .sort((a,b)=>(b.date||'').localeCompare(a.date||'') || (b.createdAt||0)-(a.createdAt||0));
+  if(!list.length) return '';
+  return '<div style="margin-top:8px;border-top:1px dashed var(--border);padding-top:8px;">'
+    + list.map(s=>'<div style="padding:7px 0;border-bottom:1px solid var(--border);">'
+        + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;">'
+          + '<div style="font-weight:600;font-size:13px;">' + escHtml((s.customer||'').trim() || 'ללא שם') + '</div>'
+          + '<div style="font-weight:700;font-size:13px;">' + nis(s.totalPrice||0) + ' ₪</div>'
+        + '</div>'
+        + '<div style="font-size:12.5px;color:var(--muted);margin-top:2px;">' + escHtml(saleItemsLabel(s)) + '</div>'
+        + '<div style="font-size:12px;color:var(--muted);margin-top:2px;">' + escHtml(s.date||'')
+          + (s.customerPhone ? ' · <a href="tel:' + escAttr(String(s.customerPhone).replace(/-/g,'')) + '" style="color:var(--accent-dark);font-weight:700;">' + escHtml(s.customerPhone) + '</a>' : '')
+          + (s.createdByUsername ? ' · ' + escHtml(s.createdByUsername) : '')
+        + '</div>'
+      + '</div>').join('')
+  + '</div>';
+}
+function renderMonthlySalesReport(){
+  const el = document.getElementById('monthlySalesContent');
+  if(!el) return;
+  if(!isAdminRole()){ el.innerHTML = '<div class="card">הדוח הזה זמין למנהלים בלבד.</div>'; return; }
+  const rows = monthlyStoreSalesRows();
+  const cancelledCount = (storeSales||[]).filter(s=>s.cancelled).length;
+  if(rows.length===0){ el.innerHTML = '<div class="card">אין עדיין מכירות רשומות.</div>'; return; }
+  const totalRev = rows.reduce((a,r)=>a+r.revenue,0);
+  const totalCount = rows.reduce((a,r)=>a+r.count,0);
+  const nis = n => Math.round(n).toLocaleString('he-IL');
+  el.innerHTML = '<div class="card">'
+    + '<div style="font-weight:800;margin-bottom:4px;">📅 מכירות רגילות לפי חודש</div>'
+    + '<div style="font-size:12.5px;color:var(--muted);margin-bottom:12px;">מחזור בלבד. מכירות מבוטלות לא נכללות. לחיצה על חודש פותחת את כל המכירות שבו.</div>'
+    + rows.map(r=>{
+        const open = expandedSalesMonths.has(r.month);
+        return '<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;">'
+        + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;cursor:pointer;" onclick="toggleSalesMonth(\'' + r.month + '\')">'
+          + '<div style="font-weight:700;">' + (open ? '▾' : '▸') + ' ' + escHtml(monthLabelHe(r.month)) + '</div>'
+          + '<div style="font-weight:800;">' + nis(r.revenue) + ' ₪</div>'
+        + '</div>'
+        + '<div style="font-size:12.5px;color:var(--muted);margin-top:2px;">' + r.count + ' מכירות · ממוצע ' + nis(r.revenue/r.count) + ' ₪ למכירה</div>'
+        + '<div style="font-size:12.5px;color:var(--muted);margin-top:2px;">' + Object.keys(r.sellers).map(k=>escHtml(k) + ': ' + nis(r.sellers[k]) + ' ₪').join(' · ') + '</div>'
+        + (open ? salesOfMonthHtml(r.month) : '')
+      + '</div>';
+      }).join('')
+    + '<div class="total-price-box" style="text-align:right;margin-top:10px;">'
+      + '<div style="font-weight:800;">סה"כ ' + totalCount + ' מכירות · ' + nis(totalRev) + ' ₪</div>'
+      + (cancelledCount ? '<div style="font-size:12px;color:var(--muted);margin-top:2px;">' + cancelledCount + ' מכירות מבוטלות לא נכללו</div>' : '')
+    + '</div>'
+  + '</div>';
+}
+</script>
+</body></html>
