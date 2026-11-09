@@ -826,9 +826,9 @@ function applyRoleVisibility(){
   document.getElementById('pricesTabBtn').style.display = isAdmin ? '' : 'none'; // any admin (not just mainadmin) can maintain the price list
   document.getElementById('usersTabBtn').style.display = isMain ? '' : 'none';
   document.getElementById('reportTabBtn').style.display = 'none';
-  document.getElementById('monthlyTabBtn').style.display = isAdmin ? '' : 'none';
+  document.getElementById('monthlyTabBtn').style.display = 'none';
   document.getElementById('vaccineTabBtn').style.display = isAdmin ? '' : 'none';
-  document.getElementById('payoutsTabBtn').style.display = isAdmin ? '' : 'none';
+  document.getElementById('payoutsTabBtn').style.display = 'none';
   document.getElementById('bugReportsTabBtn').style.display = 'none';
 }
 function isAdminRole(){ return currentUser && (currentUser.role==='admin' || currentUser.role==='mainadmin'); }
